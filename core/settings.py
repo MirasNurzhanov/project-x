@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import timedelta
 from decouple import config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -108,6 +109,23 @@ CORS_ALLOWED_ORIGINS = config(
 ).split(',')
 
 CORS_ALLOW_CREDENTIALS = True
+
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'authorization',
+    'content-type',
+    'origin',
+    'x-csrftoken',
+    'x-requested-with',
+]
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+}
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
