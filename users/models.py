@@ -1,5 +1,6 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from datetime import date
 
 
 class User(AbstractUser):
@@ -28,6 +29,19 @@ class User(AbstractUser):
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['username']
+
+    def save(self, *args, **kwargs):
+        update_fields = kwargs.get('update_fields')
+        if update_fields is None or 'date_of_birth' in update_fields:
+            if self.date_of_birth:
+                today = date.today()
+                age = today.year - self.date_of_birth.year - (
+                    (today.month, today.day) < (self.date_of_birth.month, self.date_of_birth.day)
+                )
+                self.age_tier = self.AgeTier.MINOR if age < 18 else self.AgeTier.ADULT
+                if update_fields is not None:
+                    kwargs['update_fields'] = list(update_fields) + ['age_tier']
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.email

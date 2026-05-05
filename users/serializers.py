@@ -1,9 +1,9 @@
+from datetime import date
 from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
 from .models import User
 from interests.models import Interest
 from interests.serializers import InterestSerializer
-from datetime import date
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -28,14 +28,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data.pop('password2')
-        dob = validated_data.get('date_of_birth')
-        user = User.objects.create_user(**validated_data)
-        if dob:
-            today = date.today()
-            age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
-            user.age_tier = User.AgeTier.MINOR if age <= 17 else User.AgeTier.ADULT
-            user.save()
-        return user
+        return User.objects.create_user(**validated_data)
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
@@ -65,15 +58,9 @@ class EditProfileSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         interests = validated_data.pop('interests', None)
-        dob = validated_data.get('date_of_birth', instance.date_of_birth)
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
-
-        if dob:
-            today = date.today()
-            age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
-            instance.age_tier = User.AgeTier.MINOR if age <= 17 else User.AgeTier.ADULT
 
         instance.save()
 
