@@ -18,7 +18,7 @@ class NearbyUserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'profile_picture', 'bio', 'interests', 'distance_km')
+        fields = ('id', 'username', 'profile_picture', 'bio', 'interests', 'latitude', 'longitude', 'distance_km')
 
     def get_distance_km(self, obj):
         return self.context.get('distances', {}).get(obj.pk)
