@@ -45,6 +45,14 @@ class UserProfileSerializer(serializers.ModelSerializer):
         read_only_fields = ('id', 'email', 'age_tier', 'date_joined')
 
 
+class PublicProfileSerializer(serializers.ModelSerializer):
+    interests = InterestSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = User
+        fields = ('id', 'username', 'bio', 'profile_picture', 'age_tier', 'interests')
+
+
 class EditProfileSerializer(serializers.ModelSerializer):
     interests = serializers.PrimaryKeyRelatedField(
         queryset=Interest.objects.all(),

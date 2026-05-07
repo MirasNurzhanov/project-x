@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
-from .serializers import RegisterSerializer, UserProfileSerializer, EditProfileSerializer
+from .serializers import RegisterSerializer, UserProfileSerializer, EditProfileSerializer, PublicProfileSerializer
 from .models import User
 
 
@@ -58,6 +58,13 @@ class LogoutView(APIView):
             return Response({'detail': 'Refresh token required.'}, status=status.HTTP_400_BAD_REQUEST)
         except TokenError:
             return Response({'detail': 'Token is invalid or expired.'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PublicProfileView(generics.RetrieveAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = PublicProfileSerializer
+    queryset = User.objects.prefetch_related('interests')
+    lookup_url_kwarg = 'user_id'
 
 
 class PrivacySettingsView(APIView):

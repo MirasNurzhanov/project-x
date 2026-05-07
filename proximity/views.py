@@ -2,7 +2,9 @@ import math
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.db.models import Q
 from users.models import User
+from friends.models import BlockedUser
 from .serializers import LocationUpdateSerializer, NearbyUserSerializer
 from .utils import haversine
 from notifications.utils import notify_nearby_match
@@ -21,6 +23,9 @@ def _trigger_nearby_notifications(user):
     lat_delta = DEFAULT_RADIUS_KM / 111.0
     lon_delta = DEFAULT_RADIUS_KM / (111.0 * math.cos(math.radians(lat)))
 
+    blocked_others = BlockedUser.objects.filter(blocker=user).values('blocked_id')
+    blocked_me = BlockedUser.objects.filter(blocked=user).values('blocker_id')
+
     candidates = (
         User.objects.filter(
             latitude__isnull=False,
@@ -32,6 +37,8 @@ def _trigger_nearby_notifications(user):
             longitude__range=(lon - lon_delta, lon + lon_delta),
         )
         .exclude(pk=user.pk)
+        .exclude(pk__in=blocked_others)
+        .exclude(pk__in=blocked_me)
     )
 
     user_interest_ids = list(user.interests.values_list('id', flat=True))
@@ -83,6 +90,9 @@ class NearbyUsersView(APIView):
         lat_delta = radius_km / 111.0
         lon_delta = radius_km / (111.0 * math.cos(math.radians(lat)))
 
+        blocked_others = BlockedUser.objects.filter(blocker=user).values('blocked_id')
+        blocked_me = BlockedUser.objects.filter(blocked=user).values('blocker_id')
+
         candidates = (
             User.objects.filter(
                 latitude__isnull=False,
@@ -94,6 +104,8 @@ class NearbyUsersView(APIView):
                 longitude__range=(lon - lon_delta, lon + lon_delta),
             )
             .exclude(pk=user.pk)
+            .exclude(pk__in=blocked_others)
+            .exclude(pk__in=blocked_me)
             .prefetch_related('interests')
         )
 
