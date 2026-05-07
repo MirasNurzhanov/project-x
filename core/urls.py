@@ -27,4 +27,5 @@ urlpatterns = [
     path("api/quests/", include("quests.urls")),
     path("api/market/", include("market.urls")),
     path("api/clubs/", include("clubs.urls")),
+    path("api/friends/", include("friends.urls")),
 ]

@@ -1,0 +1,97 @@
+import json
+from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.db import database_sync_to_async
+from django.db.models import Q
+
+
+class ChatConsumer(AsyncWebsocketConsumer):
+
+    async def connect(self):
+        user = self.scope.get('user')
+        if not user or not user.is_authenticated:
+            await self.close(code=4001)
+            return
+
+        other_id = self.scope['url_route']['kwargs']['user_id']
+        other = await self._get_user(other_id)
+        if other is None:
+            await self.close(code=4004)
+            return
+
+        if not await self._are_friends(user, other):
+            await self.close(code=4003)
+            return
+
+        self.user = user
+        self.other = other
+        # Canonical group name is the same regardless of who initiates
+        self.room_group = f"chat_{min(user.pk, other.pk)}_{max(user.pk, other.pk)}"
+
+        await self.channel_layer.group_add(self.room_group, self.channel_name)
+        await self.accept()
+
+    async def disconnect(self, code):
+        if hasattr(self, 'room_group'):
+            await self.channel_layer.group_discard(self.room_group, self.channel_name)
+
+    async def receive(self, text_data):
+        try:
+            content = json.loads(text_data).get('content', '').strip()
+        except (ValueError, TypeError):
+            await self._send_error('Invalid JSON.')
+            return
+
+        if not content:
+            await self._send_error('content is required.')
+            return
+
+        message = await self._save_message(content)
+        await self.channel_layer.group_send(
+            self.room_group,
+            {
+                'type': 'chat.message',
+                'id': message.id,
+                'sender_id': self.user.pk,
+                'content': content,
+                'created_at': message.created_at.isoformat(),
+            },
+        )
+
+    # Handler called by group_send (dots become underscores in method name)
+    async def chat_message(self, event):
+        await self.send(json.dumps({
+            'type': 'chat_message',
+            'id': event['id'],
+            'sender_id': event['sender_id'],
+            'content': event['content'],
+            'created_at': event['created_at'],
+        }))
+
+    async def _send_error(self, detail):
+        await self.send(json.dumps({'type': 'error', 'detail': detail}))
+
+    @database_sync_to_async
+    def _get_user(self, user_id):
+        from users.models import User
+        try:
+            return User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return None
+
+    @database_sync_to_async
+    def _are_friends(self, user_a, user_b):
+        from .models import HiRequest
+        return HiRequest.objects.filter(
+            status=HiRequest.Status.ACCEPTED,
+        ).filter(
+            Q(sender=user_a, receiver=user_b) | Q(sender=user_b, receiver=user_a)
+        ).exists()
+
+    @database_sync_to_async
+    def _save_message(self, content):
+        from .models import Message
+        return Message.objects.create(
+            sender=self.user,
+            receiver=self.other,
+            content=content,
+        )
