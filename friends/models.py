@@ -50,6 +50,8 @@ class Message(models.Model):
     content = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
     is_read = models.BooleanField(default=False)
+    deleted_for_sender = models.BooleanField(default=False)
+    deleted_for_receiver = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.sender} -> {self.receiver}: {self.content[:30]}"

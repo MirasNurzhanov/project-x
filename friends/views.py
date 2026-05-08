@@ -2,6 +2,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -36,8 +37,7 @@ class SendHiView(APIView):
         ).exists():
             return Response({'detail': 'Cannot send Hi to this user.'}, status=status.HTTP_403_FORBIDDEN)
 
-        if HiRequest.objects.filter(sender=request.user, receiver=receiver).exists():
-            return Response({'detail': 'Hi request already sent.'}, status=status.HTTP_400_BAD_REQUEST)
+        HiRequest.objects.filter(sender=request.user, receiver=receiver).delete()
 
         hi = HiRequest.objects.create(sender=request.user, receiver=receiver)
         return Response(HiRequestSerializer(hi).data, status=status.HTTP_201_CREATED)
@@ -51,6 +51,15 @@ class AcceptHiView(APIView):
         hi.status = HiRequest.Status.ACCEPTED
         hi.save(update_fields=['status'])
         return Response(HiRequestSerializer(hi).data)
+
+
+class DeclineHiView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        hi = get_object_or_404(HiRequest, pk=pk, receiver=request.user, status=HiRequest.Status.PENDING)
+        hi.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class IncomingHiRequestsView(APIView):
@@ -91,6 +100,9 @@ class MessagesView(APIView):
 
         messages = Message.objects.filter(
             Q(sender=request.user, receiver=other) | Q(sender=other, receiver=request.user)
+        ).exclude(
+            Q(sender=request.user, deleted_for_sender=True) |
+            Q(receiver=request.user, deleted_for_receiver=True)
         ).order_by('created_at')
 
         Message.objects.filter(sender=other, receiver=request.user, is_read=False).update(is_read=True)
@@ -135,6 +147,51 @@ class RemoveFriendView(APIView):
         ).delete()
         if not deleted:
             return Response({'detail': 'No friendship found.'}, status=status.HTTP_404_NOT_FOUND)
+        Message.objects.filter(
+            Q(sender=request.user, receiver=other) | Q(sender=other, receiver=request.user)
+        ).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class DeleteMessageView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, message_id):
+        message = get_object_or_404(
+            Message,
+            pk=message_id,
+        )
+        if request.user not in (message.sender, message.receiver):
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        scope = request.data.get('scope')
+        if scope not in ('me', 'everyone'):
+            return Response(
+                {'detail': "scope must be 'me' or 'everyone'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if scope == 'everyone':
+            if message.sender != request.user:
+                return Response(
+                    {'detail': 'Only the sender can delete for everyone.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            age_seconds = (timezone.now() - message.created_at).total_seconds()
+            if age_seconds > 120:
+                return Response(
+                    {'detail': 'Message can only be deleted for everyone within 2 minutes of sending.'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            message.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        # scope == 'me'
+        if message.sender == request.user:
+            message.deleted_for_sender = True
+        else:
+            message.deleted_for_receiver = True
+        message.save(update_fields=['deleted_for_sender', 'deleted_for_receiver'])
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
