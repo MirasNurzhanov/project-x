@@ -110,6 +110,11 @@ REST_FRAMEWORK = {
     ),
 }
 
+CSRF_TRUSTED_ORIGINS = config(
+    'CSRF_TRUSTED_ORIGINS',
+    default='https://*.railway.app,https://*.vercel.app,https://project-x-frontend-alpha.vercel.app',
+).split(',')
+
 CORS_ALLOW_ALL_ORIGINS = not DEBUG
 
 CORS_ALLOWED_ORIGINS = config(
