@@ -109,10 +109,10 @@ class NearbyUsersView(APIView):
             .prefetch_related('interests')
         )
 
-        # Narrow to users who share at least one interest (skip filter if user has none)
         user_interest_ids = list(user.interests.values_list('id', flat=True))
-        if user_interest_ids:
-            candidates = candidates.filter(interests__in=user_interest_ids).distinct()
+        if not user_interest_ids:
+            return Response([])
+        candidates = candidates.filter(interests__in=user_interest_ids).distinct()
 
         # Precise Haversine pass
         distances = {}
