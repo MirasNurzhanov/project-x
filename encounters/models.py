@@ -24,3 +24,4 @@ class Encounter(models.Model):
 
     def __str__(self):
         return f'Encounter: {self.user_one} & {self.user_two} @ {self.timestamp}'
+

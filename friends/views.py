@@ -232,3 +232,11 @@ class UnblockUserView(APIView):
         if not deleted:
             return Response({'detail': 'User is not blocked.'}, status=status.HTTP_404_NOT_FOUND)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class UnreadMessageCountView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        count = Message.objects.filter(receiver=request.user, is_read=False).count()
+        return Response({'unread_count': count})
