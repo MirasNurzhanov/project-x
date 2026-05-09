@@ -19,6 +19,15 @@ class EncounterListView(generics.ListAPIView):
         )
 
 
+class ClearEncountersView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request):
+        user = request.user
+        Encounter.objects.filter(Q(user_one=user) | Q(user_two=user)).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class AcknowledgeEncounterView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 

@@ -8,7 +8,7 @@ from friends.models import BlockedUser
 from .serializers import LocationUpdateSerializer, NearbyUserSerializer
 from .utils import haversine
 from notifications.utils import notify_nearby_match
-from encounters.utils import record_encounter
+from encounters.utils import delete_old_encounters, record_encounter
 
 DEFAULT_RADIUS_KM = 5
 MAX_RADIUS_KM = 50
@@ -70,6 +70,7 @@ class NearbyUsersView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        delete_old_encounters()
         user = request.user
 
         if user.latitude is None or user.longitude is None:

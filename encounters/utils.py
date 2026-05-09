@@ -3,6 +3,12 @@ from datetime import timedelta
 from .models import Encounter
 
 ENCOUNTER_COOLDOWN_MINUTES = 60
+ENCOUNTER_MAX_AGE_DAYS = 3
+
+
+def delete_old_encounters():
+    cutoff = timezone.now() - timedelta(days=ENCOUNTER_MAX_AGE_DAYS)
+    Encounter.objects.filter(timestamp__lt=cutoff).delete()
 
 
 def record_encounter(user_a, user_b, distance_km: float):
