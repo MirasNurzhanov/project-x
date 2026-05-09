@@ -1,5 +1,5 @@
 from rest_framework import generics, permissions, status
-from rest_framework.parsers import MultiPartParser
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -84,7 +84,7 @@ class PrivacySettingsView(APIView):
 
 class ZoneView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [MultiPartParser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
         serializer = ZoneUpdateSerializer(request.user)

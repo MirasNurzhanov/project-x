@@ -41,6 +41,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'date_of_birth', 'age_tier', 'interests',
             'latitude', 'longitude',
             'is_discoverable', 'ghost_mode', 'date_joined',
+            'zone_audio', 'zone_radius', 'zone_active',
         )
         read_only_fields = ('id', 'email', 'age_tier', 'date_joined')
 
