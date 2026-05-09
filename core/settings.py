@@ -115,6 +115,8 @@ CSRF_TRUSTED_ORIGINS = config(
     default='https://*.railway.app,https://*.vercel.app,https://project-x-frontend-alpha.vercel.app',
 ).split(',')
 
+CORS_URLS_REGEX = r'^.*$'
+
 CORS_ALLOW_ALL_ORIGINS = not DEBUG
 
 CORS_ALLOWED_ORIGINS = config(
