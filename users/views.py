@@ -1,9 +1,10 @@
 from rest_framework import generics, permissions, status
+from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
-from .serializers import RegisterSerializer, UserProfileSerializer, EditProfileSerializer, PublicProfileSerializer
+from .serializers import RegisterSerializer, UserProfileSerializer, EditProfileSerializer, PublicProfileSerializer, ZoneUpdateSerializer
 from .models import User
 
 
@@ -79,3 +80,14 @@ class PrivacySettingsView(APIView):
             'is_discoverable': user.is_discoverable,
             'ghost_mode': user.ghost_mode,
         })
+
+
+class ZoneView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser]
+
+    def patch(self, request):
+        serializer = ZoneUpdateSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)

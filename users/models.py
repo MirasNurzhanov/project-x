@@ -22,6 +22,15 @@ class User(AbstractUser):
 
     interests = models.ManyToManyField('interests.Interest', blank=True, related_name='users')
 
+    class ZoneRadius(models.IntegerChoices):
+        SMALL = 100, '100m'
+        MEDIUM = 500, '500m'
+        LARGE = 1000, '1000m'
+
+    zone_audio = models.FileField(upload_to='zones/', null=True, blank=True)
+    zone_radius = models.IntegerField(choices=ZoneRadius.choices, default=ZoneRadius.MEDIUM)
+    zone_active = models.BooleanField(default=False)
+
     is_discoverable = models.BooleanField(default=True)
     ghost_mode = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)

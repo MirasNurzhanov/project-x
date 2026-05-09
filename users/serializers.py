@@ -53,6 +53,12 @@ class PublicProfileSerializer(serializers.ModelSerializer):
         fields = ('id', 'username', 'bio', 'profile_picture', 'age_tier', 'interests')
 
 
+class ZoneUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ('zone_audio', 'zone_radius', 'zone_active')
+
+
 class EditProfileSerializer(serializers.ModelSerializer):
     interests = serializers.PrimaryKeyRelatedField(
         queryset=Interest.objects.all(),
