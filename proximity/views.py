@@ -9,6 +9,7 @@ from .serializers import LocationUpdateSerializer, NearbyUserSerializer
 from .utils import haversine
 from notifications.utils import notify_nearby_match
 from encounters.utils import delete_old_encounters, record_encounter
+from quests.utils import check_and_complete_quest
 
 DEFAULT_RADIUS_KM = 5
 MAX_RADIUS_KM = 50
@@ -63,6 +64,7 @@ class UpdateLocationView(APIView):
         user.longitude = serializer.validated_data['longitude']
         user.save(update_fields=['latitude', 'longitude', 'updated_at'])
         _trigger_nearby_notifications(user)
+        check_and_complete_quest(user, 'update_location')
         return Response({'latitude': str(user.latitude), 'longitude': str(user.longitude)})
 
 

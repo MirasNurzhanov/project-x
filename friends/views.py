@@ -10,6 +10,7 @@ from rest_framework.views import APIView
 from users.models import User
 from .models import BlockedUser, HiRequest, Message
 from .serializers import BasicUserSerializer, HiRequestSerializer, MessageSerializer
+from quests.utils import check_and_complete_quest
 
 
 def _are_friends(user_a, user_b):
@@ -40,6 +41,7 @@ class SendHiView(APIView):
         HiRequest.objects.filter(sender=request.user, receiver=receiver).delete()
 
         hi = HiRequest.objects.create(sender=request.user, receiver=receiver)
+        check_and_complete_quest(request.user, 'send_hi')
         return Response(HiRequestSerializer(hi).data, status=status.HTTP_201_CREATED)
 
 
@@ -50,6 +52,8 @@ class AcceptHiView(APIView):
         hi = get_object_or_404(HiRequest, pk=pk, receiver=request.user, status=HiRequest.Status.PENDING)
         hi.status = HiRequest.Status.ACCEPTED
         hi.save(update_fields=['status'])
+        check_and_complete_quest(request.user, 'make_friend')
+        check_and_complete_quest(hi.sender, 'make_friend')
         return Response(HiRequestSerializer(hi).data)
 
 
@@ -119,6 +123,13 @@ class MessagesView(APIView):
             return Response({'detail': 'content is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         message = Message.objects.create(sender=request.user, receiver=other, content=content)
+
+        today_sent = Message.objects.filter(
+            sender=request.user,
+            created_at__date=timezone.localdate(),
+        ).count()
+        if today_sent >= 5:
+            check_and_complete_quest(request.user, 'send_message')
 
         room_group = f"chat_{min(request.user.pk, other.pk)}_{max(request.user.pk, other.pk)}"
         async_to_sync(get_channel_layer().group_send)(

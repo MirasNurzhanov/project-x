@@ -1,6 +1,9 @@
-from django.utils import timezone
 from datetime import timedelta
+
+from django.utils import timezone
+
 from .models import Encounter
+from quests.utils import check_and_complete_quest
 
 ENCOUNTER_COOLDOWN_MINUTES = 60
 ENCOUNTER_MAX_AGE_DAYS = 3
@@ -31,3 +34,5 @@ def record_encounter(user_a, user_b, distance_km: float):
             user_two=user_two,
             distance_km=distance_km,
         )
+        check_and_complete_quest(user_a, 'have_encounter')
+        check_and_complete_quest(user_b, 'have_encounter')
