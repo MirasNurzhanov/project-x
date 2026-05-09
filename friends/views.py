@@ -1,6 +1,6 @@
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import permissions, status
@@ -232,6 +232,25 @@ class UnblockUserView(APIView):
         if not deleted:
             return Response({'detail': 'User is not blocked.'}, status=status.HTTP_404_NOT_FOUND)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class UnreadBreakdownView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        rows = (
+            Message.objects.filter(receiver=request.user, is_read=False)
+            .values('sender__id', 'sender__username')
+            .annotate(unread_count=Count('id'))
+        )
+        return Response([
+            {
+                'user_id': row['sender__id'],
+                'username': row['sender__username'],
+                'unread_count': row['unread_count'],
+            }
+            for row in rows
+        ])
 
 
 class UnreadMessageCountView(APIView):
