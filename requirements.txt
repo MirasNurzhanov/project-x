@@ -4,6 +4,8 @@ autobahn==25.12.2
 Automat==25.4.16
 cbor2==6.0.1
 certifi==2026.2.25
+cloudinary
+django-cloudinary-storage
 cffi==2.0.0
 channels==4.3.2
 channels_redis==4.3.0
