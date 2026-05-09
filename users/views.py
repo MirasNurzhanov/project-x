@@ -86,6 +86,10 @@ class ZoneView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser]
 
+    def get(self, request):
+        serializer = ZoneUpdateSerializer(request.user)
+        return Response(serializer.data)
+
     def patch(self, request):
         serializer = ZoneUpdateSerializer(request.user, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
