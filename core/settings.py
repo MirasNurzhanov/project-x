@@ -157,6 +157,9 @@ CLOUDINARY_STORAGE = {
     'CLOUD_NAME': config('CLOUDINARY_CLOUD_NAME'),
     'API_KEY': config('CLOUDINARY_API_KEY'),
     'API_SECRET': config('CLOUDINARY_API_SECRET'),
+    'MEDIA_TAG': 'media',
+    'INVALID_VIDEO_ERROR_MESSAGE': 'Please upload a valid audio file',
+    'EXCLUDE_DELETE_ORPHANED_MEDIA_UNDER_FOLDER': False,
 }
 STORAGES = {
     "default": {

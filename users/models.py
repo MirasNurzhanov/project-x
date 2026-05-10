@@ -1,6 +1,7 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from datetime import date
+from cloudinary_storage.storage import RawMediaCloudinaryStorage
 
 
 class User(AbstractUser):
@@ -27,7 +28,7 @@ class User(AbstractUser):
         MEDIUM = 500, '500m'
         LARGE = 1000, '1000m'
 
-    zone_audio = models.FileField(upload_to='zones/', null=True, blank=True)
+    zone_audio = models.FileField(upload_to='zones/', null=True, blank=True, storage=RawMediaCloudinaryStorage())
     zone_radius = models.IntegerField(choices=ZoneRadius.choices, default=ZoneRadius.MEDIUM)
     zone_active = models.BooleanField(default=False)
 
