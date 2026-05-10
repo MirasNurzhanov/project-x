@@ -2,6 +2,7 @@ from datetime import date
 from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
 from .models import User
+from .presets import PRESET_MAP, ZONE_PRESETS
 from interests.models import Interest
 from interests.serializers import InterestSerializer
 
@@ -33,6 +34,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 class UserProfileSerializer(serializers.ModelSerializer):
     interests = InterestSerializer(many=True, read_only=True)
+    zone_audio_url = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -41,9 +43,16 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'date_of_birth', 'age_tier', 'interests',
             'latitude', 'longitude',
             'is_discoverable', 'ghost_mode', 'date_joined',
-            'zone_audio', 'zone_radius', 'zone_active',
+            'zone_audio', 'zone_preset', 'zone_audio_url', 'zone_radius', 'zone_active',
         )
         read_only_fields = ('id', 'email', 'age_tier', 'date_joined')
+
+    def get_zone_audio_url(self, obj):
+        if obj.zone_preset and obj.zone_preset in PRESET_MAP:
+            return PRESET_MAP[obj.zone_preset]['url']
+        if obj.zone_audio:
+            return obj.zone_audio.url
+        return None
 
 
 class PublicProfileSerializer(serializers.ModelSerializer):
@@ -55,9 +64,40 @@ class PublicProfileSerializer(serializers.ModelSerializer):
 
 
 class ZoneUpdateSerializer(serializers.ModelSerializer):
+    zone_audio_url = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ('zone_audio', 'zone_radius', 'zone_active')
+        fields = ('zone_audio', 'zone_preset', 'zone_audio_url', 'zone_radius', 'zone_active')
+
+    def get_zone_audio_url(self, obj):
+        if obj.zone_preset and obj.zone_preset in PRESET_MAP:
+            return PRESET_MAP[obj.zone_preset]['url']
+        if obj.zone_audio:
+            return obj.zone_audio.url
+        return None
+
+    def validate_zone_preset(self, value):
+        if value and value not in PRESET_MAP:
+            raise serializers.ValidationError(f"'{value}' is not a valid preset id.")
+        return value
+
+    def validate(self, attrs):
+        has_audio = attrs.get('zone_audio') or (
+            'zone_audio' not in attrs and self.instance and self.instance.zone_audio
+        )
+        has_preset = attrs.get('zone_preset') or (
+            'zone_preset' not in attrs and self.instance and self.instance.zone_preset
+        )
+        if attrs.get('zone_audio') and attrs.get('zone_preset'):
+            raise serializers.ValidationError('Set either zone_audio or zone_preset, not both.')
+        # Uploading a new file clears any existing preset
+        if attrs.get('zone_audio') and has_preset:
+            attrs['zone_preset'] = ''
+        # Selecting a preset clears any existing uploaded file
+        if attrs.get('zone_preset') and has_audio:
+            attrs['zone_audio'] = None
+        return attrs
 
 
 class EditProfileSerializer(serializers.ModelSerializer):

@@ -29,6 +29,7 @@ class User(AbstractUser):
         LARGE = 1000, '1000m'
 
     zone_audio = models.FileField(upload_to='zones/', null=True, blank=True, storage=RawMediaCloudinaryStorage())
+    zone_preset = models.CharField(max_length=50, blank=True)
     zone_radius = models.IntegerField(choices=ZoneRadius.choices, default=ZoneRadius.MEDIUM)
     zone_active = models.BooleanField(default=False)
 

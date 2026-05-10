@@ -6,6 +6,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from .serializers import RegisterSerializer, UserProfileSerializer, EditProfileSerializer, PublicProfileSerializer, ZoneUpdateSerializer
 from .models import User
+from .presets import ZONE_PRESETS
 
 
 class RegisterView(generics.CreateAPIView):
@@ -95,3 +96,10 @@ class ZoneView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+
+
+class ZonePresetsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response(ZONE_PRESETS)
