@@ -119,10 +119,17 @@ class MessagesView(APIView):
             return Response({'detail': 'You are not friends with this user.'}, status=status.HTTP_403_FORBIDDEN)
 
         content = request.data.get('content', '').strip()
-        if not content:
-            return Response({'detail': 'content is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        image = request.FILES.get('image')
 
-        message = Message.objects.create(sender=request.user, receiver=other, content=content)
+        if not content and not image:
+            return Response({'detail': 'content or image is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        message = Message.objects.create(
+            sender=request.user,
+            receiver=other,
+            content=content,
+            image=image,
+        )
 
         today_sent = Message.objects.filter(
             sender=request.user,
@@ -139,6 +146,7 @@ class MessagesView(APIView):
                 'id': message.id,
                 'sender_id': request.user.pk,
                 'content': message.content,
+                'image_url': message.image.url if message.image else None,
                 'created_at': message.created_at.isoformat(),
             },
         )
