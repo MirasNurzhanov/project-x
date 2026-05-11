@@ -18,6 +18,8 @@ MAX_RADIUS_KM = 50
 def _trigger_nearby_notifications(user):
     if user.latitude is None or user.longitude is None:
         return
+    if user.privacy_mode == 'invisible':
+        return
 
     lat = float(user.latitude)
     lon = float(user.longitude)
@@ -31,8 +33,7 @@ def _trigger_nearby_notifications(user):
         User.objects.filter(
             latitude__isnull=False,
             longitude__isnull=False,
-            is_discoverable=True,
-            ghost_mode=False,
+            privacy_mode__in=['active', 'ghost'],
             age_tier=user.age_tier,
             latitude__range=(lat - lat_delta, lat + lat_delta),
             longitude__range=(lon - lon_delta, lon + lon_delta),
@@ -75,6 +76,9 @@ class NearbyUsersView(APIView):
         delete_old_encounters()
         user = request.user
 
+        if user.privacy_mode == 'invisible':
+            return Response([])
+
         if user.latitude is None or user.longitude is None:
             return Response(
                 {'detail': 'Your location is not set.'},
@@ -100,8 +104,7 @@ class NearbyUsersView(APIView):
             User.objects.filter(
                 latitude__isnull=False,
                 longitude__isnull=False,
-                is_discoverable=True,
-                ghost_mode=False,
+                privacy_mode__in=['active', 'ghost'],
                 age_tier=user.age_tier,
                 latitude__range=(lat - lat_delta, lat + lat_delta),
                 longitude__range=(lon - lon_delta, lon + lon_delta),
@@ -117,7 +120,7 @@ class NearbyUsersView(APIView):
             return Response([])
         candidates = candidates.filter(interests__in=user_interest_ids).distinct()
 
-        # Precise Haversine pass
+        # Precise Haversine pass; ghost users are included but distance stays server-side
         distances = {}
         nearby = []
         for candidate in candidates:
@@ -125,10 +128,12 @@ class NearbyUsersView(APIView):
                 haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2
             )
             if dist <= radius_km:
-                distances[candidate.pk] = dist
+                if candidate.privacy_mode == 'active':
+                    distances[candidate.pk] = dist
                 nearby.append(candidate)
 
-        nearby.sort(key=lambda u: distances[u.pk])
+        # Active users first (sorted by distance), ghost users appended at the end
+        nearby.sort(key=lambda u: distances.get(u.pk, float('inf')))
 
         serializer = NearbyUserSerializer(
             nearby,

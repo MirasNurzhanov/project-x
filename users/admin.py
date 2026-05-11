@@ -4,9 +4,9 @@ from .models import User
 
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
-    list_display = ('username', 'email', 'age_tier', 'is_discoverable', 'ghost_mode', 'date_joined')
-    list_filter = ('age_tier', 'is_discoverable', 'ghost_mode', 'is_staff')
+    list_display = ('username', 'email', 'age_tier', 'privacy_mode', 'date_joined')
+    list_filter = ('age_tier', 'privacy_mode', 'is_staff')
     fieldsets = UserAdmin.fieldsets + (
         ('Profile', {'fields': ('bio', 'date_of_birth', 'age_tier', 'profile_picture')}),
-        ('Privacy', {'fields': ('is_discoverable', 'ghost_mode')}),
+        ('Privacy', {'fields': ('privacy_mode',)}),
     )

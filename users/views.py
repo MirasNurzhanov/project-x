@@ -74,13 +74,14 @@ class PrivacySettingsView(APIView):
 
     def patch(self, request):
         user = request.user
-        user.is_discoverable = request.data.get('is_discoverable', user.is_discoverable)
-        user.ghost_mode = request.data.get('ghost_mode', user.ghost_mode)
-        user.save()
-        return Response({
-            'is_discoverable': user.is_discoverable,
-            'ghost_mode': user.ghost_mode,
-        })
+        mode = request.data.get('privacy_mode', user.privacy_mode)
+        from .models import User as UserModel
+        if mode not in UserModel.PrivacyMode.values:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'privacy_mode': f"'{mode}' is not a valid choice."})
+        user.privacy_mode = mode
+        user.save(update_fields=['privacy_mode'])
+        return Response({'privacy_mode': user.privacy_mode})
 
 
 class ZoneView(APIView):

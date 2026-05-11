@@ -33,8 +33,16 @@ class User(AbstractUser):
     zone_radius = models.IntegerField(choices=ZoneRadius.choices, default=ZoneRadius.MEDIUM)
     zone_active = models.BooleanField(default=False)
 
-    is_discoverable = models.BooleanField(default=True)
-    ghost_mode = models.BooleanField(default=False)
+    class PrivacyMode(models.TextChoices):
+        ACTIVE = 'active', 'Active'
+        GHOST = 'ghost', 'Ghost'
+        INVISIBLE = 'invisible', 'Invisible'
+
+    privacy_mode = models.CharField(
+        max_length=9,
+        choices=PrivacyMode.choices,
+        default=PrivacyMode.ACTIVE,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -50,6 +50,9 @@ class LocationConsumer(AsyncWebsocketConsumer):
         user.longitude = lon
         user.save(update_fields=['latitude', 'longitude', 'updated_at'])
 
+        if user.privacy_mode == 'invisible':
+            return []
+
         lat_delta = DEFAULT_RADIUS_KM / 111.0
         lon_delta = DEFAULT_RADIUS_KM / (111.0 * math.cos(math.radians(lat)))
 
@@ -57,8 +60,7 @@ class LocationConsumer(AsyncWebsocketConsumer):
             User.objects.filter(
                 latitude__isnull=False,
                 longitude__isnull=False,
-                is_discoverable=True,
-                ghost_mode=False,
+                privacy_mode__in=['active', 'ghost'],
                 age_tier=user.age_tier,
                 latitude__range=(lat - lat_delta, lat + lat_delta),
                 longitude__range=(lon - lon_delta, lon + lon_delta),
@@ -79,11 +81,12 @@ class LocationConsumer(AsyncWebsocketConsumer):
             if dist <= DEFAULT_RADIUS_KM:
                 notify_nearby_match(user, candidate, dist)
                 record_encounter(user, candidate, dist)
-                nearby.append({
-                    'id': candidate.id,
-                    'username': candidate.username,
-                    'distance_km': dist,
-                })
+                entry = {'id': candidate.id, 'username': candidate.username}
+                if candidate.privacy_mode == 'active':
+                    entry['distance_km'] = dist
+                else:
+                    entry['distance_km'] = None
+                nearby.append(entry)
 
-        nearby.sort(key=lambda u: u['distance_km'])
+        nearby.sort(key=lambda u: (u['distance_km'] is None, u['distance_km'] or 0))
         return nearby

@@ -17,6 +17,8 @@ class NearbyUserSerializer(serializers.ModelSerializer):
     interests = InterestSerializer(many=True, read_only=True)
     distance_km = serializers.SerializerMethodField()
     zone_audio_url = serializers.SerializerMethodField()
+    latitude = serializers.SerializerMethodField()
+    longitude = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -26,7 +28,15 @@ class NearbyUserSerializer(serializers.ModelSerializer):
             'zone_audio', 'zone_audio_url', 'zone_radius', 'zone_active',
         )
 
+    def get_latitude(self, obj):
+        return None if obj.privacy_mode == 'ghost' else obj.latitude
+
+    def get_longitude(self, obj):
+        return None if obj.privacy_mode == 'ghost' else obj.longitude
+
     def get_distance_km(self, obj):
+        if obj.privacy_mode == 'ghost':
+            return None
         return self.context.get('distances', {}).get(obj.pk)
 
     def get_zone_audio_url(self, obj):
