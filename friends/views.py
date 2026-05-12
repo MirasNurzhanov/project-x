@@ -9,14 +9,22 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from users.models import User
-from .models import BlockedUser, HiRequest, Message
-from .serializers import BasicUserSerializer, HiRequestSerializer, MessageSerializer
+from .models import BlockedUser, FriendRequest, HiRequest, Message
+from .serializers import BasicUserSerializer, FriendRequestSerializer, HiRequestSerializer, MessageSerializer
 from quests.utils import check_and_complete_quest
 
 
-def _are_friends(user_a, user_b):
+def _are_connected(user_a, user_b):
     return HiRequest.objects.filter(
         status=HiRequest.Status.ACCEPTED,
+    ).filter(
+        Q(sender=user_a, receiver=user_b) | Q(sender=user_b, receiver=user_a)
+    ).exists()
+
+
+def _are_friends(user_a, user_b):
+    return FriendRequest.objects.filter(
+        status=FriendRequest.Status.ACCEPTED,
     ).filter(
         Q(sender=user_a, receiver=user_b) | Q(sender=user_b, receiver=user_a)
     ).exists()
@@ -81,18 +89,32 @@ class FriendsListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        accepted = HiRequest.objects.filter(
+        accepted_hi = HiRequest.objects.filter(
             status=HiRequest.Status.ACCEPTED,
         ).filter(
             Q(sender=request.user) | Q(receiver=request.user)
         ).select_related('sender', 'receiver')
 
-        friends = []
-        for hi in accepted:
-            friend = hi.receiver if hi.sender == request.user else hi.sender
-            friends.append(friend)
+        connections = []
+        for hi in accepted_hi:
+            other = hi.receiver if hi.sender == request.user else hi.sender
+            connections.append(other)
 
-        return Response(BasicUserSerializer(friends, many=True).data)
+        accepted_fr = FriendRequest.objects.filter(
+            status=FriendRequest.Status.ACCEPTED,
+        ).filter(
+            Q(sender=request.user) | Q(receiver=request.user)
+        ).select_related('sender', 'receiver')
+
+        friends = []
+        for fr in accepted_fr:
+            other = fr.receiver if fr.sender == request.user else fr.sender
+            friends.append(other)
+
+        return Response({
+            'connections': BasicUserSerializer(connections, many=True).data,
+            'friends': BasicUserSerializer(friends, many=True).data,
+        })
 
 
 class MessagesView(APIView):
@@ -101,7 +123,7 @@ class MessagesView(APIView):
 
     def get(self, request, user_id):
         other = get_object_or_404(User, pk=user_id)
-        if not _are_friends(request.user, other):
+        if not _are_connected(request.user, other):
             return Response({'detail': 'You are not friends with this user.'}, status=status.HTTP_403_FORBIDDEN)
 
         messages = Message.objects.filter(
@@ -117,7 +139,7 @@ class MessagesView(APIView):
 
     def post(self, request, user_id):
         other = get_object_or_404(User, pk=user_id)
-        if not _are_friends(request.user, other):
+        if not _are_connected(request.user, other):
             return Response({'detail': 'You are not friends with this user.'}, status=status.HTTP_403_FORBIDDEN)
 
         content = request.data.get('content', '').strip()
@@ -167,7 +189,10 @@ class RemoveFriendView(APIView):
             Q(sender=request.user, receiver=other) | Q(sender=other, receiver=request.user)
         ).delete()
         if not deleted:
-            return Response({'detail': 'No friendship found.'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'detail': 'No connection found.'}, status=status.HTTP_404_NOT_FOUND)
+        FriendRequest.objects.filter(
+            Q(sender=request.user, receiver=other) | Q(sender=other, receiver=request.user)
+        ).delete()
         Message.objects.filter(
             Q(sender=request.user, receiver=other) | Q(sender=other, receiver=request.user)
         ).delete()
@@ -228,8 +253,10 @@ class BlockUserView(APIView):
         if not created:
             return Response({'detail': 'User is already blocked.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Remove any existing friendship or pending Hi requests in both directions
         HiRequest.objects.filter(
+            Q(sender=request.user, receiver=other) | Q(sender=other, receiver=request.user)
+        ).delete()
+        FriendRequest.objects.filter(
             Q(sender=request.user, receiver=other) | Q(sender=other, receiver=request.user)
         ).delete()
 
@@ -253,6 +280,59 @@ class UnblockUserView(APIView):
         if not deleted:
             return Response({'detail': 'User is not blocked.'}, status=status.HTTP_404_NOT_FOUND)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class SendFriendRequestView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, user_id):
+        receiver = get_object_or_404(User, pk=user_id)
+        if receiver == request.user:
+            return Response({'detail': 'You cannot send a friend request to yourself.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not _are_connected(request.user, receiver):
+            return Response({'detail': 'You must be connected with this user first.'}, status=status.HTTP_403_FORBIDDEN)
+
+        if BlockedUser.objects.filter(
+            Q(blocker=receiver, blocked=request.user) | Q(blocker=request.user, blocked=receiver)
+        ).exists():
+            return Response({'detail': 'Cannot send a friend request to this user.'}, status=status.HTTP_403_FORBIDDEN)
+
+        if _are_friends(request.user, receiver):
+            return Response({'detail': 'You are already friends with this user.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        FriendRequest.objects.filter(sender=request.user, receiver=receiver).delete()
+        fr = FriendRequest.objects.create(sender=request.user, receiver=receiver)
+        return Response(FriendRequestSerializer(fr).data, status=status.HTTP_201_CREATED)
+
+
+class AcceptFriendRequestView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        fr = get_object_or_404(FriendRequest, pk=pk, receiver=request.user, status=FriendRequest.Status.PENDING)
+        fr.status = FriendRequest.Status.ACCEPTED
+        fr.save(update_fields=['status'])
+        return Response(FriendRequestSerializer(fr).data)
+
+
+class DeclineFriendRequestView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        fr = get_object_or_404(FriendRequest, pk=pk, receiver=request.user, status=FriendRequest.Status.PENDING)
+        fr.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class IncomingFriendRequestsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        reqs = FriendRequest.objects.filter(
+            receiver=request.user, status=FriendRequest.Status.PENDING
+        ).select_related('sender')
+        return Response(FriendRequestSerializer(reqs, many=True).data)
 
 
 class UnreadBreakdownView(APIView):

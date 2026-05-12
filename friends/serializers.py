@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from users.models import User
-from .models import HiRequest, Message
+from .models import FriendRequest, HiRequest, Message
 
 
 class BasicUserSerializer(serializers.ModelSerializer):
@@ -15,6 +15,15 @@ class HiRequestSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = HiRequest
+        fields = ('id', 'sender', 'receiver', 'status', 'created_at')
+
+
+class FriendRequestSerializer(serializers.ModelSerializer):
+    sender = BasicUserSerializer(read_only=True)
+    receiver = BasicUserSerializer(read_only=True)
+
+    class Meta:
+        model = FriendRequest
         fields = ('id', 'sender', 'receiver', 'status', 'created_at')
 
 

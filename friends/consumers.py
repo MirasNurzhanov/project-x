@@ -18,7 +18,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.close(code=4004)
             return
 
-        if not await self._are_friends(user, other):
+        if not await self._are_connected(user, other):
             await self.close(code=4003)
             return
 
@@ -80,7 +80,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return None
 
     @database_sync_to_async
-    def _are_friends(self, user_a, user_b):
+    def _are_connected(self, user_a, user_b):
         from .models import HiRequest
         return HiRequest.objects.filter(
             status=HiRequest.Status.ACCEPTED,
