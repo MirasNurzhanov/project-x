@@ -319,6 +319,15 @@ class SendFriendRequestView(APIView):
         if _are_friends(request.user, receiver):
             return Response({'detail': 'You are already friends with this user.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # If receiver already sent a pending request to us, accept it — no manual step needed
+        mutual = FriendRequest.objects.filter(
+            sender=receiver, receiver=request.user, status=FriendRequest.Status.PENDING
+        ).first()
+        if mutual:
+            mutual.status = FriendRequest.Status.ACCEPTED
+            mutual.save(update_fields=['status'])
+            return Response(FriendRequestSerializer(mutual).data, status=status.HTTP_201_CREATED)
+
         FriendRequest.objects.filter(sender=request.user, receiver=receiver).delete()
         fr = FriendRequest.objects.create(sender=request.user, receiver=receiver)
         return Response(FriendRequestSerializer(fr).data, status=status.HTTP_201_CREATED)
