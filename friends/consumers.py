@@ -81,7 +81,11 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _are_connected(self, user_a, user_b):
-        from .models import HiRequest
+        from .models import BlockedUser, HiRequest
+        if BlockedUser.objects.filter(
+            Q(blocker=user_a, blocked=user_b) | Q(blocker=user_b, blocked=user_a)
+        ).exists():
+            return False
         return HiRequest.objects.filter(
             status=HiRequest.Status.ACCEPTED,
         ).filter(

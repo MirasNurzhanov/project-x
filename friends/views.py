@@ -15,6 +15,10 @@ from quests.utils import check_and_complete_quest
 
 
 def _are_connected(user_a, user_b):
+    if BlockedUser.objects.filter(
+        Q(blocker=user_a, blocked=user_b) | Q(blocker=user_b, blocked=user_a)
+    ).exists():
+        return False
     return HiRequest.objects.filter(
         status=HiRequest.Status.ACCEPTED,
     ).filter(
@@ -89,6 +93,15 @@ class FriendsListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        # Users I blocked → appear in Blocked tab only, not in connections/friends
+        i_blocked_ids = set(
+            BlockedUser.objects.filter(blocker=request.user).values_list('blocked_id', flat=True)
+        )
+        # Users who blocked me → shown in connections/friends with blocked_by=True
+        blocking_me_ids = set(
+            BlockedUser.objects.filter(blocked=request.user).values_list('blocker_id', flat=True)
+        )
+
         accepted_hi = HiRequest.objects.filter(
             status=HiRequest.Status.ACCEPTED,
         ).filter(
@@ -98,7 +111,8 @@ class FriendsListView(APIView):
         connections = []
         for hi in accepted_hi:
             other = hi.receiver if hi.sender == request.user else hi.sender
-            connections.append(other)
+            if other.id not in i_blocked_ids:
+                connections.append(other)
 
         accepted_fr = FriendRequest.objects.filter(
             status=FriendRequest.Status.ACCEPTED,
@@ -109,30 +123,17 @@ class FriendsListView(APIView):
         friends = []
         for fr in accepted_fr:
             other = fr.receiver if fr.sender == request.user else fr.sender
-            friends.append(other)
+            if other.id not in i_blocked_ids:
+                friends.append(other)
 
-        # Users who blocked the current user — still show in their connections with blocked_by=True
-        # (their HiRequest was deleted when they blocked, so we source them from BlockedUser directly)
-        blocking_me = BlockedUser.objects.filter(blocked=request.user).select_related('blocker')
-
-        connection_ids = {u.id for u in connections}
-        friend_ids = {u.id for u in friends}
-
-        def serialize_user(user, blocked_by=False):
+        def serialize_user(user):
             data = dict(BasicUserSerializer(user).data)
-            data['blocked_by'] = blocked_by
+            data['blocked_by'] = user.id in blocking_me_ids
             return data
 
-        connections_data = [serialize_user(u) for u in connections]
-        friends_data = [serialize_user(u) for u in friends]
-
-        for b in blocking_me:
-            if b.blocker_id not in connection_ids and b.blocker_id not in friend_ids:
-                connections_data.append(serialize_user(b.blocker, blocked_by=True))
-
         return Response({
-            'connections': connections_data,
-            'friends': friends_data,
+            'connections': [serialize_user(u) for u in connections],
+            'friends':     [serialize_user(u) for u in friends],
         })
 
 
@@ -144,6 +145,8 @@ class MessagesView(APIView):
         other = get_object_or_404(User, pk=user_id)
         if not _are_connected(request.user, other):
             return Response({'detail': 'You are not friends with this user.'}, status=status.HTTP_403_FORBIDDEN)
+        if BlockedUser.objects.filter(blocker=other, blocked=request.user).exists():
+            return Response({'detail': 'Cannot receive messages from this user.'}, status=status.HTTP_403_FORBIDDEN)
 
         messages = Message.objects.filter(
             Q(sender=request.user, receiver=other) | Q(sender=other, receiver=request.user)
@@ -274,13 +277,6 @@ class BlockUserView(APIView):
         _, created = BlockedUser.objects.get_or_create(blocker=request.user, blocked=other)
         if not created:
             return Response({'detail': 'User is already blocked.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        HiRequest.objects.filter(
-            Q(sender=request.user, receiver=other) | Q(sender=other, receiver=request.user)
-        ).delete()
-        FriendRequest.objects.filter(
-            Q(sender=request.user, receiver=other) | Q(sender=other, receiver=request.user)
-        ).delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
