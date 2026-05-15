@@ -4,6 +4,30 @@ from channels.db import database_sync_to_async
 from django.db.models import Q
 
 
+class UserNotificationConsumer(AsyncWebsocketConsumer):
+    async def connect(self):
+        user = self.scope.get('user')
+        if not user or not user.is_authenticated:
+            await self.close(code=4001)
+            return
+        self.group_name = f"user_{user.pk}"
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        await self.accept()
+
+    async def disconnect(self, code):
+        if hasattr(self, 'group_name'):
+            await self.channel_layer.group_discard(self.group_name, self.channel_name)
+
+    async def receive(self, text_data):
+        pass  # client → server messages not needed
+
+    async def new_friend(self, event):
+        await self.send(json.dumps({
+            'type': 'new_friend',
+            'username': event['username'],
+        }))
+
+
 class ChatConsumer(AsyncWebsocketConsumer):
 
     async def connect(self):

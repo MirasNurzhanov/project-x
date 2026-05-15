@@ -326,6 +326,15 @@ class SendFriendRequestView(APIView):
         if mutual:
             mutual.status = FriendRequest.Status.ACCEPTED
             mutual.save(update_fields=['status'])
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"user_{request.user.pk}",
+                {'type': 'new_friend', 'username': receiver.username},
+            )
+            async_to_sync(channel_layer.group_send)(
+                f"user_{receiver.pk}",
+                {'type': 'new_friend', 'username': request.user.username},
+            )
             return Response(FriendRequestSerializer(mutual).data, status=status.HTTP_201_CREATED)
 
         FriendRequest.objects.filter(sender=request.user, receiver=receiver).delete()
@@ -340,6 +349,15 @@ class AcceptFriendRequestView(APIView):
         fr = get_object_or_404(FriendRequest, pk=pk, receiver=request.user, status=FriendRequest.Status.PENDING)
         fr.status = FriendRequest.Status.ACCEPTED
         fr.save(update_fields=['status'])
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"user_{fr.sender.pk}",
+            {'type': 'new_friend', 'username': request.user.username},
+        )
+        async_to_sync(channel_layer.group_send)(
+            f"user_{request.user.pk}",
+            {'type': 'new_friend', 'username': fr.sender.username},
+        )
         return Response(FriendRequestSerializer(fr).data)
 
 
