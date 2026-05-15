@@ -111,9 +111,28 @@ class FriendsListView(APIView):
             other = fr.receiver if fr.sender == request.user else fr.sender
             friends.append(other)
 
+        # Users who blocked the current user — still show in their connections with blocked_by=True
+        # (their HiRequest was deleted when they blocked, so we source them from BlockedUser directly)
+        blocking_me = BlockedUser.objects.filter(blocked=request.user).select_related('blocker')
+
+        connection_ids = {u.id for u in connections}
+        friend_ids = {u.id for u in friends}
+
+        def serialize_user(user, blocked_by=False):
+            data = dict(BasicUserSerializer(user).data)
+            data['blocked_by'] = blocked_by
+            return data
+
+        connections_data = [serialize_user(u) for u in connections]
+        friends_data = [serialize_user(u) for u in friends]
+
+        for b in blocking_me:
+            if b.blocker_id not in connection_ids and b.blocker_id not in friend_ids:
+                connections_data.append(serialize_user(b.blocker, blocked_by=True))
+
         return Response({
-            'connections': BasicUserSerializer(connections, many=True).data,
-            'friends': BasicUserSerializer(friends, many=True).data,
+            'connections': connections_data,
+            'friends': friends_data,
         })
 
 
@@ -141,6 +160,9 @@ class MessagesView(APIView):
         other = get_object_or_404(User, pk=user_id)
         if not _are_connected(request.user, other):
             return Response({'detail': 'You are not friends with this user.'}, status=status.HTTP_403_FORBIDDEN)
+
+        if BlockedUser.objects.filter(blocker=other, blocked=request.user).exists():
+            return Response({'detail': 'Cannot send messages to this user.'}, status=status.HTTP_403_FORBIDDEN)
 
         content = request.data.get('content', '').strip()
         image = request.FILES.get('image')

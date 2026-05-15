@@ -44,6 +44,7 @@ class LocationConsumer(AsyncWebsocketConsumer):
         from users.models import User
         from notifications.utils import notify_nearby_match
         from encounters.utils import record_encounter
+        from friends.models import BlockedUser
 
         user = User.objects.prefetch_related('interests').get(pk=self.user.pk)
         user.latitude = lat
@@ -56,6 +57,9 @@ class LocationConsumer(AsyncWebsocketConsumer):
         lat_delta = DEFAULT_RADIUS_KM / 111.0
         lon_delta = DEFAULT_RADIUS_KM / (111.0 * math.cos(math.radians(lat)))
 
+        blocked_others = BlockedUser.objects.filter(blocker=user).values('blocked_id')
+        blocked_me = BlockedUser.objects.filter(blocked=user).values('blocker_id')
+
         candidates = (
             User.objects.filter(
                 latitude__isnull=False,
@@ -66,6 +70,8 @@ class LocationConsumer(AsyncWebsocketConsumer):
                 longitude__range=(lon - lon_delta, lon + lon_delta),
             )
             .exclude(pk=user.pk)
+            .exclude(pk__in=blocked_others)
+            .exclude(pk__in=blocked_me)
             .prefetch_related('interests')
         )
 
