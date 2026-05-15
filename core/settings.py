@@ -131,8 +131,10 @@ CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = [
     'accept',
     'authorization',
+    'cache-control',
     'content-type',
     'origin',
+    'pragma',
     'x-csrftoken',
     'x-requested-with',
 ]
