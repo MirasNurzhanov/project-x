@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from django.db.models import F
 from django.utils import timezone
 
 from .models import Quest, UserAuraPoints, UserQuest
@@ -18,7 +19,8 @@ def _is_reset_due(user_quest):
 def check_and_complete_quest(user, condition_type):
     print(f'[quest] check_and_complete_quest called: user={user} condition_type={condition_type}')
     try:
-        quest = Quest.objects.get(condition_type=condition_type)
+        # interest__isnull=True excludes the per-interest meet_friend_in_person rows
+        quest = Quest.objects.get(condition_type=condition_type, interest__isnull=True)
     except Quest.DoesNotExist:
         print(f'[quest] no quest found for condition_type={condition_type}')
         return
@@ -35,5 +37,5 @@ def check_and_complete_quest(user, condition_type):
     user_quest.save(update_fields=['completed', 'completed_at', 'reset_date'])
 
     aura, _ = UserAuraPoints.objects.get_or_create(user=user)
-    aura.total_points += quest.reward_points
-    aura.save(update_fields=['total_points'])
+    UserAuraPoints.objects.filter(pk=aura.pk).update(total_points=F('total_points') + quest.reward_points)
+    print(f'[quest] awarded {quest.reward_points} pts to {user} for "{quest.title}"')

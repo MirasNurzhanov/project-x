@@ -1,4 +1,4 @@
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -84,7 +84,7 @@ class QuestListView(APIView):
                 defaults={
                     'title': title,
                     'description': description,
-                    'reward_points': 100,
+                    'reward_points': 150,
                     'quest_type': Quest.QuestType.WEEKLY,
                 },
             )
@@ -127,8 +127,8 @@ class CompleteQuestView(APIView):
         user_quest.save(update_fields=['completed', 'completed_at', 'reset_date'])
 
         aura, _ = UserAuraPoints.objects.get_or_create(user=request.user)
-        aura.total_points += quest.reward_points
-        aura.save(update_fields=['total_points'])
+        UserAuraPoints.objects.filter(pk=aura.pk).update(total_points=F('total_points') + quest.reward_points)
+        aura.refresh_from_db()
 
         return Response({
             'detail': 'Quest completed.',
@@ -149,8 +149,7 @@ def _complete_quest_for_user(user, quest, now):
     user_quest.reset_date = timezone.localdate()
     user_quest.save(update_fields=['completed', 'completed_at', 'reset_date'])
     aura, _ = UserAuraPoints.objects.get_or_create(user=user)
-    aura.total_points += quest.reward_points
-    aura.save(update_fields=['total_points'])
+    UserAuraPoints.objects.filter(pk=aura.pk).update(total_points=F('total_points') + quest.reward_points)
     return True
 
 
