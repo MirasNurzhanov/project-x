@@ -12,7 +12,9 @@
       "Bash(venv/bin/python *)",
       "Bash(venv/bin/pip install *)",
       "Bash(git commit -m 'Add zone_audio_url to NearbyUserSerializer *)",
-      "Bash(git commit -m 'Switch zone preset URLs to Pixabay CDN for CORS support *)"
+      "Bash(git commit -m 'Switch zone preset URLs to Pixabay CDN for CORS support *)",
+      "Bash(git *)",
+      "Bash(grep *)"
     ]
   }
 }

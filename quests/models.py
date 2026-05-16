@@ -14,12 +14,13 @@ class Quest(models.Model):
         MAKE_FRIEND = 'make_friend', 'Make Friend'
         SELECT_INTERESTS = 'select_interests', 'Select Interests'
         HAVE_ENCOUNTER = 'have_encounter', 'Have Encounter'
+        MEET_FRIEND_IN_PERSON = 'meet_friend_in_person', 'Meet Friend in Person'
 
     title = models.CharField(max_length=120)
     description = models.TextField()
     reward_points = models.PositiveIntegerField()
     quest_type = models.CharField(max_length=10, choices=QuestType.choices)
-    condition_type = models.CharField(max_length=20, choices=ConditionType.choices)
+    condition_type = models.CharField(max_length=25, choices=ConditionType.choices)
 
     def __str__(self):
         return f'[{self.quest_type}] {self.title}'
