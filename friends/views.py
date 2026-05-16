@@ -180,12 +180,7 @@ class MessagesView(APIView):
             image=image,
         )
 
-        today_sent = Message.objects.filter(
-            sender=request.user,
-            created_at__date=timezone.localdate(),
-        ).count()
-        if today_sent >= 5:
-            check_and_complete_quest(request.user, 'send_message')
+        check_and_complete_quest(request.user, 'send_message')
 
         room_group = f"chat_{min(request.user.pk, other.pk)}_{max(request.user.pk, other.pk)}"
         async_to_sync(get_channel_layer().group_send)(

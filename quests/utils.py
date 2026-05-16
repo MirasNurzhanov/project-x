@@ -16,9 +16,11 @@ def _is_reset_due(user_quest):
 
 
 def check_and_complete_quest(user, condition_type):
+    print(f'[quest] check_and_complete_quest called: user={user} condition_type={condition_type}')
     try:
         quest = Quest.objects.get(condition_type=condition_type)
     except Quest.DoesNotExist:
+        print(f'[quest] no quest found for condition_type={condition_type}')
         return
 
     user_quest, _ = UserQuest.objects.get_or_create(user=user, quest=quest)
