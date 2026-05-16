@@ -11,18 +11,92 @@ from .models import Quest, UserAuraPoints, UserQuest
 from .serializers import QuestSerializer
 from .utils import _is_reset_due
 
+# Specific titles/descriptions for every seeded interest.
+# Keys must match Interest.name exactly (case-sensitive).
+_INTEREST_LABELS = {
+    'Music':                 ('Jam with a music lover nearby',        'Meet a music-loving friend in person this week.'),
+    'Guitar':                ('Strum with a guitarist nearby',        'Meet a guitarist friend in person this week.'),
+    'DJing':                 ('Drop beats with a DJ nearby',          'Meet a DJ friend in person this week.'),
+    'Singing':               ('Sing with a fellow vocalist nearby',   'Meet a singing friend in person this week.'),
+    'Football':              ('Meet a football fan nearby',           'Meet a football-loving friend in person this week.'),
+    'Basketball':            ('Shoot hoops together nearby',          'Meet a basketball friend in person this week.'),
+    'Tennis':                ('Hit the court with a tennis fan',      'Meet a tennis friend in person this week.'),
+    'Swimming':              ('Swim with a swimming buddy nearby',    'Meet a swimming friend in person this week.'),
+    'Cycling':               ('Ride with a cycling friend nearby',    'Meet a cycling friend in person this week.'),
+    'Skateboarding':         ('Skate with a fellow skater nearby',    'Meet a skateboarding friend in person this week.'),
+    'Gaming':                ('Game with a gaming friend nearby',     'Meet a gaming friend in person this week.'),
+    'Esports':               ('Watch esports with a fan nearby',      'Meet an esports fan in person this week.'),
+    'Board Games':           ('Play board games together nearby',     'Meet a board-games friend in person this week.'),
+    'Drawing':               ('Draw with a fellow artist nearby',     'Meet a drawing friend in person this week.'),
+    'Painting':              ('Paint with a fellow artist nearby',    'Meet a painting friend in person this week.'),
+    'Sculpting':             ('Sculpt with a friend nearby',          'Meet a sculpting friend in person this week.'),
+    'Street Art':            ('Create street art together nearby',    'Meet a street-art friend in person this week.'),
+    'Coding':                ('Hack with a fellow coder nearby',      'Meet a coding friend in person this week.'),
+    'AI & Machine Learning': ('Geek out over AI together nearby',     'Meet an AI-enthusiast friend in person this week.'),
+    'Robotics':              ('Build robots with a friend nearby',    'Meet a robotics friend in person this week.'),
+    '3D Printing':           ('3D print something together nearby',   'Meet a 3D-printing friend in person this week.'),
+    'Travel':                ('Explore with a travel buddy nearby',   'Meet a travel-loving friend in person this week.'),
+    'Hiking':                ('Hit the trail with a hiker nearby',    'Meet a hiking friend in person this week.'),
+    'Backpacking':           ('Backpack with an adventurer nearby',   'Meet a backpacking friend in person this week.'),
+    'Road Trips':            ('Plan a road trip with a friend',       'Meet a road-trip friend in person this week.'),
+    'Cooking':               ('Cook a meal with a foodie nearby',     'Meet a cooking friend in person this week.'),
+    'Baking':                ('Bake something with a friend nearby',  'Meet a baking friend in person this week.'),
+    'Coffee':                ('Grab a coffee with a coffee fan',      'Meet a coffee-loving friend in person this week.'),
+    'Street Food':           ('Explore street food together nearby',  'Meet a street-food friend in person this week.'),
+    'Gym & Weightlifting':   ('Train with a gym buddy nearby',        'Meet a gym friend in person this week.'),
+    'Yoga':                  ('Flow through yoga together nearby',    'Meet a yoga friend in person this week.'),
+    'Running':               ('Run with a running buddy nearby',      'Meet a running friend in person this week.'),
+    'Martial Arts':          ('Train martial arts together nearby',   'Meet a martial-arts friend in person this week.'),
+    'Photography':           ('Shoot photos with a photographer',     'Meet a photography friend in person this week.'),
+    'Videography':           ('Film something together nearby',       'Meet a videography friend in person this week.'),
+    'Film Photography':      ('Shoot film together nearby',           'Meet a film-photography friend in person this week.'),
+    'Movies':                ('Watch a movie together nearby',        'Meet a movie-loving friend in person this week.'),
+    'Anime':                 ('Watch anime together nearby',          'Meet an anime fan in person this week.'),
+    'Documentaries':         ('Watch a documentary together nearby',  'Meet a documentary fan in person this week.'),
+}
+
+
+def _quest_labels_for(interest_name):
+    if interest_name in _INTEREST_LABELS:
+        return _INTEREST_LABELS[interest_name]
+    return (
+        f'Meet a {interest_name} fan nearby',
+        f'Meet a friend who loves {interest_name} in person this week.',
+    )
+
 
 class QuestListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        quests = Quest.objects.all()
+        user = request.user
+
+        # Regular quests (not interest-linked)
+        regular_quests = list(Quest.objects.filter(interest__isnull=True))
+
+        # One quest per user interest, created lazily on first access
+        interest_quests = []
+        for interest in user.interests.all():
+            title, description = _quest_labels_for(interest.name)
+            quest, _ = Quest.objects.get_or_create(
+                condition_type=Quest.ConditionType.MEET_FRIEND_IN_PERSON,
+                interest=interest,
+                defaults={
+                    'title': title,
+                    'description': description,
+                    'reward_points': 100,
+                    'quest_type': Quest.QuestType.WEEKLY,
+                },
+            )
+            interest_quests.append(quest)
+
+        all_quests = regular_quests + interest_quests
         user_quests = {
             uq.quest_id: uq
-            for uq in UserQuest.objects.filter(user=request.user, quest__in=quests)
+            for uq in UserQuest.objects.filter(user=user, quest__in=all_quests)
         }
-        aura = UserAuraPoints.objects.filter(user=request.user).first()
-        serializer = QuestSerializer(quests, many=True, context={'user_quests': user_quests})
+        aura = UserAuraPoints.objects.filter(user=user).first()
+        serializer = QuestSerializer(all_quests, many=True, context={'user_quests': user_quests})
         return Response({
             'total_points': aura.total_points if aura else 0,
             'quests': serializer.data,

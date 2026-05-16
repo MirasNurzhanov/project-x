@@ -21,6 +21,13 @@ class Quest(models.Model):
     reward_points = models.PositiveIntegerField()
     quest_type = models.CharField(max_length=10, choices=QuestType.choices)
     condition_type = models.CharField(max_length=25, choices=ConditionType.choices)
+    interest = models.ForeignKey(
+        'interests.Interest',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='quests',
+    )
 
     def __str__(self):
         return f'[{self.quest_type}] {self.title}'

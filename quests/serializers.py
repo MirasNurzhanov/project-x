@@ -10,7 +10,7 @@ class QuestSerializer(serializers.ModelSerializer):
         model = Quest
         fields = [
             'id', 'title', 'description', 'reward_points',
-            'quest_type', 'condition_type', 'completed', 'completed_at',
+            'quest_type', 'condition_type', 'interest_id', 'completed', 'completed_at',
         ]
 
     def get_completed(self, obj):
