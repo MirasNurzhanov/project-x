@@ -60,7 +60,7 @@ class PublicProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'bio', 'profile_picture', 'age_tier', 'interests')
+        fields = ('id', 'username', 'bio', 'profile_picture', 'interests', 'date_joined')
 
 
 class ZoneUpdateSerializer(serializers.ModelSerializer):

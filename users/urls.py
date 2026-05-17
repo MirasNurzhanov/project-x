@@ -12,4 +12,5 @@ urlpatterns = [
     path('zone/presets/', ZonePresetsView.as_view(), name='zone-presets'),
     path('zone/', ZoneView.as_view(), name='zone'),
     path('<int:user_id>/profile/', PublicProfileView.as_view(), name='public-profile'),
+    path('profile/<int:user_id>/', PublicProfileView.as_view(), name='public-profile-v2'),
 ]
