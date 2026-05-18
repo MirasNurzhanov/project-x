@@ -63,6 +63,24 @@ class PublicProfileSerializer(serializers.ModelSerializer):
         fields = ('id', 'username', 'bio', 'profile_picture', 'interests', 'date_joined')
 
 
+class UserSearchSerializer(serializers.ModelSerializer):
+    interests = InterestSerializer(many=True, read_only=True)
+    relationship_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ('id', 'username', 'profile_picture', 'interests', 'relationship_status')
+
+    def get_relationship_status(self, obj):
+        sent = self.context.get('sent_requests', {})
+        received = self.context.get('received_requests', {})
+        if obj.pk in sent:
+            return 'friends' if sent[obj.pk] == 'accepted' else 'pending_sent' if sent[obj.pk] == 'pending' else 'none'
+        if obj.pk in received:
+            return 'friends' if received[obj.pk] == 'accepted' else 'pending_received' if received[obj.pk] == 'pending' else 'none'
+        return 'none'
+
+
 class ZoneUpdateSerializer(serializers.ModelSerializer):
     zone_audio_url = serializers.SerializerMethodField()
 

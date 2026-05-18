@@ -1,10 +1,12 @@
+from django.db.models import Q
 from rest_framework import generics, permissions, status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
-from .serializers import RegisterSerializer, UserProfileSerializer, EditProfileSerializer, PublicProfileSerializer, ZoneUpdateSerializer
+from friends.models import FriendRequest
+from .serializers import RegisterSerializer, UserProfileSerializer, EditProfileSerializer, PublicProfileSerializer, UserSearchSerializer, ZoneUpdateSerializer
 from .models import User
 from .presets import ZONE_PRESETS
 
@@ -104,3 +106,41 @@ class ZonePresetsView(APIView):
 
     def get(self, request):
         return Response(ZONE_PRESETS)
+
+
+class UserSearchView(generics.ListAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = UserSearchSerializer
+
+    def get_queryset(self):
+        q = self.request.query_params.get('q', '').strip()
+        me = self.request.user
+        blocked_ids = set(me.blocking.values_list('blocked_id', flat=True))
+        blocked_by_ids = set(me.blocked_by.values_list('blocker_id', flat=True))
+        excluded = blocked_ids | blocked_by_ids | {me.pk}
+        return (
+            User.objects.filter(username__icontains=q)
+            .exclude(pk__in=excluded)
+            .prefetch_related('interests')
+        )
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        me = self.request.user
+        sent, received = {}, {}
+        for fr in FriendRequest.objects.filter(Q(sender=me) | Q(receiver=me)):
+            if fr.sender_id == me.pk:
+                sent[fr.receiver_id] = fr.status
+            else:
+                received[fr.sender_id] = fr.status
+        context['sent_requests'] = sent
+        context['received_requests'] = received
+        return context
+
+
+class DeleteAccountView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request):
+        request.user.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
