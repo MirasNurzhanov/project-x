@@ -4,12 +4,43 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db.models import Q
 from users.models import User
-from friends.models import BlockedUser
+from friends.models import BlockedUser, FriendRequest, HiRequest
 from .serializers import LocationUpdateSerializer, NearbyUserSerializer
 from .utils import haversine
 from notifications.utils import notify_nearby_match
 from encounters.utils import delete_old_encounters, record_encounter
 from quests.utils import check_and_complete_quest
+
+def _build_relationships(user, nearby_ids):
+    relationships = {}
+
+    for s, r in FriendRequest.objects.filter(
+        status=FriendRequest.Status.ACCEPTED
+    ).filter(
+        Q(sender=user, receiver_id__in=nearby_ids) | Q(receiver=user, sender_id__in=nearby_ids)
+    ).values_list('sender_id', 'receiver_id'):
+        relationships[r if s == user.pk else s] = 'friend'
+
+    for s, r in HiRequest.objects.filter(
+        status=HiRequest.Status.ACCEPTED
+    ).filter(
+        Q(sender=user, receiver_id__in=nearby_ids) | Q(receiver=user, sender_id__in=nearby_ids)
+    ).values_list('sender_id', 'receiver_id'):
+        other = r if s == user.pk else s
+        relationships.setdefault(other, 'connected')
+
+    for rid in HiRequest.objects.filter(
+        sender=user, status=HiRequest.Status.PENDING, receiver_id__in=nearby_ids
+    ).values_list('receiver_id', flat=True):
+        relationships.setdefault(rid, 'hi_sent')
+
+    for sid in HiRequest.objects.filter(
+        receiver=user, status=HiRequest.Status.PENDING, sender_id__in=nearby_ids
+    ).values_list('sender_id', flat=True):
+        relationships.setdefault(sid, 'hi_received')
+
+    return relationships
+
 
 DEFAULT_RADIUS_KM = 5
 MAX_RADIUS_KM = 50
@@ -135,9 +166,11 @@ class NearbyUsersView(APIView):
         # Active users first (sorted by distance), ghost users appended at the end
         nearby.sort(key=lambda u: distances.get(u.pk, float('inf')))
 
+        nearby_ids = [u.pk for u in nearby]
+        relationships = _build_relationships(user, nearby_ids)
         serializer = NearbyUserSerializer(
             nearby,
             many=True,
-            context={'request': request, 'distances': distances},
+            context={'request': request, 'distances': distances, 'relationships': relationships},
         )
         return Response(serializer.data)
