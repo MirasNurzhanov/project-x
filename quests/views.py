@@ -8,7 +8,7 @@ from friends.models import FriendRequest
 from proximity.utils import haversine
 from users.models import User
 from .models import Quest, UserAuraPoints, UserQuest
-from .serializers import QuestSerializer
+from .serializers import LeaderboardEntrySerializer, QuestSerializer
 from .utils import _is_reset_due
 
 # Specific titles/descriptions for every seeded interest.
@@ -63,6 +63,27 @@ def _quest_labels_for(interest_name):
         f'Meet a {interest_name} fan nearby',
         f'Meet a friend who loves {interest_name} in person this week.',
     )
+
+
+class LeaderboardView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        top = list(
+            UserAuraPoints.objects.select_related('user')
+            .order_by('-total_points', 'user__date_joined')[:50]
+        )
+        ranks = {entry.pk: i for i, entry in enumerate(top, start=1)}
+        serializer = LeaderboardEntrySerializer(top, many=True, context={'ranks': ranks})
+
+        my_aura = UserAuraPoints.objects.filter(user=request.user).first()
+        my_points = my_aura.total_points if my_aura else 0
+        my_rank = UserAuraPoints.objects.filter(total_points__gt=my_points).count() + 1
+
+        return Response({
+            'my_rank': my_rank,
+            'leaderboard': serializer.data,
+        })
 
 
 class QuestListView(APIView):
