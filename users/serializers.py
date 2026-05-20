@@ -1,6 +1,8 @@
 from datetime import date
+from django.db.models import Q
 from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
+from friends.models import FriendRequest, HiRequest
 from .models import User
 from .presets import PRESET_MAP, ZONE_PRESETS
 from interests.models import Interest
@@ -57,10 +59,27 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
 class PublicProfileSerializer(serializers.ModelSerializer):
     interests = InterestSerializer(many=True, read_only=True)
+    relationship = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ('id', 'username', 'bio', 'profile_picture', 'interests', 'date_joined')
+        fields = ('id', 'username', 'bio', 'profile_picture', 'interests', 'date_joined', 'relationship')
+
+    def get_relationship(self, obj):
+        me = self.context['request'].user
+        if FriendRequest.objects.filter(
+            Q(sender=me, receiver=obj) | Q(sender=obj, receiver=me),
+            status=FriendRequest.Status.ACCEPTED,
+        ).exists():
+            return 'friend'
+        hi = HiRequest.objects.filter(
+            Q(sender=me, receiver=obj) | Q(sender=obj, receiver=me)
+        ).first()
+        if hi:
+            if hi.status == HiRequest.Status.ACCEPTED:
+                return 'connected'
+            return 'hi_sent' if hi.sender_id == me.pk else 'hi_received'
+        return 'stranger'
 
 
 class UserSearchSerializer(serializers.ModelSerializer):
