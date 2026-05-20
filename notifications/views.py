@@ -30,3 +30,7 @@ class MarkAllReadView(APIView):
     def patch(self, request):
         Notification.objects.filter(recipient=request.user, is_read=False).update(is_read=True)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    def post(self, request):
+        Notification.objects.filter(recipient=request.user, is_read=False).update(is_read=True)
+        return Response(status=status.HTTP_204_NO_CONTENT)
