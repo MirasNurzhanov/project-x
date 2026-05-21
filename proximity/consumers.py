@@ -65,7 +65,6 @@ class LocationConsumer(AsyncWebsocketConsumer):
                 latitude__isnull=False,
                 longitude__isnull=False,
                 privacy_mode__in=['active', 'ghost'],
-                age_tier=user.age_tier,
                 latitude__range=(lat - lat_delta, lat + lat_delta),
                 longitude__range=(lon - lon_delta, lon + lon_delta),
             )
@@ -74,6 +73,9 @@ class LocationConsumer(AsyncWebsocketConsumer):
             .exclude(pk__in=blocked_me)
             .prefetch_related('interests')
         )
+
+        if user.age_tier:
+            candidates = candidates.filter(age_tier=user.age_tier)
 
         user_interest_ids = list(user.interests.values_list('id', flat=True))
         if user_interest_ids:

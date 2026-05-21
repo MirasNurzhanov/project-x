@@ -65,7 +65,6 @@ def _trigger_nearby_notifications(user):
             latitude__isnull=False,
             longitude__isnull=False,
             privacy_mode__in=['active', 'ghost'],
-            age_tier=user.age_tier,
             latitude__range=(lat - lat_delta, lat + lat_delta),
             longitude__range=(lon - lon_delta, lon + lon_delta),
         )
@@ -73,6 +72,9 @@ def _trigger_nearby_notifications(user):
         .exclude(pk__in=blocked_others)
         .exclude(pk__in=blocked_me)
     )
+
+    if user.age_tier:
+        candidates = candidates.filter(age_tier=user.age_tier)
 
     user_interest_ids = list(user.interests.values_list('id', flat=True))
     if user_interest_ids:
@@ -136,7 +138,6 @@ class NearbyUsersView(APIView):
                 latitude__isnull=False,
                 longitude__isnull=False,
                 privacy_mode__in=['active', 'ghost'],
-                age_tier=user.age_tier,
                 latitude__range=(lat - lat_delta, lat + lat_delta),
                 longitude__range=(lon - lon_delta, lon + lon_delta),
             )
@@ -146,10 +147,12 @@ class NearbyUsersView(APIView):
             .prefetch_related('interests')
         )
 
+        if user.age_tier:
+            candidates = candidates.filter(age_tier=user.age_tier)
+
         user_interest_ids = list(user.interests.values_list('id', flat=True))
-        if not user_interest_ids:
-            return Response([])
-        candidates = candidates.filter(interests__in=user_interest_ids).distinct()
+        if user_interest_ids:
+            candidates = candidates.filter(interests__in=user_interest_ids).distinct()
 
         # Precise Haversine pass; ghost users are included but distance stays server-side
         distances = {}
