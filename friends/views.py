@@ -12,6 +12,7 @@ from users.models import User
 from .models import BlockedUser, FriendRequest, HiRequest, Message
 from .serializers import BasicUserSerializer, FriendRequestSerializer, HiRequestSerializer, MessageSerializer
 from quests.utils import check_and_complete_quest
+from notifications.utils import send_push_notification
 
 
 def _are_connected(user_a, user_b):
@@ -55,6 +56,7 @@ class SendHiView(APIView):
 
         hi = HiRequest.objects.create(sender=request.user, receiver=receiver)
         check_and_complete_quest(request.user, 'send_hi')
+        send_push_notification(receiver, 'New Hi! 👋', f'@{request.user.username} wants to connect')
         return Response(HiRequestSerializer(hi).data, status=status.HTTP_201_CREATED)
 
 
@@ -67,6 +69,7 @@ class AcceptHiView(APIView):
         hi.save(update_fields=['status'])
         check_and_complete_quest(request.user, 'make_friend')
         check_and_complete_quest(hi.sender, 'make_friend')
+        send_push_notification(hi.sender, '🎉 Connected!', f'@{request.user.username} accepted your Hi')
         return Response(HiRequestSerializer(hi).data)
 
 
@@ -181,6 +184,8 @@ class MessagesView(APIView):
         )
 
         check_and_complete_quest(request.user, 'send_message')
+        preview = (content[:100] if content else '[image]')
+        send_push_notification(other, '💬 New message', f'@{request.user.username}: {preview}')
 
         room_group = f"chat_{min(request.user.pk, other.pk)}_{max(request.user.pk, other.pk)}"
         async_to_sync(get_channel_layer().group_send)(
@@ -330,10 +335,12 @@ class SendFriendRequestView(APIView):
                 f"user_{receiver.pk}",
                 {'type': 'new_friend', 'username': request.user.username},
             )
+            send_push_notification(receiver, '🎉 New friend!', f'@{request.user.username} is now your friend')
             return Response(FriendRequestSerializer(mutual).data, status=status.HTTP_201_CREATED)
 
         FriendRequest.objects.filter(sender=request.user, receiver=receiver).delete()
         fr = FriendRequest.objects.create(sender=request.user, receiver=receiver)
+        send_push_notification(receiver, '👥 Friend request', f'@{request.user.username} wants to be friends')
         return Response(FriendRequestSerializer(fr).data, status=status.HTTP_201_CREATED)
 
 
@@ -353,6 +360,7 @@ class AcceptFriendRequestView(APIView):
             f"user_{request.user.pk}",
             {'type': 'new_friend', 'username': fr.sender.username},
         )
+        send_push_notification(fr.sender, '🎉 New friend!', f'@{request.user.username} is now your friend')
         return Response(FriendRequestSerializer(fr).data)
 
 

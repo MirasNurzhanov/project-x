@@ -1,8 +1,22 @@
+import requests
 from django.utils import timezone
 from datetime import timedelta
 from .models import Notification
 
 NEARBY_COOLDOWN_MINUTES = 60
+EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send'
+
+
+def send_push_notification(user, title, message):
+    token = user.push_token
+    if not token:
+        return
+    requests.post(
+        EXPO_PUSH_URL,
+        json={'to': token, 'title': title, 'body': message},
+        headers={'Content-Type': 'application/json'},
+        timeout=5,
+    )
 
 
 def notify_nearby_match(user, nearby_user, distance_km: float):

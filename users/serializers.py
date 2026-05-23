@@ -146,7 +146,7 @@ class EditProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('bio', 'profile_picture', 'date_of_birth', 'interests')
+        fields = ('bio', 'profile_picture', 'date_of_birth', 'interests', 'push_token')
 
     def update(self, instance, validated_data):
         interests = validated_data.pop('interests', None)
