@@ -15,7 +15,8 @@
       "Bash(git commit -m 'Switch zone preset URLs to Pixabay CDN for CORS support *)",
       "Bash(git *)",
       "Bash(grep *)",
-      "Bash(railway --version)"
+      "Bash(railway --version)",
+      "Bash(xargs ls -la)"
     ]
   }
 }
