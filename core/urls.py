@@ -30,4 +30,5 @@ urlpatterns = [
     path("api/market/", include("market.urls")),
     path("api/clubs/", include("clubs.urls")),
     path("api/friends/", include("friends.urls")),
+    path("api/stories/", include("stories.urls")),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

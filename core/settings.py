@@ -36,6 +36,7 @@ INSTALLED_APPS = [
     'encounters',
     'notifications',
     'friends',
+    'stories',
 ]
 
 MIDDLEWARE = [
