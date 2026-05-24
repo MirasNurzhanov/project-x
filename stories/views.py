@@ -42,18 +42,23 @@ class NearbyStoriesView(APIView):
         lon = float(user.longitude)
         min_lat, max_lat, min_lon, max_lon = _bounding_box(lat, lon, NEARBY_RADIUS_KM)
 
+        from django.db.models import Q
         now = timezone.now()
         candidates = Story.objects.filter(
             expires_at__gt=now,
-            latitude__gte=min_lat,
-            latitude__lte=max_lat,
-            longitude__gte=min_lon,
-            longitude__lte=max_lon,
+        ).filter(
+            Q(user=user) |
+            Q(
+                latitude__gte=min_lat,
+                latitude__lte=max_lat,
+                longitude__gte=min_lon,
+                longitude__lte=max_lon,
+            )
         ).select_related('user').prefetch_related('reactions')
 
         stories = [
             s for s in candidates
-            if haversine(lat, lon, float(s.latitude), float(s.longitude)) <= NEARBY_RADIUS_KM
+            if s.user_id == user.pk or haversine(lat, lon, float(s.latitude), float(s.longitude)) <= NEARBY_RADIUS_KM
         ]
 
         serializer = StorySerializer(stories, many=True, context={'request': request})
