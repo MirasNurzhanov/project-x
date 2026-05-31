@@ -6,10 +6,10 @@ from interests.serializers import InterestSerializer
 
 class LocationUpdateSerializer(serializers.Serializer):
     latitude = serializers.DecimalField(
-        max_digits=9, decimal_places=6, min_value=-90, max_value=90
+        max_digits=11, decimal_places=8, min_value=-90, max_value=90
     )
     longitude = serializers.DecimalField(
-        max_digits=9, decimal_places=6, min_value=-180, max_value=180
+        max_digits=11, decimal_places=8, min_value=-180, max_value=180
     )
 
 
