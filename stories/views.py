@@ -102,7 +102,7 @@ class ReactToStoryView(APIView):
                 existing.delete()
                 if was_like:
                     Story.objects.filter(pk=story.pk).update(likes_count=max(0, story.likes_count - 1))
-                return Response({'detail': 'Reaction removed.'}, status=status.HTTP_200_OK)
+                return Response({'detail': 'Reaction removed.', 'user_reaction': None}, status=status.HTTP_200_OK)
             else:
                 old_type = existing.reaction
                 existing.reaction = reaction_type
@@ -112,12 +112,12 @@ class ReactToStoryView(APIView):
                     Story.objects.filter(pk=story.pk).update(likes_count=max(0, story.likes_count - 1))
                 elif reaction_type == StoryReaction.ReactionType.LIKE:
                     Story.objects.filter(pk=story.pk).update(likes_count=story.likes_count + 1)
-                return Response({'detail': 'Reaction updated.', 'reaction': reaction_type}, status=status.HTTP_200_OK)
+                return Response({'detail': 'Reaction updated.', 'user_reaction': reaction_type}, status=status.HTTP_200_OK)
         else:
             StoryReaction.objects.create(user=user, story=story, reaction=reaction_type)
             if reaction_type == StoryReaction.ReactionType.LIKE:
                 Story.objects.filter(pk=story.pk).update(likes_count=story.likes_count + 1)
-            return Response({'detail': 'Reaction added.', 'reaction': reaction_type}, status=status.HTTP_201_CREATED)
+            return Response({'detail': 'Reaction added.', 'user_reaction': reaction_type}, status=status.HTTP_201_CREATED)
 
 
 class DeleteStoryView(APIView):
