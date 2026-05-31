@@ -138,6 +138,14 @@ class UserSearchView(generics.ListAPIView):
         return context
 
 
+class MeView(generics.RetrieveAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = UserProfileSerializer
+
+    def get_object(self):
+        return self.request.user
+
+
 class DeleteAccountView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
