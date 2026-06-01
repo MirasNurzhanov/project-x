@@ -46,6 +46,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'latitude', 'longitude',
             'privacy_mode', 'date_joined',
             'zone_audio', 'zone_preset', 'zone_audio_url', 'zone_radius', 'zone_active',
+            'push_token',
         )
         read_only_fields = ('id', 'email', 'age_tier', 'date_joined')
 
