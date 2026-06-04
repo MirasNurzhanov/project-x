@@ -11,12 +11,15 @@ def send_push_notification(user, title, message):
     token = user.push_token
     if not token:
         return
-    requests.post(
+    print(f'[Push] sending to token: {token}')
+    print(f'[Push] title: {title}, body: {message}')
+    response = requests.post(
         EXPO_PUSH_URL,
         json={'to': token, 'title': title, 'body': message},
         headers={'Content-Type': 'application/json'},
         timeout=5,
     )
+    print(f'[Push] Expo API response: {response.json()}')
 
 
 def notify_nearby_match(user, nearby_user, distance_km: float):
