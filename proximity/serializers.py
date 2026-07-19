@@ -16,6 +16,8 @@ class LocationUpdateSerializer(serializers.Serializer):
 class NearbyUserSerializer(serializers.ModelSerializer):
     interests = InterestSerializer(many=True, read_only=True)
     distance_km = serializers.SerializerMethodField()
+    shared_interests = serializers.SerializerMethodField()
+    zone_audio = serializers.SerializerMethodField()
     zone_audio_url = serializers.SerializerMethodField()
     latitude = serializers.SerializerMethodField()
     longitude = serializers.SerializerMethodField()
@@ -26,6 +28,7 @@ class NearbyUserSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'username', 'profile_picture', 'bio', 'interests',
             'latitude', 'longitude', 'distance_km',
+            'shared_interests',
             'zone_audio', 'zone_audio_url', 'zone_radius', 'zone_active',
             'relationship',
         )
@@ -44,7 +47,24 @@ class NearbyUserSerializer(serializers.ModelSerializer):
     def get_relationship(self, obj):
         return self.context.get('relationships', {}).get(obj.pk, 'stranger')
 
+    # Interest names both users picked; the map only shows strangers that have
+    # at least one. Interests are already public via search and profiles.
+    def get_shared_interests(self, obj):
+        mine = self.context.get('my_interest_ids', frozenset())
+        return [i.name for i in obj.interests.all() if i.pk in mine]
+
+    def _is_friend(self, obj):
+        return self.context.get('relationships', {}).get(obj.pk) == 'friend'
+
+    # Zone music is friends-only: both audio fields stay null for anyone else
+    def get_zone_audio(self, obj):
+        if not self._is_friend(obj):
+            return None
+        return obj.zone_audio.url if obj.zone_audio else None
+
     def get_zone_audio_url(self, obj):
+        if not self._is_friend(obj):
+            return None
         if obj.zone_preset and obj.zone_preset in PRESET_MAP:
             return PRESET_MAP[obj.zone_preset]['url']
         if obj.zone_audio:

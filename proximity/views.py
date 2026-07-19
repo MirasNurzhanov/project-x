@@ -11,6 +11,17 @@ from notifications.utils import notify_nearby_match
 from encounters.utils import delete_old_encounters, record_encounter
 from quests.utils import check_and_complete_quest
 
+def _relationship_partner_ids(user):
+    """Ids of users tied to `user` by an accepted friend or Hi request."""
+    partners = set()
+    for model in (FriendRequest, HiRequest):
+        pairs = model.objects.filter(
+            status=model.Status.ACCEPTED
+        ).filter(Q(sender=user) | Q(receiver=user)).values_list('sender_id', 'receiver_id')
+        partners.update(r if s == user.pk else s for s, r in pairs)
+    return partners
+
+
 def _build_relationships(user, nearby_ids):
     relationships = {}
 
@@ -152,7 +163,10 @@ class NearbyUsersView(APIView):
 
         user_interest_ids = list(user.interests.values_list('id', flat=True))
         if user_interest_ids:
-            candidates = candidates.filter(interests__in=user_interest_ids).distinct()
+            # Friends and connections stay visible even without a shared interest
+            candidates = candidates.filter(
+                Q(interests__in=user_interest_ids) | Q(pk__in=_relationship_partner_ids(user))
+            ).distinct()
 
         # Precise Haversine pass; ghost users are included but distance stays server-side
         distances = {}
@@ -174,6 +188,11 @@ class NearbyUsersView(APIView):
         serializer = NearbyUserSerializer(
             nearby,
             many=True,
-            context={'request': request, 'distances': distances, 'relationships': relationships},
+            context={
+                'request': request,
+                'distances': distances,
+                'relationships': relationships,
+                'my_interest_ids': set(user_interest_ids),
+            },
         )
         return Response(serializer.data)
