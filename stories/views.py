@@ -23,6 +23,7 @@ class CreateStoryView(APIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def post(self, request):
+        print('[Story] received image:', request.FILES.get('image'))
         serializer = StoryCreateSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
