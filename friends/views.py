@@ -129,9 +129,46 @@ class FriendsListView(APIView):
             if other.id not in i_blocked_ids:
                 friends.append(other)
 
+        # Latest message and unread count per counterpart, for chat-list previews
+        other_ids = {u.id for u in connections} | {u.id for u in friends}
+
+        last_by_user = {}
+        if other_ids:
+            msgs = Message.objects.filter(
+                Q(sender=request.user, receiver_id__in=other_ids) |
+                Q(sender_id__in=other_ids, receiver=request.user)
+            ).exclude(
+                Q(sender=request.user, deleted_for_sender=True) |
+                Q(receiver=request.user, deleted_for_receiver=True)
+            ).order_by('-created_at').only(
+                'sender_id', 'receiver_id', 'content', 'image', 'created_at'
+            )
+            for m in msgs:
+                other_id = m.receiver_id if m.sender_id == request.user.id else m.sender_id
+                if other_id not in last_by_user:
+                    last_by_user[other_id] = m
+                    if len(last_by_user) == len(other_ids):
+                        break
+
+        unread_map = {}
+        if other_ids:
+            unread_rows = (
+                Message.objects.filter(
+                    receiver=request.user, is_read=False, sender_id__in=other_ids
+                )
+                .values('sender_id')
+                .annotate(unread_count=Count('id'))
+            )
+            unread_map = {r['sender_id']: r['unread_count'] for r in unread_rows}
+
         def serialize_user(user):
             data = dict(BasicUserSerializer(user).data)
             data['blocked_by'] = user.id in blocking_me_ids
+            last = last_by_user.get(user.id)
+            if last is not None:
+                data['last_message'] = last.content if last.content else '📷 Photo'
+                data['last_message_at'] = last.created_at.isoformat()
+            data['unread_count'] = unread_map.get(user.id, 0)
             return data
 
         return Response({
