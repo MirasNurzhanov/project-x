@@ -27,6 +27,21 @@ class Story(models.Model):
         return f"{self.user} — {self.created_at:%Y-%m-%d %H:%M}"
 
 
+class SavedStory(models.Model):
+    """A bookmark: `user` saved someone else's `story`. Deleting the story
+    cascades here, so saves vanish when the author deletes the original."""
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='saved_stories')
+    story = models.ForeignKey(Story, on_delete=models.CASCADE, related_name='saves')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('user', 'story')
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.user} saved story {self.story_id}"
+
+
 class StoryReaction(models.Model):
     class ReactionType(models.TextChoices):
         LIKE = 'like', 'Like'
