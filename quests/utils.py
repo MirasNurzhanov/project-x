@@ -1,9 +1,8 @@
 from datetime import timedelta
 
-from django.db.models import F
 from django.utils import timezone
 
-from .models import Quest, UserAuraPoints, UserQuest
+from .models import PointEvent, Quest, UserQuest
 
 
 def _is_reset_due(user_quest):
@@ -18,10 +17,17 @@ def _is_reset_due(user_quest):
 
 def check_and_complete_quest(user, condition_type):
     print(f'[quest] check_and_complete_quest called: user={user} condition_type={condition_type}')
-    try:
-        # interest__isnull=True excludes the per-interest meet_friend_in_person rows
-        quest = Quest.objects.get(condition_type=condition_type, interest__isnull=True)
-    except Quest.DoesNotExist:
+    # interest__isnull=True excludes the per-interest meet_friend_in_person rows.
+    # Ordered .first() rather than .get(): several quests may share a condition
+    # type, and a MultipleObjectsReturned here would 500 the caller's action
+    # (sending a Hi, posting a story) — never worth it for a side effect.
+    quest = (
+        Quest.objects
+        .filter(condition_type=condition_type, interest__isnull=True)
+        .order_by('pk')
+        .first()
+    )
+    if quest is None:
         print(f'[quest] no quest found for condition_type={condition_type}')
         return
 
@@ -36,6 +42,12 @@ def check_and_complete_quest(user, condition_type):
     user_quest.reset_date = timezone.localdate()
     user_quest.save(update_fields=['completed', 'completed_at', 'reset_date'])
 
-    aura, _ = UserAuraPoints.objects.get_or_create(user=user)
-    UserAuraPoints.objects.filter(pk=aura.pk).update(total_points=F('total_points') + quest.reward_points)
+    # period_start=None: these completions are inferred from app events, not
+    # photo-verified, so they count toward the all-time total but never toward
+    # the weekly leaderboard.
+    from .ledger import record_points
+    record_points(
+        user, quest.reward_points, PointEvent.Reason.UNVERIFIED_QUEST,
+        quest=quest, period_start=None,
+    )
     print(f'[quest] awarded {quest.reward_points} pts to {user} for "{quest.title}"')

@@ -42,23 +42,23 @@ class LocationConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _update_and_find_nearby(self, lat, lon):
+        from users import visibility
         from users.models import User
         from notifications.utils import notify_nearby_match
         from encounters.utils import record_encounter
-        from friends.models import BlockedUser, FriendRequest, HiRequest
+        from friends.models import FriendRequest, HiRequest
         from django.db.models import Q
 
         user = User.objects.prefetch_related('interests').get(pk=self.user.pk)
-        user.latitude = lat
-        user.longitude = lon
+        # The socket is not a side door: same fuzzing as the REST endpoint.
+        user.latitude, user.longitude = visibility.store_coordinates(user, lat, lon)
         user.save(update_fields=['latitude', 'longitude', 'updated_at'])
+        lat, lon = float(user.latitude), float(user.longitude)
 
-        if user.privacy_mode == 'invisible':
+        if user.location_sharing == User.LocationSharing.PAUSED:
             return []
 
-        blocked_others_ids = set(BlockedUser.objects.filter(blocker=user).values_list('blocked_id', flat=True))
-        blocked_me_ids = set(BlockedUser.objects.filter(blocked=user).values_list('blocker_id', flat=True))
-        blocked_ids = blocked_others_ids | blocked_me_ids
+        blocked_ids = visibility.blocked_ids_for(user)
         excluded_ids = blocked_ids | {user.pk}
 
         friend_ids = set()
@@ -81,14 +81,9 @@ class LocationConsumer(AsyncWebsocketConsumer):
             if other not in excluded_ids and other not in friend_ids:
                 connected_ids.add(other)
 
-        base_qs = (
-            User.objects.filter(
-                latitude__isnull=False,
-                longitude__isnull=False,
-                privacy_mode__in=['active', 'ghost'],
-            )
-            .exclude(pk=user.pk)
-            .exclude(pk__in=blocked_ids)
+        base_qs = visibility.visible_users(user, on_map=True).filter(
+            latitude__isnull=False,
+            longitude__isnull=False,
         )
 
         # Friends: always visible, no distance limit
@@ -122,18 +117,33 @@ class LocationConsumer(AsyncWebsocketConsumer):
             stranger_candidates = stranger_candidates.filter(age_tier=user.age_tier)
         user_interest_ids = list(user.interests.values_list('id', flat=True))
         if user_interest_ids:
-            stranger_candidates = stranger_candidates.filter(interests__in=user_interest_ids).distinct()
+            # Opting out of interest discovery keeps you off strangers' maps.
+            stranger_candidates = stranger_candidates.filter(
+                interests__in=user_interest_ids, discoverable_by_interest=True,
+            ).distinct()
 
         nearby = []
         seen = set()
+
+        # Distances come from the stored position, which is already snapped for
+        # anyone on Approximate — coarse by construction, not by withholding.
+        def entry_for(candidate, dist):
+            return {
+                'id': candidate.id,
+                'username': candidate.username,
+                'distance_km': dist,
+                'location_precision': (
+                    'approximate'
+                    if candidate.location_sharing == User.LocationSharing.APPROXIMATE
+                    else 'precise'
+                ),
+            }
 
         for candidate in friend_candidates:
             dist = round(haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
             notify_nearby_match(user, candidate, dist)
             record_encounter(user, candidate, dist)
-            entry = {'id': candidate.id, 'username': candidate.username}
-            entry['distance_km'] = dist if candidate.privacy_mode == 'active' else None
-            nearby.append(entry)
+            nearby.append(entry_for(candidate, dist))
             seen.add(candidate.pk)
 
         for candidate in connected_candidates:
@@ -143,9 +153,7 @@ class LocationConsumer(AsyncWebsocketConsumer):
             if dist <= CONNECTED_RADIUS_KM:
                 notify_nearby_match(user, candidate, dist)
                 record_encounter(user, candidate, dist)
-                entry = {'id': candidate.id, 'username': candidate.username}
-                entry['distance_km'] = dist if candidate.privacy_mode == 'active' else None
-                nearby.append(entry)
+                nearby.append(entry_for(candidate, dist))
                 seen.add(candidate.pk)
 
         for candidate in stranger_candidates:
@@ -155,9 +163,7 @@ class LocationConsumer(AsyncWebsocketConsumer):
             if dist <= DEFAULT_RADIUS_KM:
                 notify_nearby_match(user, candidate, dist)
                 record_encounter(user, candidate, dist)
-                entry = {'id': candidate.id, 'username': candidate.username}
-                entry['distance_km'] = dist if candidate.privacy_mode == 'active' else None
-                nearby.append(entry)
+                nearby.append(entry_for(candidate, dist))
                 seen.add(candidate.pk)
 
         nearby.sort(key=lambda u: (u['distance_km'] is None, u['distance_km'] or 0))

@@ -33,16 +33,55 @@ class User(AbstractUser):
     zone_radius = models.IntegerField(choices=ZoneRadius.choices, default=ZoneRadius.MEDIUM)
     zone_active = models.BooleanField(default=False)
 
-    class PrivacyMode(models.TextChoices):
-        ACTIVE = 'active', 'Active'
-        GHOST = 'ghost', 'Ghost'
-        INVISIBLE = 'invisible', 'Invisible'
+    # ── Privacy ───────────────────────────────────────────────────────────────
+    # Two independent axes, deliberately kept apart:
+    #   location_sharing — am I out there on the map right now, and how precisely
+    #   is_private + visibility_* — who sees my stuff once they have found me
+    # The old three-way `privacy_mode` (active/ghost/invisible) conflated both;
+    # see users/migrations/0010 for the mapping.
 
-    privacy_mode = models.CharField(
-        max_length=9,
-        choices=PrivacyMode.choices,
-        default=PrivacyMode.ACTIVE,
+    class LocationSharing(models.TextChoices):
+        LIVE = 'live', 'Live'
+        APPROXIMATE = 'approximate', 'Approximate'
+        PAUSED = 'paused', 'Paused'
+
+    location_sharing = models.CharField(
+        max_length=11,
+        choices=LocationSharing.choices,
+        default=LocationSharing.LIVE,
     )
+
+    class Audience(models.TextChoices):
+        EVERYONE = 'everyone', 'Everyone'
+        FRIENDS = 'friends', 'Friends'
+        NOBODY = 'nobody', 'Nobody'
+
+    # A private account shows non-approved viewers username + avatar and nothing
+    # else. "Approved" means an accepted Hi (connected) or an accepted friend
+    # request — the app's existing request queue is the approval queue.
+    is_private = models.BooleanField(default=False)
+
+    # Interests default to Everyone because they are the matching primitive the
+    # whole app runs on; the rest default to Friends.
+    visibility_interests = models.CharField(
+        max_length=8, choices=Audience.choices, default=Audience.EVERYONE)
+    visibility_stories = models.CharField(
+        max_length=8, choices=Audience.choices, default=Audience.FRIENDS)
+    visibility_stats = models.CharField(
+        max_length=8, choices=Audience.choices, default=Audience.FRIENDS)
+    visibility_zone_audio = models.CharField(
+        max_length=8, choices=Audience.choices, default=Audience.FRIENDS)
+    visibility_connections = models.CharField(
+        max_length=8, choices=Audience.choices, default=Audience.FRIENDS)
+    # Friends-only by default and deliberately so: on a proximity app a public
+    # Instagram link ties "stranger standing near me" to a real identity.
+    visibility_links = models.CharField(
+        max_length=8, choices=Audience.choices, default=Audience.FRIENDS)
+
+    show_on_leaderboard = models.BooleanField(default=True)
+    discoverable_by_username = models.BooleanField(default=True)
+    discoverable_by_interest = models.BooleanField(default=True)
+
     push_token = models.CharField(max_length=200, blank=True, null=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -64,5 +103,50 @@ class User(AbstractUser):
                     kwargs['update_fields'] = list(update_fields) + ['age_tier']
         super().save(*args, **kwargs)
 
+    # Old app builds still speak active/ghost/invisible. Read-only bridge so
+    # those clients keep working until they update; writes go through
+    # PrivacySettingsView, which translates.
+    LEGACY_PRIVACY_MODE = {
+        LocationSharing.LIVE: 'active',
+        LocationSharing.APPROXIMATE: 'ghost',
+        LocationSharing.PAUSED: 'invisible',
+    }
+    LEGACY_PRIVACY_MODE_REVERSE = {v: k for k, v in LEGACY_PRIVACY_MODE.items()}
+
+    @property
+    def privacy_mode(self):
+        return self.LEGACY_PRIVACY_MODE.get(self.location_sharing, 'active')
+
     def __str__(self):
         return self.email
+
+
+class ProfileLink(models.Model):
+    """An external link on a profile.
+
+    `url` is always the canonical form produced by users.links.normalize_link —
+    https, no credentials, no port, no tracking parameters. `platform` and
+    `handle` are derived offline from the host and path; the server never
+    fetches the link.
+    """
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='links')
+    url = models.URLField(max_length=300)
+    #: 'instagram', 'spotify', ... or 'website' for anything unrecognised.
+    platform = models.CharField(max_length=20, default='website')
+    #: Username parsed from the path, without the leading '@'. May be blank.
+    handle = models.CharField(max_length=64, blank=True)
+    #: What the profile renders — "@name", or the bare host for unknown sites.
+    label = models.CharField(max_length=64)
+    #: Manual ordering; lower first.
+    position = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['position', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'url'], name='unique_link_per_user'),
+        ]
+
+    def __str__(self):
+        return f'{self.user_id}: {self.label}'

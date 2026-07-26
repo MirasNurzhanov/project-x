@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from users import visibility
 from users.models import User
 from users.presets import PRESET_MAP
 from interests.serializers import InterestSerializer
@@ -13,60 +14,64 @@ class LocationUpdateSerializer(serializers.Serializer):
     )
 
 
-class NearbyUserSerializer(serializers.ModelSerializer):
-    interests = InterestSerializer(many=True, read_only=True)
-    distance_km = serializers.SerializerMethodField()
-    shared_interests = serializers.SerializerMethodField()
-    zone_audio = serializers.SerializerMethodField()
-    zone_audio_url = serializers.SerializerMethodField()
-    latitude = serializers.SerializerMethodField()
-    longitude = serializers.SerializerMethodField()
-    relationship = serializers.SerializerMethodField()
+class NearbyUserSerializer(serializers.Serializer):
+    """A person on the map, assembled field by field.
 
-    class Meta:
-        model = User
-        fields = (
-            'id', 'username', 'profile_picture', 'bio', 'interests',
-            'latitude', 'longitude', 'distance_km',
-            'shared_interests',
-            'zone_audio', 'zone_audio_url', 'zone_radius', 'zone_active',
-            'relationship',
-        )
+    Hidden fields are omitted from the payload rather than nulled — the map
+    used to send `zone_audio_url` to everyone and rely on the client to hide
+    it, which is exactly the failure mode this shape prevents.
 
-    def get_latitude(self, obj):
-        return None if obj.privacy_mode == 'ghost' else obj.latitude
+    Coordinates are whatever is stored. Users on Approximate never have a
+    precise position in the database at all (see users.visibility), so there is
+    nothing here to redact.
+    """
 
-    def get_longitude(self, obj):
-        return None if obj.privacy_mode == 'ghost' else obj.longitude
+    def to_representation(self, obj):
+        me = self.context['request'].user
+        rel = self.context.get('relationships', {}).get(obj.pk, visibility.STRANGER)
 
-    def get_distance_km(self, obj):
-        if obj.privacy_mode == 'ghost':
-            return None
-        return self.context.get('distances', {}).get(obj.pk)
+        data = {
+            'id': obj.id,
+            'username': obj.username,
+            'profile_picture': obj.profile_picture.url if obj.profile_picture else None,
+            'is_private': obj.is_private,
+            'relationship': rel,
+            'latitude': obj.latitude,
+            'longitude': obj.longitude,
+            'distance_km': self.context.get('distances', {}).get(obj.pk),
+            'location_precision': (
+                'approximate'
+                if obj.location_sharing == User.LocationSharing.APPROXIMATE
+                else 'precise'
+            ),
+        }
 
-    def get_relationship(self, obj):
-        return self.context.get('relationships', {}).get(obj.pk, 'stranger')
+        # A private account is a pin and a name until they approve you.
+        if visibility.minimal_only(me, obj, rel):
+            return data
 
-    # Interest names both users picked; the map only shows strangers that have
-    # at least one. Interests are already public via search and profiles.
-    def get_shared_interests(self, obj):
-        mine = self.context.get('my_interest_ids', frozenset())
-        return [i.name for i in obj.interests.all() if i.pk in mine]
+        data['bio'] = obj.bio
 
-    def _is_friend(self, obj):
-        return self.context.get('relationships', {}).get(obj.pk) == 'friend'
+        # Zone *presence* stays visible to everyone so the map can still draw
+        # the circle; only the audio itself is gated.
+        data['zone_radius'] = obj.zone_radius
+        data['zone_active'] = obj.zone_active
 
-    # Zone music is friends-only: both audio fields stay null for anyone else
-    def get_zone_audio(self, obj):
-        if not self._is_friend(obj):
-            return None
-        return obj.zone_audio.url if obj.zone_audio else None
+        if visibility.can_view(me, obj, 'interests', rel):
+            data['interests'] = InterestSerializer(obj.interests.all(), many=True).data
+            mine = self.context.get('my_interest_ids', frozenset())
+            data['shared_interests'] = [i.name for i in obj.interests.all() if i.pk in mine]
 
-    def get_zone_audio_url(self, obj):
-        if not self._is_friend(obj):
-            return None
-        if obj.zone_preset and obj.zone_preset in PRESET_MAP:
-            return PRESET_MAP[obj.zone_preset]['url']
-        if obj.zone_audio:
-            return obj.zone_audio.url
-        return None
+        if visibility.can_view(me, obj, 'zone_audio', rel):
+            data['zone_audio'] = obj.zone_audio.url if obj.zone_audio else None
+            data['zone_audio_url'] = _preset_or_upload_url(obj)
+
+        return data
+
+
+def _preset_or_upload_url(obj):
+    if obj.zone_preset and obj.zone_preset in PRESET_MAP:
+        return PRESET_MAP[obj.zone_preset]['url']
+    if obj.zone_audio:
+        return obj.zone_audio.url
+    return None

@@ -5,11 +5,32 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
+from users import visibility
 from .models import SavedStory, Story, StoryReaction
 from .serializers import StorySerializer, StoryCreateSerializer, StoryReactionSerializer
 from proximity.utils import haversine
 
 NEARBY_RADIUS_KM = 0.5
+
+
+def _blocked_ids_for(user):
+    """User ids involved in a block with `user`, either direction — their
+    stories are invisible to each other. Thin alias so there is exactly one
+    definition of "blocked" in the codebase."""
+    return visibility.blocked_ids_for(user)
+
+def _visible_story(user, pk):
+    """A story `user` is allowed to act on, or None. Blocked authors and
+    stories hidden by their author's Stories setting are indistinguishable
+    from a story that does not exist."""
+    return (
+        Story.objects
+        .exclude(user_id__in=_blocked_ids_for(user))
+        .filter(visibility.visible_field_q(user, 'stories'))
+        .filter(pk=pk)
+        .first()
+    )
+
 
 ARCHIVE_PAGE_MAX = 100
 
@@ -70,6 +91,12 @@ class NearbyStoriesView(APIView):
                 longitude__gte=min_lon,
                 longitude__lte=max_lon,
             )
+        ).exclude(
+            user_id__in=_blocked_ids_for(user)
+        ).filter(
+            # Whose stories may reach this viewer at all — the author's
+            # Stories setting and private-account gate, applied in SQL.
+            visibility.visible_field_q(user, 'stories')
         ).select_related('user').prefetch_related('reactions')
 
         stories = [
@@ -85,9 +112,8 @@ class ReactToStoryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        try:
-            story = Story.objects.get(pk=pk)
-        except Story.DoesNotExist:
+        story = _visible_story(request.user, pk)
+        if story is None:
             return Response({'detail': 'Story not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         if story.expires_at <= timezone.now():
@@ -162,7 +188,13 @@ class SavedStoriesView(APIView):
 
     def get(self, request):
         limit, offset = _page_params(request)
-        qs = SavedStory.objects.filter(user=request.user).select_related('story__user')
+        # A bookmark is not a permanent grant: if the author has since
+        # restricted who can see their stories, the saved copy goes too.
+        qs = SavedStory.objects.filter(user=request.user).exclude(
+            story__user_id__in=_blocked_ids_for(request.user)
+        ).filter(
+            visibility.visible_field_q(request.user, 'stories', prefix='story__user')
+        ).select_related('story__user')
         count = qs.count()
         page = qs[offset:offset + limit]
         results = []
@@ -184,9 +216,8 @@ class SaveStoryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        try:
-            story = Story.objects.get(pk=pk)
-        except Story.DoesNotExist:
+        story = _visible_story(request.user, pk)
+        if story is None:
             return Response({'detail': 'Story not found.'}, status=status.HTTP_404_NOT_FOUND)
         if story.user_id == request.user.pk:
             return Response({'detail': 'Your own stories are archived automatically.'},

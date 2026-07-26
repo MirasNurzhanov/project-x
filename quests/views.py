@@ -1,131 +1,153 @@
-from django.db.models import F, Q
+import random
+from datetime import timedelta
+
 from django.utils import timezone
 from rest_framework import permissions, status
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from friends.models import FriendRequest
-from proximity.utils import haversine
+from users import visibility
 from users.models import User
-from .models import Quest, UserAuraPoints, UserQuest
-from .serializers import LeaderboardEntrySerializer, QuestSerializer
+from .attestation import attest_submission
+from .content import DAILY_OFFER_COUNT
+from .ledger import current_week_start, weekly_rank_for, weekly_standings
+from .models import Quest, QuestProof, UserAuraPoints, UserQuest
+from .proof import MAX_IMAGE_BYTES, capture_time_ok, extract_exif, quest_window
+from .serializers import QuestSerializer
 from .utils import _is_reset_due
-
-# Specific titles/descriptions for every seeded interest.
-# Keys must match Interest.name exactly (case-sensitive).
-_INTEREST_LABELS = {
-    'Music':                 ('Jam with a music lover nearby',        'Meet a music-loving friend in person this week.'),
-    'Guitar':                ('Strum with a guitarist nearby',        'Meet a guitarist friend in person this week.'),
-    'DJing':                 ('Drop beats with a DJ nearby',          'Meet a DJ friend in person this week.'),
-    'Singing':               ('Sing with a fellow vocalist nearby',   'Meet a singing friend in person this week.'),
-    'Football':              ('Meet a football fan nearby',           'Meet a football-loving friend in person this week.'),
-    'Basketball':            ('Shoot hoops together nearby',          'Meet a basketball friend in person this week.'),
-    'Tennis':                ('Hit the court with a tennis fan',      'Meet a tennis friend in person this week.'),
-    'Swimming':              ('Swim with a swimming buddy nearby',    'Meet a swimming friend in person this week.'),
-    'Cycling':               ('Ride with a cycling friend nearby',    'Meet a cycling friend in person this week.'),
-    'Skateboarding':         ('Skate with a fellow skater nearby',    'Meet a skateboarding friend in person this week.'),
-    'Gaming':                ('Game with a gaming friend nearby',     'Meet a gaming friend in person this week.'),
-    'Esports':               ('Watch esports with a fan nearby',      'Meet an esports fan in person this week.'),
-    'Board Games':           ('Play board games together nearby',     'Meet a board-games friend in person this week.'),
-    'Drawing':               ('Draw with a fellow artist nearby',     'Meet a drawing friend in person this week.'),
-    'Painting':              ('Paint with a fellow artist nearby',    'Meet a painting friend in person this week.'),
-    'Sculpting':             ('Sculpt with a friend nearby',          'Meet a sculpting friend in person this week.'),
-    'Street Art':            ('Create street art together nearby',    'Meet a street-art friend in person this week.'),
-    'Coding':                ('Hack with a fellow coder nearby',      'Meet a coding friend in person this week.'),
-    'AI & Machine Learning': ('Geek out over AI together nearby',     'Meet an AI-enthusiast friend in person this week.'),
-    'Robotics':              ('Build robots with a friend nearby',    'Meet a robotics friend in person this week.'),
-    '3D Printing':           ('3D print something together nearby',   'Meet a 3D-printing friend in person this week.'),
-    'Travel':                ('Explore with a travel buddy nearby',   'Meet a travel-loving friend in person this week.'),
-    'Hiking':                ('Hit the trail with a hiker nearby',    'Meet a hiking friend in person this week.'),
-    'Backpacking':           ('Backpack with an adventurer nearby',   'Meet a backpacking friend in person this week.'),
-    'Road Trips':            ('Plan a road trip with a friend',       'Meet a road-trip friend in person this week.'),
-    'Cooking':               ('Cook a meal with a foodie nearby',     'Meet a cooking friend in person this week.'),
-    'Baking':                ('Bake something with a friend nearby',  'Meet a baking friend in person this week.'),
-    'Coffee':                ('Grab a coffee with a coffee fan',      'Meet a coffee-loving friend in person this week.'),
-    'Street Food':           ('Explore street food together nearby',  'Meet a street-food friend in person this week.'),
-    'Gym & Weightlifting':   ('Train with a gym buddy nearby',        'Meet a gym friend in person this week.'),
-    'Yoga':                  ('Flow through yoga together nearby',    'Meet a yoga friend in person this week.'),
-    'Running':               ('Run with a running buddy nearby',      'Meet a running friend in person this week.'),
-    'Martial Arts':          ('Train martial arts together nearby',   'Meet a martial-arts friend in person this week.'),
-    'Photography':           ('Shoot photos with a photographer',     'Meet a photography friend in person this week.'),
-    'Videography':           ('Film something together nearby',       'Meet a videography friend in person this week.'),
-    'Film Photography':      ('Shoot film together nearby',           'Meet a film-photography friend in person this week.'),
-    'Movies':                ('Watch a movie together nearby',        'Meet a movie-loving friend in person this week.'),
-    'Anime':                 ('Watch anime together nearby',          'Meet an anime fan in person this week.'),
-    'Documentaries':         ('Watch a documentary together nearby',  'Meet a documentary fan in person this week.'),
-}
-
-
-def _quest_labels_for(interest_name):
-    if interest_name in _INTEREST_LABELS:
-        return _INTEREST_LABELS[interest_name]
-    return (
-        f'Meet a {interest_name} fan nearby',
-        f'Meet a friend who loves {interest_name} in person this week.',
-    )
 
 
 class LeaderboardView(APIView):
+    """Weekly, global. Points come from the PointEvent ledger, which only
+    receives leaderboard-eligible entries when a moderator approves a photo
+    proof — pending and rejected proofs contribute nothing, and a revoked
+    approval nets back out of the same week."""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        top = list(
-            UserAuraPoints.objects.select_related('user')
-            .order_by('-total_points', 'user__date_joined')[:50]
-        )
-        ranks = {entry.pk: i for i, entry in enumerate(top, start=1)}
-        serializer = LeaderboardEntrySerializer(top, many=True, context={'ranks': ranks})
+        week_start = current_week_start()
 
-        my_aura = UserAuraPoints.objects.filter(user=request.user).first()
-        my_points = my_aura.total_points if my_aura else 0
-        my_rank = UserAuraPoints.objects.filter(total_points__gt=my_points).count() + 1
+        # Anyone who opted out of public rankings, plus both directions of a
+        # block, is dropped before the top-N cut so the board has no gaps.
+        hidden_ids = visibility.blocked_ids_for(request.user) | set(
+            User.objects.filter(show_on_leaderboard=False).values_list('pk', flat=True)
+        )
+        rows = weekly_standings(week_start, exclude_user_ids=hidden_ids)
+
+        users = User.objects.filter(pk__in=[r['user_id'] for r in rows]).only(
+            'id', 'username', 'profile_picture'
+        )
+        by_id = {u.pk: u for u in users}
+
+        leaderboard = []
+        for rank, row in enumerate(rows, start=1):
+            user = by_id.get(row['user_id'])
+            if user is None:
+                continue
+            leaderboard.append({
+                'rank': rank,
+                'username': user.username,
+                'profile_picture': user.profile_picture.url if user.profile_picture else None,
+                'total_points': row['total'],
+            })
+
+        my_rank, my_points = weekly_rank_for(request.user, week_start, hidden_ids)
 
         return Response({
+            'period': 'weekly',
+            'scope': 'global',
+            'period_start': week_start.isoformat(),
+            'period_end': (week_start + timedelta(days=6)).isoformat(),
             'my_rank': my_rank,
-            'leaderboard': serializer.data,
+            'my_points': my_points,
+            'leaderboard': leaderboard,
         })
 
 
 class QuestListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    @staticmethod
+    def _daily_offer(user):
+        """Today's daily quests for this user: a stable pseudo-random sample
+        of their interest pool, fixed for the whole day so the list does not
+        reshuffle between refreshes.
+
+        Anything they already submitted a proof for today stays in the list
+        even if it was not drawn — otherwise a quest would vanish while its
+        photo was still under review and the user would never see the verdict.
+        """
+        today = timezone.localdate()
+
+        pool = list(
+            Quest.objects
+            .filter(quest_type=Quest.QuestType.DAILY, interest__in=user.interests.all())
+            .order_by('pk')
+        )
+        if len(pool) > DAILY_OFFER_COUNT:
+            rng = random.Random(f'{user.pk}:{today.isoformat()}')
+            offered = rng.sample(pool, DAILY_OFFER_COUNT)
+        else:
+            offered = pool
+
+        engaged = Quest.objects.filter(
+            quest_type=Quest.QuestType.DAILY,
+            pk__in=QuestProof.objects.filter(
+                user=user, window_start=today,
+            ).values('quest_id'),
+        )
+
+        by_id = {q.pk: q for q in offered}
+        for quest in engaged:
+            by_id.setdefault(quest.pk, quest)
+        return sorted(by_id.values(), key=lambda q: q.pk)
+
     def get(self, request):
         user = request.user
 
-        # Regular quests (not interest-linked)
-        regular_quests = list(Quest.objects.filter(interest__isnull=True))
+        # Weeklies are interest-agnostic: everyone gets the same ten, so the
+        # weekly leaderboard offers every player the same ceiling.
+        weekly_quests = list(
+            Quest.objects.filter(quest_type=Quest.QuestType.WEEKLY, interest__isnull=True)
+        )
 
-        # One quest per user interest, created lazily on first access
-        interest_quests = []
-        for interest in user.interests.all():
-            title, description = _quest_labels_for(interest.name)
-            quest, _ = Quest.objects.get_or_create(
-                condition_type=Quest.ConditionType.MEET_FRIEND_IN_PERSON,
-                interest=interest,
-                defaults={
-                    'title': title,
-                    'description': description,
-                    'reward_points': 150,
-                    'quest_type': Quest.QuestType.WEEKLY,
-                },
-            )
-            interest_quests.append(quest)
+        # Dailies are drawn from the pool of quests for the user's interests —
+        # a fixed number per day, rotating deterministically. Offering the
+        # whole pool would both flood the screen and hand users with many
+        # interests a far higher daily ceiling than everyone else.
+        daily_quests = self._daily_offer(user)
 
-        all_quests = regular_quests + interest_quests
+        all_quests = daily_quests + weekly_quests
         user_quests = {
             uq.quest_id: uq
             for uq in UserQuest.objects.filter(user=user, quest__in=all_quests)
         }
+        # Latest proof per quest so cards can show pending/rejected states.
+        # Ordered ascending: the last write per quest_id wins.
+        latest_proofs = {}
+        for proof in QuestProof.objects.filter(user=user, quest__in=all_quests).order_by('submitted_at'):
+            latest_proofs[proof.quest_id] = proof
         aura = UserAuraPoints.objects.filter(user=user).first()
-        serializer = QuestSerializer(all_quests, many=True, context={'user_quests': user_quests})
+        serializer = QuestSerializer(
+            all_quests, many=True,
+            context={'user_quests': user_quests, 'latest_proofs': latest_proofs},
+        )
         return Response({
             'total_points': aura.total_points if aura else 0,
             'quests': serializer.data,
         })
 
 
-class CompleteQuestView(APIView):
+class SubmitProofView(APIView):
+    """POST a camera photo as proof of quest completion.
+
+    The submission only creates a PENDING QuestProof — no points move until a
+    moderator approves it. The server records its own received-at time and
+    extracts EXIF from the uploaded bytes; client metadata is never trusted.
+    """
     permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, pk):
         try:
@@ -133,108 +155,71 @@ class CompleteQuestView(APIView):
         except Quest.DoesNotExist:
             return Response({'detail': 'Quest not found.'}, status=status.HTTP_404_NOT_FOUND)
 
-        user_quest, _ = UserQuest.objects.get_or_create(user=request.user, quest=quest)
+        image = request.FILES.get('image')
+        if image is None:
+            return Response({'detail': 'image is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if image.size > MAX_IMAGE_BYTES:
+            return Response({'detail': 'Image is too large (max 15 MB).'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if user_quest.completed and not _is_reset_due(user_quest):
+        now = timezone.now()
+        window_start, _window_end = quest_window(quest, now)
+
+        user_quest = UserQuest.objects.filter(user=request.user, quest=quest).first()
+        if user_quest and user_quest.completed and not _is_reset_due(user_quest):
             return Response(
                 {'detail': 'Quest already completed for this period.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        now = timezone.now()
-        user_quest.completed = True
-        user_quest.completed_at = now
-        user_quest.reset_date = timezone.localdate()
-        user_quest.save(update_fields=['completed', 'completed_at', 'reset_date'])
-
-        aura, _ = UserAuraPoints.objects.get_or_create(user=request.user)
-        UserAuraPoints.objects.filter(pk=aura.pk).update(total_points=F('total_points') + quest.reward_points)
-        aura.refresh_from_db()
-
-        return Response({
-            'detail': 'Quest completed.',
-            'reward_points': quest.reward_points,
-            'total_points': aura.total_points,
-        }, status=status.HTTP_200_OK)
-
-
-MEETUP_RADIUS_KM = 0.1  # 100 m
-
-
-def _complete_quest_for_user(user, quest, now):
-    user_quest, _ = UserQuest.objects.get_or_create(user=user, quest=quest)
-    if user_quest.completed and not _is_reset_due(user_quest):
-        return False
-    user_quest.completed = True
-    user_quest.completed_at = now
-    user_quest.reset_date = timezone.localdate()
-    user_quest.save(update_fields=['completed', 'completed_at', 'reset_date'])
-    aura, _ = UserAuraPoints.objects.get_or_create(user=user)
-    UserAuraPoints.objects.filter(pk=aura.pk).update(total_points=F('total_points') + quest.reward_points)
-    return True
-
-
-class VerifyMeetupView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request, pk):
-        try:
-            quest = Quest.objects.get(pk=pk)
-        except Quest.DoesNotExist:
-            return Response({'detail': 'Quest not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        if quest.condition_type != Quest.ConditionType.MEET_FRIEND_IN_PERSON:
+        if QuestProof.objects.filter(
+            user=request.user, quest=quest, status=QuestProof.Status.PENDING,
+        ).exists():
             return Response(
-                {'detail': 'This quest does not support meetup verification.'},
+                {'detail': 'You already have a proof under review for this quest.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        exif, error = extract_exif(image)
+        if error:
+            return Response({'detail': error}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not capture_time_ok(exif['capture_time'], window_start, now):
+            return Response(
+                {'detail': 'This photo was taken outside the quest window. '
+                           'Take a fresh photo with your camera to complete the quest.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        friend_id = request.data.get('friend_id')
-        if not friend_id:
-            return Response({'detail': 'friend_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            friend = User.objects.get(pk=friend_id)
-        except User.DoesNotExist:
-            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        is_friends = FriendRequest.objects.filter(
-            status=FriendRequest.Status.ACCEPTED,
-        ).filter(
-            Q(sender=request.user, receiver=friend) | Q(sender=friend, receiver=request.user)
-        ).exists()
-        if not is_friends:
+        # EXIF cannot tell a camera shot from a gallery pick. Device
+        # attestation can: it proves the request came from a genuine,
+        # unmodified build, and a genuine build has no gallery path here.
+        attestation = attest_submission(request.user, request.data)
+        if attestation.blocks_submission:
             return Response(
-                {'detail': 'You are not friends with this user.'},
+                {'detail': 'This device could not be verified, so the photo was not accepted. '
+                           'Make sure you are using the official app on an unmodified device.',
+                 'attestation_status': attestation.status},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        user = request.user
-        if None in (user.latitude, user.longitude, friend.latitude, friend.longitude):
-            return Response(
-                {'detail': 'Both users must have their location set.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        dist_km = haversine(
-            float(user.latitude), float(user.longitude),
-            float(friend.latitude), float(friend.longitude),
+        proof = QuestProof.objects.create(
+            user=request.user,
+            quest=quest,
+            image=image,
+            window_start=timezone.localdate(window_start),
+            exif_capture_time=exif['capture_time'],
+            exif_latitude=exif['latitude'],
+            exif_longitude=exif['longitude'],
+            exif_data=exif['raw'],
+            attestation_status=attestation.status,
+            attestation_platform=attestation.platform,
+            attestation_detail=attestation.detail,
         )
-        if dist_km > MEETUP_RADIUS_KM:
-            return Response(
-                {'detail': f'Too far apart ({round(dist_km * 1000)}m). Must be within 100m.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        now = timezone.now()
-        completed_for_requester = _complete_quest_for_user(user, quest, now)
-        completed_for_friend = _complete_quest_for_user(friend, quest, now)
 
         return Response({
-            'detail': 'Meetup verified.',
-            'quest': quest.title,
-            'reward_points': quest.reward_points,
-            'distance_m': round(dist_km * 1000),
-            'completed_for_you': completed_for_requester,
-            'completed_for_friend': completed_for_friend,
-        }, status=status.HTTP_200_OK)
+            'detail': 'Proof submitted — pending review.',
+            'proof_id': proof.pk,
+            'status': proof.status,
+            'submitted_at': proof.submitted_at.isoformat(),
+            'attestation_status': proof.attestation_status,
+        }, status=status.HTTP_201_CREATED)

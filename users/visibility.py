@@ -1,0 +1,330 @@
+"""The single place where "can A see B, and which of B's fields" is decided.
+
+Every endpoint that returns another user's data starts from `visible_users()`
+and asks `can_view()` before emitting a field. Blocking, private accounts,
+paused location sharing and the per-field audiences are all applied here, so a
+new endpoint cannot accidentally skip one of them by forgetting a filter.
+
+Two rules the callers rely on:
+  * A hidden field is *absent* from the response, never present-and-empty.
+  * A user you cannot see is indistinguishable from a user who does not exist —
+    same 404, same body. Use `not_found()`.
+"""
+import hashlib
+import math
+from decimal import Decimal
+
+from django.db.models import Q
+from rest_framework import status
+from rest_framework.response import Response
+
+# ─── Relationship tiers ───────────────────────────────────────────────────────
+SELF = 'self'
+FRIEND = 'friend'
+CONNECTED = 'connected'
+STRANGER = 'stranger'
+BLOCKED = 'blocked'
+
+#: Per-field visibility setting backing each logical field name.
+FIELD_SETTINGS = {
+    'interests': 'visibility_interests',
+    'stories': 'visibility_stories',
+    'stats': 'visibility_stats',
+    'zone_audio': 'visibility_zone_audio',
+    'connections': 'visibility_connections',
+    'links': 'visibility_links',
+}
+
+
+# ─── Blocking ─────────────────────────────────────────────────────────────────
+def blocked_ids_for(user):
+    """Every user id involved in a block with `user`, in either direction.
+
+    Blocking is mutually invisible: the blocked user must not be able to tell
+    they were blocked, so both sides are filtered identically.
+    """
+    from friends.models import BlockedUser
+
+    return set(
+        BlockedUser.objects.filter(blocker=user).values_list('blocked_id', flat=True)
+    ) | set(
+        BlockedUser.objects.filter(blocked=user).values_list('blocker_id', flat=True)
+    )
+
+
+# ─── Relationships ────────────────────────────────────────────────────────────
+def relationship_map(viewer, target_ids):
+    """{user_id: tier} for the given ids, in a fixed number of queries."""
+    from friends.models import BlockedUser, FriendRequest, HiRequest
+
+    target_ids = set(target_ids)
+    if not target_ids:
+        return {}
+
+    result = {tid: STRANGER for tid in target_ids}
+    result[viewer.pk] = SELF
+
+    for s, r in HiRequest.objects.filter(
+        status=HiRequest.Status.ACCEPTED,
+    ).filter(
+        Q(sender=viewer, receiver_id__in=target_ids)
+        | Q(receiver=viewer, sender_id__in=target_ids)
+    ).values_list('sender_id', 'receiver_id'):
+        other = r if s == viewer.pk else s
+        result[other] = CONNECTED
+
+    # Friendship outranks a plain connection, so it is applied second.
+    for s, r in FriendRequest.objects.filter(
+        status=FriendRequest.Status.ACCEPTED,
+    ).filter(
+        Q(sender=viewer, receiver_id__in=target_ids)
+        | Q(receiver=viewer, sender_id__in=target_ids)
+    ).values_list('sender_id', 'receiver_id'):
+        other = r if s == viewer.pk else s
+        result[other] = FRIEND
+
+    # A block overrides everything above it.
+    for blocker, blocked in BlockedUser.objects.filter(
+        Q(blocker=viewer, blocked_id__in=target_ids)
+        | Q(blocked=viewer, blocker_id__in=target_ids)
+    ).values_list('blocker_id', 'blocked_id'):
+        other = blocked if blocker == viewer.pk else blocker
+        result[other] = BLOCKED
+
+    return result
+
+
+def relationship(viewer, target):
+    target_id = getattr(target, 'pk', target)
+    if viewer.pk == target_id:
+        return SELF
+    return relationship_map(viewer, [target_id]).get(target_id, STRANGER)
+
+
+def is_approved_viewer(rel):
+    """Whether a private account opens up to someone at this tier."""
+    return rel in (SELF, FRIEND, CONNECTED)
+
+
+# ─── Queryset filter ──────────────────────────────────────────────────────────
+def visible_users(viewer, queryset=None, *, exclude_self=True,
+                  on_map=False, discoverable_by=None, leaderboard=False):
+    """Base queryset of users `viewer` is allowed to receive at all.
+
+    Always drops both directions of a block. The keyword flags add the
+    surface-specific rules:
+
+    on_map          — drop anyone who paused location sharing (proximity only)
+    discoverable_by — 'username' or 'interest'; drop anyone opted out of that
+                      search surface
+    leaderboard     — drop anyone who opted out of public rankings
+    """
+    from .models import User
+
+    qs = User.objects.all() if queryset is None else queryset
+    qs = qs.exclude(pk__in=blocked_ids_for(viewer))
+    if exclude_self:
+        qs = qs.exclude(pk=viewer.pk)
+    if on_map:
+        qs = qs.exclude(location_sharing=User.LocationSharing.PAUSED)
+    if discoverable_by == 'username':
+        qs = qs.filter(discoverable_by_username=True)
+    elif discoverable_by == 'interest':
+        qs = qs.filter(discoverable_by_interest=True)
+    elif discoverable_by is not None:
+        raise ValueError(f'unknown discovery surface: {discoverable_by!r}')
+    if leaderboard:
+        qs = qs.filter(show_on_leaderboard=True)
+    return qs
+
+
+# ─── Field-level checks ───────────────────────────────────────────────────────
+def can_view(viewer, target, field, rel=None):
+    """Whether `viewer` may receive `field` of `target`.
+
+    Order matters: block, then the private-account gate, then the field's own
+    audience. A private account hides every gated field from non-approved
+    viewers regardless of how permissive the individual settings are.
+    """
+    from .models import User
+
+    if rel is None:
+        rel = relationship(viewer, target)
+    if rel == SELF:
+        return True
+    if rel == BLOCKED:
+        return False
+    if target.is_private and not is_approved_viewer(rel):
+        return False
+
+    audience = getattr(target, FIELD_SETTINGS[field])
+    if audience == User.Audience.NOBODY:
+        return False
+    if audience == User.Audience.FRIENDS:
+        return rel == FRIEND
+    return True
+
+
+def approved_ids_for(viewer):
+    """(friend ids, approved ids) for `viewer`.
+
+    "Approved" is friends plus accepted Hi connections — the tier that opens a
+    private account. Blocked pairs are stripped from both sets.
+    """
+    from friends.models import FriendRequest, HiRequest
+
+    blocked = blocked_ids_for(viewer)
+
+    friend_ids = set()
+    for s, r in FriendRequest.objects.filter(
+        status=FriendRequest.Status.ACCEPTED,
+    ).filter(Q(sender=viewer) | Q(receiver=viewer)).values_list('sender_id', 'receiver_id'):
+        friend_ids.add(r if s == viewer.pk else s)
+
+    approved_ids = set(friend_ids)
+    for s, r in HiRequest.objects.filter(
+        status=HiRequest.Status.ACCEPTED,
+    ).filter(Q(sender=viewer) | Q(receiver=viewer)).values_list('sender_id', 'receiver_id'):
+        approved_ids.add(r if s == viewer.pk else s)
+
+    return friend_ids - blocked, approved_ids - blocked
+
+
+def visible_field_q(viewer, field, prefix='user'):
+    """Q selecting rows whose owner exposes `field` to `viewer`.
+
+    The SQL counterpart of `can_view`, for list endpoints that must filter on
+    somebody else's setting in the database instead of looping in Python.
+    `prefix` is the path from the row to its owning user.
+    """
+    from .models import User
+
+    setting = f'{prefix}__{FIELD_SETTINGS[field]}'
+    owner = f'{prefix}_id'
+    friend_ids, approved_ids = approved_ids_for(viewer)
+
+    q = Q(**{owner: viewer.pk})
+    q |= Q(**{setting: User.Audience.EVERYONE}) & (
+        Q(**{f'{prefix}__is_private': False}) | Q(**{f'{owner}__in': approved_ids})
+    )
+    # Friends are always approved, so the private gate is already satisfied.
+    q |= Q(**{setting: User.Audience.FRIENDS, f'{owner}__in': friend_ids})
+
+    # Blocks are excluded here rather than left to the caller. Callers today
+    # all happen to filter them separately, but this Q has to be safe on its
+    # own or the next endpoint to use it inherits a leak.
+    blocked = blocked_ids_for(viewer)
+    if blocked:
+        q &= ~Q(**{f'{owner}__in': blocked})
+    return q
+
+
+def can_surface_in_proximity(viewer, target, rel=None):
+    """Whether `target` may be shown to `viewer` as a proximity result.
+
+    Separate from `visible_users(on_map=True)` because the proximity surfaces
+    that outlive the moment — the encounter log, nearby notifications — are
+    read long after the row was written. A block or an opt-out that happened
+    since must still apply, so those lists filter on read rather than trusting
+    what was recorded.
+    """
+    from .models import User
+
+    if rel is None:
+        rel = relationship(viewer, target)
+    if rel == BLOCKED:
+        return False
+    if target.location_sharing == User.LocationSharing.PAUSED:
+        return False
+    if rel in (SELF, FRIEND, CONNECTED):
+        return True
+    # Strangers only ever found each other through shared interests.
+    return bool(target.discoverable_by_interest)
+
+
+def proximity_visible_ids(viewer, candidate_ids):
+    """The subset of `candidate_ids` that may surface to `viewer`, in two
+    queries regardless of list length."""
+    from .models import User
+
+    candidate_ids = {cid for cid in candidate_ids if cid is not None} - {viewer.pk}
+    if not candidate_ids:
+        return set()
+
+    rels = relationship_map(viewer, candidate_ids)
+    allowed = set()
+    for pk, sharing, discoverable in User.objects.filter(
+        pk__in=candidate_ids,
+    ).values_list('pk', 'location_sharing', 'discoverable_by_interest'):
+        rel = rels.get(pk, STRANGER)
+        if rel == BLOCKED or sharing == User.LocationSharing.PAUSED:
+            continue
+        if rel in (FRIEND, CONNECTED) or discoverable:
+            allowed.add(pk)
+    return allowed
+
+
+def minimal_only(viewer, target, rel=None):
+    """True when `target` is private and `viewer` has not been approved — the
+    caller should emit username + avatar and nothing else."""
+    if rel is None:
+        rel = relationship(viewer, target)
+    return bool(target.is_private) and not is_approved_viewer(rel)
+
+
+# ─── Approximate location ─────────────────────────────────────────────────────
+#: Side of the grid cell a fuzzed position is snapped to, in metres.
+APPROX_GRID_M = 500
+
+
+def snap_coordinates(user, lat, lon):
+    """Snap a position to a ~500m grid, deterministically.
+
+    Deterministic on purpose. Random jitter per request would let an observer
+    average many samples back down to the true point; snapping to a fixed cell
+    means every reading inside that cell returns the identical coordinate, so
+    repeated observation reveals nothing further. The per-user offset stops the
+    grid from being a global lattice whose cell centres are public knowledge.
+    """
+    lat = float(lat)
+    lon = float(lon)
+
+    digest = hashlib.sha256(f'aura-approx:{user.pk}'.encode()).digest()
+
+    lat_step = APPROX_GRID_M / 111_320.0
+    lat_off = (digest[0] / 255.0) * lat_step
+    snapped_lat = math.floor((lat - lat_off) / lat_step) * lat_step + lat_off + lat_step / 2
+
+    # Longitude spacing is derived from the *snapped* latitude, not the raw
+    # one. Using the raw value would make the longitude grid drift as the user
+    # moved north or south, so the fuzzed point would wobble inside its cell
+    # and repeated samples would average back towards the truth.
+    lon_step = APPROX_GRID_M / (111_320.0 * max(math.cos(math.radians(snapped_lat)), 0.01))
+    lon_off = (digest[1] / 255.0) * lon_step
+    snapped_lon = math.floor((lon - lon_off) / lon_step) * lon_step + lon_off + lon_step / 2
+
+    return (
+        Decimal(f'{max(-90.0, min(90.0, snapped_lat)):.8f}'),
+        Decimal(f'{max(-180.0, min(180.0, snapped_lon)):.8f}'),
+    )
+
+
+def store_coordinates(user, lat, lon):
+    """Apply the user's location-sharing mode and return what to persist.
+
+    Approximate users never have a precise position written to the database —
+    the fuzzing happens before storage, not on the way out, so a future
+    endpoint that reads `user.latitude` directly cannot leak it.
+    """
+    from .models import User
+
+    if user.location_sharing == User.LocationSharing.APPROXIMATE:
+        return snap_coordinates(user, lat, lon)
+    return Decimal(str(lat)), Decimal(str(lon))
+
+
+# ─── Uniform "you cannot see this" ────────────────────────────────────────────
+def not_found():
+    """Identical to a genuine missing row, so absence and invisibility cannot
+    be told apart."""
+    return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)

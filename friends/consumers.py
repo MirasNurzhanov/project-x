@@ -69,6 +69,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._send_error('content is required.')
             return
 
+        # Re-check on every message: a block placed after connect must stop an
+        # already-open socket, not just future connections.
+        if not await self._are_connected(self.user, self.other):
+            await self._send_error('You are not friends with this user.')
+            await self.close(code=4003)
+            return
+
         message = await self._save_message(content)
         await self.channel_layer.group_send(
             self.room_group,

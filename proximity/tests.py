@@ -34,11 +34,14 @@ class NearbyZoneAudioTests(TestCase):
         self.assertEqual(response.status_code, 200)
         return {entry['id']: entry for entry in response.json()}
 
+    # The zone fields are now omitted entirely rather than sent as null, so a
+    # modified client has nothing to notice. Asserting absence is the stronger
+    # check: a null would still tell the reader the field exists.
     def test_stranger_gets_no_zone_audio(self):
         entry = self._nearby_by_id()[self.other.pk]
         self.assertEqual(entry['relationship'], 'stranger')
-        self.assertIsNone(entry['zone_audio'])
-        self.assertIsNone(entry['zone_audio_url'])
+        self.assertNotIn('zone_audio', entry)
+        self.assertNotIn('zone_audio_url', entry)
         # Zone presence stays visible so the map can still draw the circle
         self.assertTrue(entry['zone_active'])
 
@@ -47,8 +50,8 @@ class NearbyZoneAudioTests(TestCase):
             sender=self.me, receiver=self.other, status=FriendRequest.Status.PENDING
         )
         entry = self._nearby_by_id()[self.other.pk]
-        self.assertIsNone(entry['zone_audio'])
-        self.assertIsNone(entry['zone_audio_url'])
+        self.assertNotIn('zone_audio', entry)
+        self.assertNotIn('zone_audio_url', entry)
 
     def test_connected_via_hi_gets_no_zone_audio(self):
         HiRequest.objects.create(
@@ -56,8 +59,8 @@ class NearbyZoneAudioTests(TestCase):
         )
         entry = self._nearby_by_id()[self.other.pk]
         self.assertEqual(entry['relationship'], 'connected')
-        self.assertIsNone(entry['zone_audio'])
-        self.assertIsNone(entry['zone_audio_url'])
+        self.assertNotIn('zone_audio', entry)
+        self.assertNotIn('zone_audio_url', entry)
 
     def test_friend_gets_zone_audio(self):
         FriendRequest.objects.create(

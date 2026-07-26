@@ -27,13 +27,21 @@ def notify_nearby_match(user, nearby_user, distance_km: float):
     Create a NEARBY_USER notification for both users.
     Skipped if the same pair was already notified within the cooldown window.
     """
+    from users.visibility import can_surface_in_proximity
+
     cutoff = timezone.now() - timedelta(minutes=NEARBY_COOLDOWN_MINUTES)
 
+    # This writes to *both* accounts, but only one direction was checked by the
+    # caller's queryset. Without the second check, someone who opted out of
+    # interest discovery would still be announced to a stranger the moment that
+    # stranger moved.
     pairs = [
         (user, nearby_user, nearby_user.username),
         (nearby_user, user, user.username),
     ]
     for recipient, sender, sender_name in pairs:
+        if not can_surface_in_proximity(recipient, sender):
+            continue
         already_notified = Notification.objects.filter(
             recipient=recipient,
             sender=sender,

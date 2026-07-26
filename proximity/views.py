@@ -3,8 +3,9 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db.models import Q
+from users import visibility
 from users.models import User
-from friends.models import BlockedUser, FriendRequest, HiRequest
+from friends.models import FriendRequest, HiRequest
 from .serializers import LocationUpdateSerializer, NearbyUserSerializer
 from .utils import haversine
 from notifications.utils import notify_nearby_match
@@ -74,7 +75,7 @@ def _get_relationship_ids(user, excluded_ids):
 def _trigger_nearby_notifications(user):
     if user.latitude is None or user.longitude is None:
         return
-    if user.privacy_mode == 'invisible':
+    if user.location_sharing == User.LocationSharing.PAUSED:
         return
 
     lat = float(user.latitude)
@@ -82,20 +83,11 @@ def _trigger_nearby_notifications(user):
     lat_delta = DEFAULT_RADIUS_KM / 111.0
     lon_delta = DEFAULT_RADIUS_KM / (111.0 * math.cos(math.radians(lat)))
 
-    blocked_others = BlockedUser.objects.filter(blocker=user).values('blocked_id')
-    blocked_me = BlockedUser.objects.filter(blocked=user).values('blocker_id')
-
-    candidates = (
-        User.objects.filter(
-            latitude__isnull=False,
-            longitude__isnull=False,
-            privacy_mode__in=['active', 'ghost'],
-            latitude__range=(lat - lat_delta, lat + lat_delta),
-            longitude__range=(lon - lon_delta, lon + lon_delta),
-        )
-        .exclude(pk=user.pk)
-        .exclude(pk__in=blocked_others)
-        .exclude(pk__in=blocked_me)
+    candidates = visibility.visible_users(user, on_map=True).filter(
+        latitude__isnull=False,
+        longitude__isnull=False,
+        latitude__range=(lat - lat_delta, lat + lat_delta),
+        longitude__range=(lon - lon_delta, lon + lon_delta),
     )
 
     if user.age_tier:
@@ -103,7 +95,10 @@ def _trigger_nearby_notifications(user):
 
     user_interest_ids = list(user.interests.values_list('id', flat=True))
     if user_interest_ids:
-        candidates = candidates.filter(interests__in=user_interest_ids).distinct()
+        # Interest matching only reaches people who are findable that way.
+        candidates = candidates.filter(
+            interests__in=user_interest_ids, discoverable_by_interest=True,
+        ).distinct()
 
     for candidate in candidates:
         dist = round(haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
@@ -119,8 +114,13 @@ class UpdateLocationView(APIView):
         serializer = LocationUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = request.user
-        user.latitude = serializer.validated_data['latitude']
-        user.longitude = serializer.validated_data['longitude']
+        # The client fuzzes too, but it is not trusted to: on Approximate the
+        # precise value is discarded here, before anything is written.
+        user.latitude, user.longitude = visibility.store_coordinates(
+            user,
+            serializer.validated_data['latitude'],
+            serializer.validated_data['longitude'],
+        )
         user.save(update_fields=['latitude', 'longitude', 'updated_at'])
         _trigger_nearby_notifications(user)
         check_and_complete_quest(user, 'update_location')
@@ -134,7 +134,7 @@ class NearbyUsersView(APIView):
         delete_old_encounters()
         user = request.user
 
-        if user.privacy_mode == 'invisible':
+        if user.location_sharing == User.LocationSharing.PAUSED:
             return Response([])
 
         if user.latitude is None or user.longitude is None:
@@ -146,20 +146,15 @@ class NearbyUsersView(APIView):
         lat = float(user.latitude)
         lon = float(user.longitude)
 
-        blocked_others_ids = set(BlockedUser.objects.filter(blocker=user).values_list('blocked_id', flat=True))
-        blocked_me_ids = set(BlockedUser.objects.filter(blocked=user).values_list('blocker_id', flat=True))
-        blocked_ids = blocked_others_ids | blocked_me_ids
+        blocked_ids = visibility.blocked_ids_for(user)
 
         friend_ids, connected_ids = _get_relationship_ids(user, blocked_ids | {user.pk})
 
+        # Single chokepoint: blocks both ways and paused accounts are gone
+        # before any of the distance tiers below get to see the rows.
         base_qs = (
-            User.objects.filter(
-                latitude__isnull=False,
-                longitude__isnull=False,
-                privacy_mode__in=['active', 'ghost'],
-            )
-            .exclude(pk=user.pk)
-            .exclude(pk__in=blocked_ids)
+            visibility.visible_users(user, on_map=True)
+            .filter(latitude__isnull=False, longitude__isnull=False)
             .prefetch_related('interests')
         )
 
@@ -194,16 +189,22 @@ class NearbyUsersView(APIView):
             stranger_candidates = stranger_candidates.filter(age_tier=user.age_tier)
         user_interest_ids = list(user.interests.values_list('id', flat=True))
         if user_interest_ids:
-            stranger_candidates = stranger_candidates.filter(interests__in=user_interest_ids).distinct()
+            # Strangers are surfaced through shared interests, so opting out of
+            # interest discovery keeps you off strangers' maps.
+            stranger_candidates = stranger_candidates.filter(
+                interests__in=user_interest_ids, discoverable_by_interest=True,
+            ).distinct()
 
         distances = {}
         nearby = []
         seen = set()
 
+        # Distances are measured against whatever position is stored. For an
+        # Approximate user that is already the snapped point, so the number is
+        # coarse by construction rather than by being withheld.
         for candidate in friend_candidates:
-            dist = round(haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
-            if candidate.privacy_mode == 'active':
-                distances[candidate.pk] = dist
+            distances[candidate.pk] = round(
+                haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
             nearby.append(candidate)
             seen.add(candidate.pk)
 
@@ -212,8 +213,7 @@ class NearbyUsersView(APIView):
                 continue
             dist = round(haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
             if dist <= CONNECTED_RADIUS_KM:
-                if candidate.privacy_mode == 'active':
-                    distances[candidate.pk] = dist
+                distances[candidate.pk] = dist
                 nearby.append(candidate)
                 seen.add(candidate.pk)
 
@@ -222,8 +222,7 @@ class NearbyUsersView(APIView):
                 continue
             dist = round(haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
             if dist <= DEFAULT_RADIUS_KM:
-                if candidate.privacy_mode == 'active':
-                    distances[candidate.pk] = dist
+                distances[candidate.pk] = dist
                 nearby.append(candidate)
                 seen.add(candidate.pk)
 

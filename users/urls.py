@@ -1,6 +1,10 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from .views import RegisterView, LogoutView, ProfileView, PrivacySettingsView, PublicProfileView, UserSearchView, ZoneView, ZonePresetsView, DeleteAccountView, MeView
+from .views import (
+    RegisterView, LogoutView, ProfileView, PrivacySettingsView, PublicProfileView,
+    ProfileLinksView, ProfileLinkDetailView, UserSearchView, ZoneView,
+    ZonePresetsView, DeleteAccountView, MeView,
+)
 
 urlpatterns = [
     path('register/', RegisterView.as_view(), name='register'),
@@ -10,6 +14,8 @@ urlpatterns = [
     path('me/', MeView.as_view(), name='me'),
     path('profile/', ProfileView.as_view(), name='profile'),
     path('privacy/', PrivacySettingsView.as_view(), name='privacy'),
+    path('links/', ProfileLinksView.as_view(), name='profile-links'),
+    path('links/<int:link_id>/', ProfileLinkDetailView.as_view(), name='profile-link-detail'),
     path('zone/presets/', ZonePresetsView.as_view(), name='zone-presets'),
     path('zone/', ZoneView.as_view(), name='zone'),
     path('<int:user_id>/profile/', PublicProfileView.as_view(), name='public-profile'),

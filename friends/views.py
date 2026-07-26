@@ -8,6 +8,7 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from users import visibility
 from users.models import User
 from .models import BlockedUser, FriendRequest, HiRequest, Message
 from .serializers import BasicUserSerializer, FriendRequestSerializer, HiRequestSerializer, MessageSerializer
@@ -15,10 +16,21 @@ from quests.utils import check_and_complete_quest
 from notifications.utils import send_push_notification
 
 
-def _are_connected(user_a, user_b):
-    if BlockedUser.objects.filter(
+def _blocked_either_way(user_a, user_b):
+    return BlockedUser.objects.filter(
         Q(blocker=user_a, blocked=user_b) | Q(blocker=user_b, blocked=user_a)
-    ).exists():
+    ).exists()
+
+
+def _blocked_ids_for(user):
+    """All user ids involved in a block with `user`, in either direction.
+    Blocking is mutually invisible, so both sides get the same treatment.
+    Thin alias so there is exactly one definition of "blocked"."""
+    return visibility.blocked_ids_for(user)
+
+
+def _are_connected(user_a, user_b):
+    if _blocked_either_way(user_a, user_b):
         return False
     return HiRequest.objects.filter(
         status=HiRequest.Status.ACCEPTED,
@@ -47,9 +59,7 @@ class SendHiView(APIView):
         if receiver == request.user:
             return Response({'detail': 'You cannot send a Hi to yourself.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if BlockedUser.objects.filter(
-            Q(blocker=receiver, blocked=request.user) | Q(blocker=request.user, blocked=receiver)
-        ).exists():
+        if _blocked_either_way(request.user, receiver):
             return Response({'detail': 'Cannot send Hi to this user.'}, status=status.HTTP_403_FORBIDDEN)
 
         HiRequest.objects.filter(sender=request.user, receiver=receiver).delete()
@@ -65,6 +75,8 @@ class AcceptHiView(APIView):
 
     def post(self, request, pk):
         hi = get_object_or_404(HiRequest, pk=pk, receiver=request.user, status=HiRequest.Status.PENDING)
+        if _blocked_either_way(request.user, hi.sender):
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         hi.status = HiRequest.Status.ACCEPTED
         hi.save(update_fields=['status'])
         check_and_complete_quest(request.user, 'make_friend')
@@ -88,6 +100,8 @@ class IncomingHiRequestsView(APIView):
     def get(self, request):
         requests = HiRequest.objects.filter(
             receiver=request.user, status=HiRequest.Status.PENDING
+        ).exclude(
+            sender_id__in=_blocked_ids_for(request.user)
         ).select_related('sender')
         return Response(HiRequestSerializer(requests, many=True).data)
 
@@ -96,14 +110,10 @@ class FriendsListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        # Users I blocked → appear in Blocked tab only, not in connections/friends
-        i_blocked_ids = set(
-            BlockedUser.objects.filter(blocker=request.user).values_list('blocked_id', flat=True)
-        )
-        # Users who blocked me → shown in connections/friends with blocked_by=True
-        blocking_me_ids = set(
-            BlockedUser.objects.filter(blocked=request.user).values_list('blocker_id', flat=True)
-        )
+        # Blocking is mutually invisible: users I blocked AND users who blocked
+        # me disappear from connections/friends (and with them, the chat
+        # thread). No flag reveals which side placed the block.
+        hidden_ids = _blocked_ids_for(request.user)
 
         accepted_hi = HiRequest.objects.filter(
             status=HiRequest.Status.ACCEPTED,
@@ -114,7 +124,7 @@ class FriendsListView(APIView):
         connections = []
         for hi in accepted_hi:
             other = hi.receiver if hi.sender == request.user else hi.sender
-            if other.id not in i_blocked_ids:
+            if other.id not in hidden_ids:
                 connections.append(other)
 
         accepted_fr = FriendRequest.objects.filter(
@@ -126,7 +136,7 @@ class FriendsListView(APIView):
         friends = []
         for fr in accepted_fr:
             other = fr.receiver if fr.sender == request.user else fr.sender
-            if other.id not in i_blocked_ids:
+            if other.id not in hidden_ids:
                 friends.append(other)
 
         # Latest message and unread count per counterpart, for chat-list previews
@@ -163,7 +173,6 @@ class FriendsListView(APIView):
 
         def serialize_user(user):
             data = dict(BasicUserSerializer(user).data)
-            data['blocked_by'] = user.id in blocking_me_ids
             last = last_by_user.get(user.id)
             if last is not None:
                 data['last_message'] = last.content if last.content else '📷 Photo'
@@ -315,6 +324,20 @@ class BlockUserView(APIView):
         if not created:
             return Response({'detail': 'User is already blocked.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Pending requests between the pair make no sense once a block exists —
+        # drop them both ways. Accepted rows stay: the relationship is
+        # suspended by the visibility filters and comes back on unblock.
+        HiRequest.objects.filter(
+            status=HiRequest.Status.PENDING,
+        ).filter(
+            Q(sender=request.user, receiver=other) | Q(sender=other, receiver=request.user)
+        ).delete()
+        FriendRequest.objects.filter(
+            status=FriendRequest.Status.PENDING,
+        ).filter(
+            Q(sender=request.user, receiver=other) | Q(sender=other, receiver=request.user)
+        ).delete()
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -345,13 +368,11 @@ class SendFriendRequestView(APIView):
         if receiver == request.user:
             return Response({'detail': 'You cannot send a friend request to yourself.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        if _blocked_either_way(request.user, receiver):
+            return Response({'detail': 'Cannot send a friend request to this user.'}, status=status.HTTP_403_FORBIDDEN)
+
         if not _are_connected(request.user, receiver):
             return Response({'detail': 'You must be connected with this user first.'}, status=status.HTTP_403_FORBIDDEN)
-
-        if BlockedUser.objects.filter(
-            Q(blocker=receiver, blocked=request.user) | Q(blocker=request.user, blocked=receiver)
-        ).exists():
-            return Response({'detail': 'Cannot send a friend request to this user.'}, status=status.HTTP_403_FORBIDDEN)
 
         if _are_friends(request.user, receiver):
             return Response({'detail': 'You are already friends with this user.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -386,6 +407,8 @@ class AcceptFriendRequestView(APIView):
 
     def post(self, request, pk):
         fr = get_object_or_404(FriendRequest, pk=pk, receiver=request.user, status=FriendRequest.Status.PENDING)
+        if _blocked_either_way(request.user, fr.sender):
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         fr.status = FriendRequest.Status.ACCEPTED
         fr.save(update_fields=['status'])
         channel_layer = get_channel_layer()
@@ -416,6 +439,8 @@ class IncomingFriendRequestsView(APIView):
     def get(self, request):
         reqs = FriendRequest.objects.filter(
             receiver=request.user, status=FriendRequest.Status.PENDING
+        ).exclude(
+            sender_id__in=_blocked_ids_for(request.user)
         ).select_related('sender')
         return Response(FriendRequestSerializer(reqs, many=True).data)
 
@@ -426,6 +451,7 @@ class UnreadBreakdownView(APIView):
     def get(self, request):
         rows = (
             Message.objects.filter(receiver=request.user, is_read=False)
+            .exclude(sender_id__in=_blocked_ids_for(request.user))
             .values('sender__id', 'sender__username')
             .annotate(unread_count=Count('id'))
         )
@@ -443,5 +469,9 @@ class UnreadMessageCountView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        count = Message.objects.filter(receiver=request.user, is_read=False).count()
+        count = Message.objects.filter(
+            receiver=request.user, is_read=False
+        ).exclude(
+            sender_id__in=_blocked_ids_for(request.user)
+        ).count()
         return Response({'unread_count': count})
