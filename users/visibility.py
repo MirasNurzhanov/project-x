@@ -12,9 +12,11 @@ Two rules the callers rely on:
 """
 import hashlib
 import math
+from datetime import timedelta
 from decimal import Decimal
 
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 
@@ -33,6 +35,7 @@ FIELD_SETTINGS = {
     'zone_audio': 'visibility_zone_audio',
     'connections': 'visibility_connections',
     'links': 'visibility_links',
+    'presence': 'visibility_presence',
 }
 
 
@@ -270,6 +273,82 @@ def minimal_only(viewer, target, rel=None):
     if rel is None:
         rel = relationship(viewer, target)
     return bool(target.is_private) and not is_approved_viewer(rel)
+
+
+# ─── Presence ─────────────────────────────────────────────────────────────────
+#: How long after the last foreground beat a user still counts as online.
+#: The app beats about every 5s (the nav bar's badge poll runs on every
+#: authenticated screen), so this tolerates ~24 dropped beats before someone
+#: on a bad connection is called offline.
+ONLINE_WINDOW = timedelta(minutes=2)
+
+#: Motion older than this is discarded rather than shown. A stale "fast" would
+#: leave a trail behind someone who parked ten minutes ago.
+MOTION_WINDOW = timedelta(seconds=90)
+
+
+def is_online(target, now=None):
+    if target.last_seen is None:
+        return False
+    return (now or timezone.now()) - target.last_seen <= ONLINE_WINDOW
+
+
+def presence_for(viewer, target, rel=None, now=None):
+    """`{'is_online': ..., 'last_seen': ...}`, or None when it must not be shown.
+
+    None means the caller omits the key entirely. That distinction is the whole
+    point: rendering a grey "offline" dot for someone who is hiding would both
+    state something false and make hiding detectable, since they would read as
+    permanently offline. An absent key renders as no indicator at all.
+    """
+    from .models import User
+
+    if rel is None:
+        rel = relationship(viewer, target)
+    # Paused is the old Invisible: off the map, and not broadcasting that they
+    # are around either.
+    if target.location_sharing == User.LocationSharing.PAUSED and rel != SELF:
+        return None
+    if not can_view(viewer, target, 'presence', rel):
+        return None
+
+    now = now or timezone.now()
+    online = is_online(target, now)
+    return {
+        'is_online': online,
+        # Only useful once they are gone, and withheld while online so the
+        # payload cannot be used to track session boundaries minute by minute.
+        'last_seen': None if online or target.last_seen is None else target.last_seen.isoformat(),
+    }
+
+
+def motion_for(viewer, target, rel=None, now=None):
+    """Coarse motion class, or None when it must not be shown.
+
+    Strictly narrower than presence, on three counts:
+
+    * Approved tier only. "Someone nearby is online" is ambient; "that stranger
+      is in a vehicle heading that way" is a targeting primitive, so this never
+      reaches strangers regardless of the presence audience.
+    * Never while approximate. The position is snapped to a ~500m grid; a
+      directional trail across those cells would partly undo the fuzzing.
+    * Never when stale, and never when presence itself is hidden.
+    """
+    from .models import User
+
+    if rel is None:
+        rel = relationship(viewer, target)
+    if rel not in (SELF, FRIEND, CONNECTED):
+        return None
+    if target.location_sharing == User.LocationSharing.APPROXIMATE and rel != SELF:
+        return None
+    if presence_for(viewer, target, rel, now) is None:
+        return None
+    if target.motion_updated_at is None:
+        return None
+    if (now or timezone.now()) - target.motion_updated_at > MOTION_WINDOW:
+        return None
+    return target.motion_class
 
 
 # ─── Approximate location ─────────────────────────────────────────────────────

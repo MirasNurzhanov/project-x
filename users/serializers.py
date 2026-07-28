@@ -50,7 +50,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'location_sharing', 'privacy_mode', 'date_joined', 'aura_points', 'links',
             'is_private',
             'visibility_interests', 'visibility_stories', 'visibility_stats',
-            'visibility_zone_audio', 'visibility_connections',
+            'visibility_zone_audio', 'visibility_connections', 'visibility_presence',
             'show_on_leaderboard', 'discoverable_by_username', 'discoverable_by_interest',
             'zone_audio', 'zone_preset', 'zone_audio_url', 'zone_radius', 'zone_active',
             'push_token',
@@ -106,6 +106,10 @@ class PublicProfileSerializer(serializers.Serializer):
             'is_private': obj.is_private,
             'relationship': _pending_relationship(me, obj) or rel,
         }
+
+        presence = visibility.presence_for(me, obj, rel)
+        if presence is not None:
+            data['presence'] = presence
 
         # Minimal profile: username, avatar, and the action to ask for access.
         if visibility.minimal_only(me, obj, rel):
@@ -226,6 +230,9 @@ class UserSearchSerializer(serializers.ModelSerializer):
         rel = self.context.get('relationships', {}).get(obj.pk)
         if visibility.can_view(me, obj, 'interests', rel):
             data['interests'] = InterestSerializer(obj.interests.all(), many=True).data
+        presence = visibility.presence_for(me, obj, rel)
+        if presence is not None:
+            data['presence'] = presence
         return data
 
     def get_relationship_status(self, obj):
@@ -268,6 +275,7 @@ class PrivacySettingsSerializer(serializers.ModelSerializer):
             'visibility_zone_audio',
             'visibility_connections',
             'visibility_links',
+            'visibility_presence',
             'show_on_leaderboard',
             'discoverable_by_username',
             'discoverable_by_interest',

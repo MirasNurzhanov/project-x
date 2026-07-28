@@ -77,12 +77,42 @@ class User(AbstractUser):
     # Instagram link ties "stranger standing near me" to a real identity.
     visibility_links = models.CharField(
         max_length=8, choices=Audience.choices, default=Audience.FRIENDS)
+    # Presence is "am I around right now", not "where am I" — a separate axis
+    # from location_sharing on purpose, so pausing the map does not force you
+    # to look permanently offline to your friends, and vice versa.
+    visibility_presence = models.CharField(
+        max_length=8, choices=Audience.choices, default=Audience.FRIENDS)
 
     show_on_leaderboard = models.BooleanField(default=True)
     discoverable_by_username = models.BooleanField(default=True)
     discoverable_by_interest = models.BooleanField(default=True)
 
     push_token = models.CharField(max_length=200, blank=True, null=True)
+
+    # ── Presence ──────────────────────────────────────────────────────────────
+    # Deliberately *not* `updated_at`. That field is auto_now, so it moves on
+    # any save at all — a profile edit, a privacy change — and it never moves
+    # for someone with location sharing paused, who reports no position. It
+    # means "row last modified", which is not the same claim as "user is here".
+    #
+    # Written only by users.middleware.PresenceMiddleware, and only for
+    # requests the app marks as foreground. The background location task keeps
+    # hitting the API every 30s with the app closed; if any authenticated
+    # request counted, those users would read online forever.
+    last_seen = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    class MotionClass(models.TextChoices):
+        STATIONARY = 'stationary', 'Stationary'
+        MOVING = 'moving', 'Moving'
+        FAST = 'fast', 'Fast'
+
+    #: Coarse bucket only. Raw speed is never stored and never leaves the
+    #: server — see proximity.views.classify_speed for the thresholds. There is
+    #: deliberately no heading column: the client orients a trail from the
+    #: positions it has already observed, so no bearing exists here to leak.
+    motion_class = models.CharField(
+        max_length=10, choices=MotionClass.choices, default=MotionClass.STATIONARY)
+    motion_updated_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

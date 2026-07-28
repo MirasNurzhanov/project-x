@@ -48,6 +48,9 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # Last: runs after DRF has authenticated the request, so request.user is
+    # populated by the time it looks.
+    "users.middleware.PresenceMiddleware",
 ]
 
 ROOT_URLCONF = 'core.urls'
@@ -139,6 +142,9 @@ CORS_ALLOW_HEADERS = [
     'pragma',
     'x-csrftoken',
     'x-requested-with',
+    # Marks a request as coming from a foregrounded app, for the presence
+    # heartbeat. See users.middleware.
+    'x-aura-presence',
 ]
 
 SIMPLE_JWT = {

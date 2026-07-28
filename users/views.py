@@ -1,4 +1,5 @@
 from django.db.models import Max, Q
+from django.utils import timezone
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -58,9 +59,28 @@ class ProfileView(generics.RetrieveUpdateAPIView):
 
 
 class LogoutView(APIView):
+    """Revoke the session and stop the device being addressable.
+
+    Blacklisting the refresh token is the part that actually ends the session —
+    deleting it client-side only stops that client from using it, and it stays
+    valid for its full seven days for anyone else holding a copy.
+    """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
+        # Unconditionally, and before the token work: a signed-out device must
+        # stop receiving pushes even when the refresh token it sent is already
+        # expired or malformed — which is exactly the offline-retry case.
+        # Updated by pk so a stale in-memory user object cannot write it back.
+        User.objects.filter(pk=request.user.pk).update(
+            push_token=None,
+            # Signing out is leaving, not idling. Backdated rather than nulled,
+            # so "last seen" still reads correctly for friends.
+            last_seen=timezone.now() - visibility.ONLINE_WINDOW,
+            motion_class=User.MotionClass.STATIONARY,
+            motion_updated_at=None,
+        )
+
         try:
             token = RefreshToken(request.data['refresh'])
             token.blacklist()

@@ -171,18 +171,24 @@ class FriendsListView(APIView):
             )
             unread_map = {r['sender_id']: r['unread_count'] for r in unread_rows}
 
-        def serialize_user(user):
+        def serialize_user(user, rel):
             data = dict(BasicUserSerializer(user).data)
             last = last_by_user.get(user.id)
             if last is not None:
                 data['last_message'] = last.content if last.content else '📷 Photo'
                 data['last_message_at'] = last.created_at.isoformat()
             data['unread_count'] = unread_map.get(user.id, 0)
+            # The tier is already known from which list we are building, so it
+            # is passed in rather than re-derived per user — presence_for would
+            # otherwise run a relationship query per row.
+            presence = visibility.presence_for(request.user, user, rel)
+            if presence is not None:
+                data['presence'] = presence
             return data
 
         return Response({
-            'connections': [serialize_user(u) for u in connections],
-            'friends':     [serialize_user(u) for u in friends],
+            'connections': [serialize_user(u, visibility.CONNECTED) for u in connections],
+            'friends':     [serialize_user(u, visibility.FRIEND) for u in friends],
         })
 
 

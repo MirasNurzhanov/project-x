@@ -3,6 +3,7 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db.models import Q
+from django.utils import timezone
 from users import visibility
 from users.models import User
 from friends.models import FriendRequest, HiRequest
@@ -107,6 +108,33 @@ def _trigger_nearby_notifications(user):
             record_encounter(user, candidate, dist)
 
 
+#: Speed bucket edges in m/s. 2.2 m/s ≈ 8 km/h, above a walk; 8.0 m/s ≈ 29 km/h,
+#: which separates a cyclist from a vehicle well enough for a visual hint. The
+#: client applies hysteresis around these before reporting, so a user hovering
+#: at an edge does not flip class every tick.
+WALKING_MS = 2.2
+FAST_MS = 8.0
+
+
+def classify_speed(speed):
+    """Bucket a raw speed. Returns None when there is nothing to say.
+
+    The bucket is the only motion fact that survives this function: the raw
+    figure is not stored, so no endpoint can later leak a numeric speed.
+    """
+    from users.models import User
+
+    # expo-location reports -1 (or null) when it has no speed estimate — a cold
+    # fix, or a stationary device. Not the same as "measured as zero".
+    if speed is None or speed < 0:
+        return None
+    if speed >= FAST_MS:
+        return User.MotionClass.FAST
+    if speed >= WALKING_MS:
+        return User.MotionClass.MOVING
+    return User.MotionClass.STATIONARY
+
+
 class UpdateLocationView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -121,7 +149,15 @@ class UpdateLocationView(APIView):
             serializer.validated_data['latitude'],
             serializer.validated_data['longitude'],
         )
-        user.save(update_fields=['latitude', 'longitude', 'updated_at'])
+        fields = ['latitude', 'longitude', 'updated_at']
+
+        motion = classify_speed(serializer.validated_data.get('speed'))
+        if motion is not None:
+            user.motion_class = motion
+            user.motion_updated_at = timezone.now()
+            fields += ['motion_class', 'motion_updated_at']
+
+        user.save(update_fields=fields)
         _trigger_nearby_notifications(user)
         check_and_complete_quest(user, 'update_location')
         return Response({'latitude': str(user.latitude), 'longitude': str(user.longitude)})
