@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
-from users.visibility import proximity_visible_ids
+from users.visibility import blocked_ids_for, proximity_visible_ids
 from .models import Notification
 from .serializers import NotificationSerializer
 
@@ -13,13 +13,34 @@ class NotificationListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        qs = Notification.objects.filter(recipient=self.request.user)
-        # Filtered on read, not only on write: a notification names its
-        # sender, so blocking someone has to clear the ones already sitting in
-        # the list. Same for anyone who has since paused or opted out.
-        sender_ids = [pk for pk in qs.values_list('sender_id', flat=True) if pk]
-        allowed = proximity_visible_ids(self.request.user, sender_ids)
-        return qs.filter(Q(sender__isnull=True) | Q(sender_id__in=allowed))
+        user = self.request.user
+        qs = Notification.objects.filter(recipient=user).select_related('sender', 'story')
+
+        # Filtered on read, not only on write: a notification names its sender,
+        # so blocking someone has to clear the ones already sitting in the list.
+        #
+        # Which filter depends on the type. A proximity alert exists only
+        # because of where someone was, so it also has to answer to the
+        # location-sharing and interest-discovery settings as they stand now —
+        # someone who has since paused should stop appearing. A story alert is
+        # about something the sender deliberately did to content the recipient
+        # published; running it through the proximity rules would hide "@miras
+        # liked your story" from you because Miras turned off interest
+        # discovery. Blocks are the only gate that belongs on those.
+        proximity_types = [Notification.Type.NEARBY_USER]
+        sender_ids = [
+            pk for pk in qs.filter(notification_type__in=proximity_types)
+                           .values_list('sender_id', flat=True)
+            if pk
+        ]
+        allowed = proximity_visible_ids(user, sender_ids)
+        blocked = blocked_ids_for(user)
+
+        return qs.filter(
+            Q(sender__isnull=True)
+            | Q(notification_type__in=proximity_types, sender_id__in=allowed)
+            | ~Q(notification_type__in=proximity_types) & ~Q(sender_id__in=blocked)
+        )
 
 
 class MarkNotificationReadView(APIView):

@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
+from notifications.utils import notify_story_reaction
 from users import visibility
 from .models import SavedStory, Story, StoryReaction
 from .serializers import StorySerializer, StoryCreateSerializer, StoryReactionSerializer
@@ -154,11 +155,13 @@ class ReactToStoryView(APIView):
                     Story.objects.filter(pk=story.pk).update(likes_count=max(0, story.likes_count - 1))
                 elif reaction_type == StoryReaction.ReactionType.LIKE:
                     Story.objects.filter(pk=story.pk).update(likes_count=story.likes_count + 1)
+                notify_story_reaction(story, user, reaction_type)
                 return Response({'detail': 'Reaction updated.', 'user_reaction': reaction_type}, status=status.HTTP_200_OK)
         else:
             StoryReaction.objects.create(user=user, story=story, reaction=reaction_type)
             if reaction_type == StoryReaction.ReactionType.LIKE:
                 Story.objects.filter(pk=story.pk).update(likes_count=story.likes_count + 1)
+            notify_story_reaction(story, user, reaction_type)
             return Response({'detail': 'Reaction added.', 'user_reaction': reaction_type}, status=status.HTTP_201_CREATED)
 
 

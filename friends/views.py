@@ -1,3 +1,5 @@
+import json
+
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.db.models import Count, Q
@@ -13,7 +15,39 @@ from users.models import User
 from .models import BlockedUser, FriendRequest, HiRequest, Message
 from .serializers import BasicUserSerializer, FriendRequestSerializer, HiRequestSerializer, MessageSerializer
 from quests.utils import check_and_complete_quest
-from notifications.utils import send_push_notification
+from notifications.utils import notify_story_reply, send_push_notification
+from stories.models import Story
+
+# Story replies arrive as ordinary messages whose body is an encoded payload the
+# two apps round-trip through us. The server only needs the human comment out of
+# it — for the alert text and the push preview, both of which would otherwise
+# show the raw blob.
+STORY_REPLY_PREFIX = '§story-reply§'
+
+
+def _story_reply_comment(content):
+    """The human comment inside a story-reply payload, or `content` unchanged."""
+    if not content or not content.startswith(STORY_REPLY_PREFIX):
+        return content
+    try:
+        payload = json.loads(content[len(STORY_REPLY_PREFIX):])
+    except (ValueError, TypeError):
+        return ''
+    comment = payload.get('comment') if isinstance(payload, dict) else None
+    return comment if isinstance(comment, str) else ''
+
+
+def _replied_to_story(story_id, author):
+    """The story this message answers, or None. Only `author`'s own stories
+    qualify: a client naming someone else's story must not be able to post an
+    alert onto an unrelated author's feed."""
+    if not story_id:
+        return None
+    try:
+        story_id = int(story_id)
+    except (TypeError, ValueError):
+        return None
+    return Story.objects.filter(pk=story_id, user=author).first()
 
 
 def _blocked_either_way(user_a, user_b):
@@ -236,8 +270,18 @@ class MessagesView(APIView):
         )
 
         check_and_complete_quest(request.user, 'send_message')
-        preview = (content[:100] if content else '[image]')
-        send_push_notification(other, '💬 New message', f'@{request.user.username}: {preview}')
+
+        # A story reply is a normal DM carrying an encoded payload, plus a
+        # `story_id` naming what it answers. It gets a story alert instead of the
+        # generic message push — one interaction, one notification, and the
+        # author can trace it back to the story rather than reading the raw
+        # payload as a message preview.
+        story = _replied_to_story(request.data.get('story_id'), other)
+        if story is not None:
+            notify_story_reply(story, request.user, _story_reply_comment(content))
+        else:
+            preview = (_story_reply_comment(content) or '[image]') if content else '[image]'
+            send_push_notification(other, '💬 New message', f'@{request.user.username}: {preview[:100]}')
 
         room_group = f"chat_{min(request.user.pk, other.pk)}_{max(request.user.pk, other.pk)}"
         async_to_sync(get_channel_layer().group_send)(
