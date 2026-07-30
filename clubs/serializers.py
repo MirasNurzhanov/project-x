@@ -45,15 +45,36 @@ class ClubDetailSerializer(ClubSerializer):
 
 class ClubEventSerializer(serializers.ModelSerializer):
     created_by = BasicUserSerializer(read_only=True)
+    approved_by = BasicUserSerializer(read_only=True)
 
     class Meta:
         model = ClubEvent
-        fields = ('id', 'club', 'created_by', 'title', 'description', 'location_name', 'latitude', 'longitude', 'event_datetime', 'created_at')
+        fields = (
+            'id', 'club', 'created_by', 'title', 'description',
+            'location_name', 'latitude', 'longitude', 'event_datetime',
+            'status', 'approved_by', 'approved_at', 'expires_at', 'created_at',
+        )
+
+
+class ClubEventNearbySerializer(serializers.ModelSerializer):
+    created_by = BasicUserSerializer(read_only=True)
+    approved_by = BasicUserSerializer(read_only=True)
+    club_name = serializers.CharField(source='club.name', read_only=True)
+    club_emblem = serializers.ImageField(source='club.emblem', read_only=True)
+
+    class Meta:
+        model = ClubEvent
+        fields = (
+            'id', 'club', 'club_name', 'club_emblem', 'created_by',
+            'title', 'description', 'location_name', 'latitude', 'longitude',
+            'event_datetime', 'status', 'approved_by', 'approved_at', 'expires_at', 'created_at',
+        )
 
 
 class ClubMessageSerializer(serializers.ModelSerializer):
     sender = BasicUserSerializer(read_only=True)
+    event = ClubEventSerializer(read_only=True)
 
     class Meta:
         model = ClubMessage
-        fields = ('id', 'club', 'sender', 'content', 'image', 'message_type', 'created_at')
+        fields = ('id', 'club', 'sender', 'content', 'image', 'message_type', 'event', 'created_at')

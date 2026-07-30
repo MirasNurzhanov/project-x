@@ -12,5 +12,8 @@ urlpatterns = [
     path('<int:pk>/members/', views.ClubMembersView.as_view(), name='club-members'),
     path('<int:pk>/messages/', views.ClubMessageListView.as_view(), name='club-messages'),
     path('<int:pk>/events/', views.ClubEventListCreateView.as_view(), name='club-event-list-create'),
+    path('events/nearby/', views.ClubEventNearbyView.as_view(), name='club-event-nearby'),
     path('events/<int:event_id>/', views.ClubEventDetailView.as_view(), name='club-event-detail'),
+    path('events/<int:event_id>/approve/', views.ClubEventApproveView.as_view(), name='club-event-approve'),
+    path('events/<int:event_id>/reject/', views.ClubEventRejectView.as_view(), name='club-event-reject'),
 ]

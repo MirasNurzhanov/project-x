@@ -1,3 +1,6 @@
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+from datetime import timedelta
 from django.db import transaction
 from django.db.models import Count
 from django.shortcuts import get_object_or_404
@@ -9,7 +12,10 @@ from rest_framework.views import APIView
 
 from users.models import User
 from .models import Club, ClubEvent, ClubMember, ClubMessage
-from .serializers import ClubDetailSerializer, ClubEventSerializer, ClubMemberSerializer, ClubMessageSerializer, ClubSerializer
+from .serializers import (
+    ClubDetailSerializer, ClubEventNearbySerializer, ClubEventSerializer,
+    ClubMemberSerializer, ClubMessageSerializer, ClubSerializer,
+)
 
 
 def _get_membership(club, user):
@@ -184,7 +190,9 @@ class ClubEventListCreateView(APIView):
 
     def get(self, request, pk):
         club = get_object_or_404(Club, pk=pk)
-        events = club.events.filter(event_datetime__gte=timezone.now()).select_related('created_by')
+        if not club.members.filter(user=request.user).exists():
+            return Response({'detail': 'Members only.'}, status=status.HTTP_403_FORBIDDEN)
+        events = club.events.filter(event_datetime__gte=timezone.now()).select_related('created_by', 'approved_by')
         return Response(ClubEventSerializer(events, many=True).data)
 
     def post(self, request, pk):
@@ -200,17 +208,115 @@ class ClubEventListCreateView(APIView):
         if not event_datetime:
             return Response({'detail': 'event_datetime is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        event = ClubEvent.objects.create(
-            club=club,
-            created_by=request.user,
-            title=title,
-            description=request.data.get('description', '').strip(),
-            location_name=request.data.get('location_name', '').strip(),
-            latitude=request.data.get('latitude') or None,
-            longitude=request.data.get('longitude') or None,
-            event_datetime=event_datetime,
+        with transaction.atomic():
+            event = ClubEvent.objects.create(
+                club=club,
+                created_by=request.user,
+                title=title,
+                description=request.data.get('description', '').strip(),
+                location_name=request.data.get('location_name', '').strip(),
+                latitude=request.data.get('latitude') or None,
+                longitude=request.data.get('longitude') or None,
+                event_datetime=event_datetime,
+                status=ClubEvent.Status.PENDING,
+            )
+            message = ClubMessage.objects.create(
+                club=club,
+                sender=request.user,
+                content=f'Proposed a meetup: {title}',
+                message_type=ClubMessage.MessageType.MEETUP_PROPOSAL,
+                event=event,
+            )
+
+        async_to_sync(get_channel_layer().group_send)(
+            f'club_{club.pk}',
+            {
+                'type': 'club.message',
+                'id': message.id,
+                'sender_id': request.user.pk,
+                'sender_username': request.user.username,
+                'content': message.content,
+                'message_type': ClubMessage.MessageType.MEETUP_PROPOSAL,
+                'image_url': None,
+                'event_id': event.id,
+                'created_at': message.created_at.isoformat(),
+            },
         )
         return Response(ClubEventSerializer(event).data, status=status.HTTP_201_CREATED)
+
+
+class ClubEventApproveView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, event_id):
+        event = get_object_or_404(ClubEvent.objects.select_related('club'), pk=event_id)
+        if not event.club.members.filter(user=request.user, role=ClubMember.Role.OWNER).exists():
+            return Response({'detail': 'Only club owners can approve events.'}, status=status.HTTP_403_FORBIDDEN)
+        if event.status == ClubEvent.Status.APPROVED:
+            return Response({'detail': 'Event is already approved.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        now = timezone.now()
+        event.status = ClubEvent.Status.APPROVED
+        event.approved_by = request.user
+        event.approved_at = now
+        event.expires_at = now + timedelta(hours=24)
+        event.save(update_fields=['status', 'approved_by', 'approved_at', 'expires_at'])
+
+        async_to_sync(get_channel_layer().group_send)(
+            f'club_{event.club_id}',
+            {
+                'type': 'club.event_status',
+                'event_id': event.id,
+                'status': ClubEvent.Status.APPROVED,
+                'approved_at': event.approved_at.isoformat(),
+                'expires_at': event.expires_at.isoformat(),
+            },
+        )
+        return Response(ClubEventSerializer(event).data)
+
+
+class ClubEventRejectView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, event_id):
+        event = get_object_or_404(ClubEvent.objects.select_related('club'), pk=event_id)
+        if not event.club.members.filter(user=request.user, role=ClubMember.Role.OWNER).exists():
+            return Response({'detail': 'Only club owners can reject events.'}, status=status.HTTP_403_FORBIDDEN)
+        if event.status == ClubEvent.Status.REJECTED:
+            return Response({'detail': 'Event is already rejected.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        event.status = ClubEvent.Status.REJECTED
+        event.save(update_fields=['status'])
+
+        async_to_sync(get_channel_layer().group_send)(
+            f'club_{event.club_id}',
+            {
+                'type': 'club.event_status',
+                'event_id': event.id,
+                'status': ClubEvent.Status.REJECTED,
+                'approved_at': None,
+                'expires_at': None,
+            },
+        )
+        return Response(ClubEventSerializer(event).data)
+
+
+class ClubEventNearbyView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        now = timezone.now()
+        events = (
+            ClubEvent.objects
+            .filter(
+                status=ClubEvent.Status.APPROVED,
+                expires_at__gt=now,
+                club__members__user=request.user,
+            )
+            .select_related('club', 'created_by', 'approved_by')
+            .order_by('event_datetime')
+        )
+        return Response(ClubEventNearbySerializer(events, many=True).data)
 
 
 class ClubMessageListView(APIView):
@@ -257,7 +363,7 @@ class ClubEventDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, event_id):
-        event = get_object_or_404(ClubEvent.objects.select_related('created_by', 'club'), pk=event_id)
+        event = get_object_or_404(ClubEvent.objects.select_related('created_by', 'approved_by', 'club'), pk=event_id)
         return Response(ClubEventSerializer(event).data)
 
     def delete(self, request, event_id):

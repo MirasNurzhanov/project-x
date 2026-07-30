@@ -50,6 +50,11 @@ class ClubMember(models.Model):
 
 
 class ClubEvent(models.Model):
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        APPROVED = 'approved', 'Approved'
+        REJECTED = 'rejected', 'Rejected'
+
     club = models.ForeignKey(Club, on_delete=models.CASCADE, related_name='events')
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -62,6 +67,16 @@ class ClubEvent(models.Model):
     latitude = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True)
     longitude = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True)
     event_datetime = models.DateTimeField()
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='approved_club_events',
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -85,6 +100,13 @@ class ClubMessage(models.Model):
     content = models.TextField(blank=True)
     image = models.ImageField(upload_to='club_messages/', null=True, blank=True)
     message_type = models.CharField(max_length=20, choices=MessageType.choices, default=MessageType.TEXT)
+    event = models.ForeignKey(
+        ClubEvent,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='proposal_messages',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

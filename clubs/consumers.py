@@ -72,7 +72,17 @@ class ClubChatConsumer(AsyncWebsocketConsumer):
             'content': event['content'],
             'message_type': event['message_type'],
             'image_url': event.get('image_url'),
+            'event_id': event.get('event_id'),
             'created_at': event['created_at'],
+        }))
+
+    async def club_event_status(self, event):
+        await self.send(json.dumps({
+            'type': 'club_event_status',
+            'event_id': event['event_id'],
+            'status': event['status'],
+            'approved_at': event.get('approved_at'),
+            'expires_at': event.get('expires_at'),
         }))
 
     async def _send_error(self, detail):
