@@ -60,6 +60,12 @@ class ClubListCreateView(APIView):
         if not name:
             return Response({'detail': 'name is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        if Club.objects.filter(name__iexact=name).exists():
+            return Response({'detail': 'A club with this name already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if ClubMember.objects.filter(user=request.user, role=ClubMember.Role.PRESIDENT).exists():
+            return Response({'detail': 'You are already president of another club.'}, status=status.HTTP_400_BAD_REQUEST)
+
         description = request.data.get('description', '').strip()
         interest_id = request.data.get('interest')
         emblem = request.FILES.get('emblem')

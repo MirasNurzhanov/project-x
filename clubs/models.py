@@ -3,7 +3,7 @@ from django.conf import settings
 
 
 class Club(models.Model):
-    name = models.CharField(max_length=100)
+    name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True)
     interest = models.ForeignKey(
         'interests.Interest',
