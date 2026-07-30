@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("clubs", "0001_initial"),
+        ("clubs", "0001_5_delete_all_clubs"),
     ]
 
     operations = [
