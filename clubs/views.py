@@ -18,26 +18,6 @@ def _get_membership(club, user):
         return None
 
 
-def _handle_owner_leave(club, leaving_member):
-    """Promote admin or oldest member to owner, or delete club if alone."""
-    next_owner = (
-        club.members.filter(role=ClubMember.Role.ADMIN)
-        .exclude(user=leaving_member.user)
-        .order_by('joined_at')
-        .first()
-    )
-    if not next_owner:
-        next_owner = (
-            club.members.exclude(user=leaving_member.user)
-            .order_by('joined_at')
-            .first()
-        )
-    if next_owner:
-        next_owner.role = ClubMember.Role.OWNER
-        next_owner.save(update_fields=['role'])
-    else:
-        club.delete()
-
 
 class ClubListCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -113,16 +93,13 @@ class ClubLeaveView(APIView):
         if not membership:
             return Response({'detail': 'Not a member.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        with transaction.atomic():
-            if membership.role == ClubMember.Role.OWNER:
-                _handle_owner_leave(club, membership)
-                try:
-                    Club.objects.get(pk=pk)
-                except Club.DoesNotExist:
-                    return Response(status=status.HTTP_204_NO_CONTENT)
+        if membership.role == ClubMember.Role.OWNER:
+            return Response(
+                {'detail': 'Owner cannot leave. Delete the club or transfer ownership first.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-            membership.delete()
-
+        membership.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
