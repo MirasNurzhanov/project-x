@@ -8,8 +8,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from users.models import User
-from .models import Club, ClubEvent, ClubMember
-from .serializers import ClubDetailSerializer, ClubEventSerializer, ClubMemberSerializer, ClubSerializer
+from .models import Club, ClubEvent, ClubMember, ClubMessage
+from .serializers import ClubDetailSerializer, ClubEventSerializer, ClubMemberSerializer, ClubMessageSerializer, ClubSerializer
 
 
 def _get_membership(club, user):
@@ -211,6 +211,46 @@ class ClubEventListCreateView(APIView):
             event_datetime=event_datetime,
         )
         return Response(ClubEventSerializer(event).data, status=status.HTTP_201_CREATED)
+
+
+class ClubMessageListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get(self, request, pk):
+        club = get_object_or_404(Club, pk=pk)
+        if not club.members.filter(user=request.user).exists():
+            return Response({'detail': 'Members only.'}, status=status.HTTP_403_FORBIDDEN)
+
+        qs = ClubMessage.objects.filter(club=club).select_related('sender').order_by('-created_at')
+        before_id = request.query_params.get('before')
+        if before_id:
+            qs = qs.filter(id__lt=before_id)
+        messages = list(reversed(qs[:50]))
+        return Response(ClubMessageSerializer(messages, many=True).data)
+
+    def post(self, request, pk):
+        club = get_object_or_404(Club, pk=pk)
+        if not club.members.filter(user=request.user).exists():
+            return Response({'detail': 'Members only.'}, status=status.HTTP_403_FORBIDDEN)
+
+        content = request.data.get('content', '').strip()
+        image = request.FILES.get('image')
+        if not content and not image:
+            return Response({'detail': 'content or image is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        message_type = request.data.get('message_type', ClubMessage.MessageType.TEXT)
+        if message_type not in ClubMessage.MessageType.values:
+            message_type = ClubMessage.MessageType.TEXT
+
+        message = ClubMessage.objects.create(
+            club=club,
+            sender=request.user,
+            content=content,
+            image=image,
+            message_type=message_type,
+        )
+        return Response(ClubMessageSerializer(message).data, status=status.HTTP_201_CREATED)
 
 
 class ClubEventDetailView(APIView):

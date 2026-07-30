@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from users.models import User
-from .models import Club, ClubEvent, ClubMember
+from .models import Club, ClubEvent, ClubMember, ClubMessage
 
 
 class BasicUserSerializer(serializers.ModelSerializer):
@@ -49,3 +49,11 @@ class ClubEventSerializer(serializers.ModelSerializer):
     class Meta:
         model = ClubEvent
         fields = ('id', 'club', 'created_by', 'title', 'description', 'location_name', 'latitude', 'longitude', 'event_datetime', 'created_at')
+
+
+class ClubMessageSerializer(serializers.ModelSerializer):
+    sender = BasicUserSerializer(read_only=True)
+
+    class Meta:
+        model = ClubMessage
+        fields = ('id', 'club', 'sender', 'content', 'image', 'message_type', 'created_at')

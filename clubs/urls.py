@@ -10,6 +10,7 @@ urlpatterns = [
     path('<int:pk>/kick/<int:user_id>/', views.ClubKickView.as_view(), name='club-kick'),
     path('<int:pk>/promote-owner/<int:user_id>/', views.ClubPromoteOwnerView.as_view(), name='club-promote-owner'),
     path('<int:pk>/members/', views.ClubMembersView.as_view(), name='club-members'),
+    path('<int:pk>/messages/', views.ClubMessageListView.as_view(), name='club-messages'),
     path('<int:pk>/events/', views.ClubEventListCreateView.as_view(), name='club-event-list-create'),
     path('events/<int:event_id>/', views.ClubEventDetailView.as_view(), name='club-event-detail'),
 ]

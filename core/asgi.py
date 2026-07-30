@@ -10,10 +10,11 @@ from channels.routing import ProtocolTypeRouter, URLRouter  # noqa: E402
 from core.middleware import JWTAuthMiddleware  # noqa: E402
 from proximity.routing import websocket_urlpatterns as proximity_ws  # noqa: E402
 from friends.routing import websocket_urlpatterns as friends_ws  # noqa: E402
+from clubs.routing import websocket_urlpatterns as clubs_ws  # noqa: E402
 
 application = ProtocolTypeRouter({
     'http': django_asgi_app,
     'websocket': JWTAuthMiddleware(
-        URLRouter(proximity_ws + friends_ws)
+        URLRouter(proximity_ws + friends_ws + clubs_ws)
     ),
 })

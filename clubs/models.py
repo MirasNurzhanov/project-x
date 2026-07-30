@@ -69,3 +69,26 @@ class ClubEvent(models.Model):
 
     def __str__(self):
         return f'{self.title} @ {self.club}'
+
+
+class ClubMessage(models.Model):
+    class MessageType(models.TextChoices):
+        TEXT = 'text', 'Text'
+        MEETUP_PROPOSAL = 'meetup_proposal', 'Meetup Proposal'
+
+    club = models.ForeignKey(Club, on_delete=models.CASCADE, related_name='messages')
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='club_messages',
+    )
+    content = models.TextField(blank=True)
+    image = models.ImageField(upload_to='club_messages/', null=True, blank=True)
+    message_type = models.CharField(max_length=20, choices=MessageType.choices, default=MessageType.TEXT)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f'{self.sender} → {self.club}: {self.content[:40]}'
