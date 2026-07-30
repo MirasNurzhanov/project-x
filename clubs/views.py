@@ -44,9 +44,11 @@ class ClubListCreateView(APIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
-        qs = Club.objects.filter(is_active=True).exclude(
-            members__user=request.user
-        ).annotate(member_count=Count('members'))
+        if request.query_params.get('joined') == 'true':
+            qs = Club.objects.filter(is_active=True, members__user=request.user)
+        else:
+            qs = Club.objects.filter(is_active=True).exclude(members__user=request.user)
+        qs = qs.annotate(member_count=Count('members'))
 
         interest_id = request.query_params.get('interest')
         if interest_id:
