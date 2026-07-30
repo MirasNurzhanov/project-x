@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from users.models import User
-from .models import Club, ClubMember
+from .models import Club, ClubEvent, ClubMember
 
 
 class BasicUserSerializer(serializers.ModelSerializer):
@@ -20,10 +20,11 @@ class ClubMemberSerializer(serializers.ModelSerializer):
 class ClubSerializer(serializers.ModelSerializer):
     member_count = serializers.IntegerField(read_only=True)
     my_role = serializers.SerializerMethodField()
+    creator = BasicUserSerializer(read_only=True)
 
     class Meta:
         model = Club
-        fields = ('id', 'name', 'description', 'interest', 'emblem', 'created_at', 'is_active', 'member_count', 'my_role')
+        fields = ('id', 'name', 'description', 'interest', 'emblem', 'creator', 'created_at', 'is_active', 'member_count', 'my_role')
 
     def get_my_role(self, obj):
         request = self.context.get('request')
@@ -40,3 +41,11 @@ class ClubDetailSerializer(ClubSerializer):
 
     class Meta(ClubSerializer.Meta):
         fields = ClubSerializer.Meta.fields + ('members',)
+
+
+class ClubEventSerializer(serializers.ModelSerializer):
+    created_by = BasicUserSerializer(read_only=True)
+
+    class Meta:
+        model = ClubEvent
+        fields = ('id', 'club', 'created_by', 'title', 'description', 'location_name', 'latitude', 'longitude', 'event_datetime', 'created_at')
