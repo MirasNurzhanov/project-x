@@ -22,8 +22,8 @@ class Club(models.Model):
 
 class ClubMember(models.Model):
     class Role(models.TextChoices):
-        PRESIDENT = 'president', 'President'
-        VICE = 'vice', 'Vice President'
+        OWNER = 'owner', 'Owner'
+        ADMIN = 'admin', 'Admin'
         MEMBER = 'member', 'Member'
 
     user = models.ForeignKey(

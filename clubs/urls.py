@@ -8,7 +8,6 @@ urlpatterns = [
     path('<int:pk>/leave/', views.ClubLeaveView.as_view(), name='club-leave'),
     path('<int:pk>/invite/<int:user_id>/', views.ClubInviteView.as_view(), name='club-invite'),
     path('<int:pk>/kick/<int:user_id>/', views.ClubKickView.as_view(), name='club-kick'),
-    path('<int:pk>/promote/<int:user_id>/', views.ClubPromoteView.as_view(), name='club-promote'),
-    path('<int:pk>/transfer/<int:user_id>/', views.ClubTransferView.as_view(), name='club-transfer'),
+    path('<int:pk>/admin/<int:user_id>/', views.ClubAdminToggleView.as_view(), name='club-admin-toggle'),
     path('<int:pk>/members/', views.ClubMembersView.as_view(), name='club-members'),
 ]
