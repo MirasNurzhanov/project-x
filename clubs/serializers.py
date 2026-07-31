@@ -18,13 +18,16 @@ class ClubMemberSerializer(serializers.ModelSerializer):
 
 
 class ClubSerializer(serializers.ModelSerializer):
-    member_count = serializers.IntegerField(read_only=True)
+    member_count = serializers.SerializerMethodField()
     my_role = serializers.SerializerMethodField()
     creator = BasicUserSerializer(read_only=True)
 
     class Meta:
         model = Club
         fields = ('id', 'name', 'description', 'interest', 'emblem', 'creator', 'created_at', 'is_active', 'member_count', 'my_role')
+
+    def get_member_count(self, obj):
+        return obj.members.count()
 
     def get_my_role(self, obj):
         request = self.context.get('request')

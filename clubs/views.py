@@ -2,7 +2,6 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from datetime import timedelta
 from django.db import transaction
-from django.db.models import Count
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import permissions, status
@@ -34,7 +33,6 @@ class ClubListCreateView(APIView):
             qs = Club.objects.filter(is_active=True, members__user=request.user)
         else:
             qs = Club.objects.filter(is_active=True).exclude(members__user=request.user)
-        qs = qs.annotate(member_count=Count('members'))
 
         interest_id = request.query_params.get('interest')
         if interest_id:
@@ -68,7 +66,6 @@ class ClubListCreateView(APIView):
             )
             ClubMember.objects.create(user=request.user, club=club, role=ClubMember.Role.OWNER)
 
-        club.member_count = 1
         return Response(ClubSerializer(club, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 
@@ -76,7 +73,7 @@ class ClubDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
-        club = get_object_or_404(Club.objects.annotate(member_count=Count('members')), pk=pk)
+        club = get_object_or_404(Club, pk=pk)
         return Response(ClubDetailSerializer(club, context={'request': request}).data)
 
     def delete(self, request, pk):
