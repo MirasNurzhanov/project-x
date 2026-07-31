@@ -49,31 +49,19 @@ class ClubChatConsumer(AsyncWebsocketConsumer):
             return
 
         message = await self._save_message(content, message_type)
+        message_data = await self._serialize_message(message.pk)
         await self.channel_layer.group_send(
             self.room_group,
             {
                 'type': 'club.message',
-                'id': message.id,
-                'sender_id': self.user.pk,
-                'sender_username': self.user.username,
-                'content': content,
-                'message_type': message_type,
-                'image_url': message.image.url if message.image else None,
-                'created_at': message.created_at.isoformat(),
+                'message_data': message_data,
             },
         )
 
     async def club_message(self, event):
         await self.send(json.dumps({
             'type': 'club_message',
-            'id': event['id'],
-            'sender_id': event['sender_id'],
-            'sender_username': event['sender_username'],
-            'content': event['content'],
-            'message_type': event['message_type'],
-            'image_url': event.get('image_url'),
-            'event_id': event.get('event_id'),
-            'created_at': event['created_at'],
+            **event['message_data'],
         }))
 
     async def club_event_status(self, event):
@@ -83,6 +71,7 @@ class ClubChatConsumer(AsyncWebsocketConsumer):
             'status': event['status'],
             'approved_at': event.get('approved_at'),
             'expires_at': event.get('expires_at'),
+            'proposal': event.get('proposal'),
         }))
 
     async def _send_error(self, detail):
@@ -102,3 +91,12 @@ class ClubChatConsumer(AsyncWebsocketConsumer):
             content=content,
             message_type=message_type,
         )
+
+    @database_sync_to_async
+    def _serialize_message(self, message_pk):
+        from .models import ClubMessage
+        from .serializers import ClubMessageSerializer
+        msg = ClubMessage.objects.select_related(
+            'sender', 'event__created_by', 'event__approved_by',
+        ).get(pk=message_pk)
+        return dict(ClubMessageSerializer(msg).data)

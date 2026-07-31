@@ -225,18 +225,14 @@ class ClubEventListCreateView(APIView):
                 event=event,
             )
 
+        msg = ClubMessage.objects.select_related(
+            'sender', 'event__created_by', 'event__approved_by',
+        ).get(pk=message.pk)
         async_to_sync(get_channel_layer().group_send)(
             f'club_{club.pk}',
             {
                 'type': 'club.message',
-                'id': message.id,
-                'sender_id': request.user.pk,
-                'sender_username': request.user.username,
-                'content': message.content,
-                'message_type': ClubMessage.MessageType.MEETUP_PROPOSAL,
-                'image_url': None,
-                'event_id': event.id,
-                'created_at': message.created_at.isoformat(),
+                'message_data': dict(ClubMessageSerializer(msg).data),
             },
         )
         return Response(ClubEventSerializer(event).data, status=status.HTTP_201_CREATED)
@@ -246,7 +242,7 @@ class ClubEventApproveView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request, event_id):
-        event = get_object_or_404(ClubEvent.objects.select_related('club'), pk=event_id)
+        event = get_object_or_404(ClubEvent.objects.select_related('club', 'created_by'), pk=event_id)
         if not event.club.members.filter(user=request.user, role=ClubMember.Role.OWNER).exists():
             return Response({'detail': 'Only club owners can approve events.'}, status=status.HTTP_403_FORBIDDEN)
         if event.status == ClubEvent.Status.APPROVED:
@@ -267,6 +263,7 @@ class ClubEventApproveView(APIView):
                 'status': ClubEvent.Status.APPROVED,
                 'approved_at': event.approved_at.isoformat(),
                 'expires_at': event.expires_at.isoformat(),
+                'proposal': dict(ClubEventSerializer(event).data),
             },
         )
         return Response(ClubEventSerializer(event).data)
@@ -276,7 +273,7 @@ class ClubEventRejectView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request, event_id):
-        event = get_object_or_404(ClubEvent.objects.select_related('club'), pk=event_id)
+        event = get_object_or_404(ClubEvent.objects.select_related('club', 'created_by'), pk=event_id)
         if not event.club.members.filter(user=request.user, role=ClubMember.Role.OWNER).exists():
             return Response({'detail': 'Only club owners can reject events.'}, status=status.HTTP_403_FORBIDDEN)
         if event.status == ClubEvent.Status.REJECTED:
@@ -293,6 +290,7 @@ class ClubEventRejectView(APIView):
                 'status': ClubEvent.Status.REJECTED,
                 'approved_at': None,
                 'expires_at': None,
+                'proposal': dict(ClubEventSerializer(event).data),
             },
         )
         return Response(ClubEventSerializer(event).data)
