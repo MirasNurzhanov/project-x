@@ -27,6 +27,13 @@ CHANNEL_LAYERS = {
     'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'},
 }
 
+# Likewise for the cache: settings.py points this at Redis whenever REDIS_URL
+# is set, and a developer with one running locally must not have the test suite
+# reach for it.
+CACHES = {
+    'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'},
+}
+
 # Keep file fields on local disk instead of Cloudinary.
 STORAGES = {
     'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},

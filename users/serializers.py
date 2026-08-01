@@ -8,6 +8,8 @@ from .models import ProfileLink, User
 from .presets import PRESET_MAP, ZONE_PRESETS
 from interests.models import Interest
 from interests.serializers import InterestSerializer
+from regions.models import Region
+from regions.serializers import RegionSummarySerializer
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -39,6 +41,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
     interests = InterestSerializer(many=True, read_only=True)
     zone_audio_url = serializers.SerializerMethodField()
     links = serializers.SerializerMethodField()
+    # The id is what a client writes back; the expansion saves it a lookup just
+    # to show the name of the city it already chose.
+    zone_region_detail = RegionSummarySerializer(source='zone_region', read_only=True)
 
     class Meta:
         model = User
@@ -51,7 +56,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'visibility_interests', 'visibility_stories', 'visibility_stats',
             'visibility_zone_audio', 'visibility_connections', 'visibility_presence',
             'discoverable_by_username', 'discoverable_by_interest',
-            'zone_audio', 'zone_preset', 'zone_audio_url', 'zone_radius', 'zone_active',
+            'zone_audio', 'zone_preset', 'zone_audio_url', 'zone_active',
+            'zone_mode', 'zone_radius', 'zone_region', 'zone_region_detail',
             'push_token',
         )
         # `privacy_mode` is the legacy active/ghost/invisible view of
@@ -269,10 +275,38 @@ class PrivacySettingsSerializer(serializers.ModelSerializer):
 
 class ZoneUpdateSerializer(serializers.ModelSerializer):
     zone_audio_url = serializers.SerializerMethodField()
+    # Written by id, read back in full, so the client that just set a region
+    # can render its name without a second round trip.
+    zone_region = serializers.PrimaryKeyRelatedField(
+        queryset=Region.objects.all(), allow_null=True, required=False,
+    )
+    zone_region_detail = RegionSummarySerializer(source='zone_region', read_only=True)
+    effective_zone_mode = serializers.CharField(read_only=True)
+    # Declared explicitly to own the error message. Left to the model, DRF
+    # derives the field from the MinValue/MaxValue validators and answers an
+    # over-large radius with "ensure this value is less than or equal to
+    # 5000" — which does not tell anyone that the way to cover more ground is
+    # to switch modes. The model validators stay for the admin and direct saves.
+    zone_radius = serializers.IntegerField(
+        required=False,
+        min_value=User.ZONE_RADIUS_MIN_M,
+        max_value=User.ZONE_RADIUS_MAX_M,
+        error_messages={
+            'min_value': f'A zone cannot be smaller than {User.ZONE_RADIUS_MIN_M}m.',
+            'max_value': (
+                f'A circular zone tops out at {User.ZONE_RADIUS_MAX_M // 1000}km. '
+                'Switch to a region to cover a whole city.'
+            ),
+        },
+    )
 
     class Meta:
         model = User
-        fields = ('zone_audio', 'zone_preset', 'zone_audio_url', 'zone_radius', 'zone_active')
+        fields = (
+            'zone_audio', 'zone_preset', 'zone_audio_url', 'zone_active',
+            'zone_mode', 'zone_radius', 'zone_region', 'zone_region_detail',
+            'effective_zone_mode',
+        )
 
     def get_zone_audio_url(self, obj):
         if obj.zone_preset and obj.zone_preset in PRESET_MAP:
@@ -287,6 +321,18 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
+        # Region mode needs a region: either arriving in this request or
+        # already stored. Without one the zone would have no shape at all.
+        mode = attrs.get('zone_mode') or (self.instance and self.instance.zone_mode)
+        if mode == User.ZoneMode.REGION:
+            region = attrs['zone_region'] if 'zone_region' in attrs else (
+                self.instance and self.instance.zone_region
+            )
+            if not region:
+                raise serializers.ValidationError(
+                    {'zone_region': 'Pick a city or region before switching to region mode.'}
+                )
+
         has_audio = attrs.get('zone_audio') or (
             'zone_audio' not in attrs and self.instance and self.instance.zone_audio
         )

@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     'users',
     'interests',
     'proximity',
+    'regions',
     'clubs',
     'encounters',
     'notifications',
@@ -95,6 +96,25 @@ CHANNEL_LAYERS = {
             'hosts': [config('REDIS_URL', default='redis://localhost:6379')],
         },
     },
+}
+
+# Shared cache, on the Redis the channel layer already uses.
+#
+# This is not a performance nicety: regions.nominatim serialises its upstream
+# calls through `cache.add` to hold OpenStreetMap's one-request-per-second
+# limit, and exceeding that limit gets an application blocked outright. Django's
+# default cache is LocMemCache, which is per-process — with more than one worker
+# each would keep its own counter and the real rate would be a multiple of the
+# limit. Falls back to local memory only when there is no Redis to reach, which
+# is the single-process development case where per-process is the whole process.
+_REDIS_URL = config('REDIS_URL', default='')
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+        'LOCATION': _REDIS_URL,
+    } if _REDIS_URL else {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+    }
 }
 
 AUTH_USER_MODEL = 'users.User'
@@ -182,5 +202,17 @@ STATIC_URL = "static/"
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+# ── Region boundaries ─────────────────────────────────────────────────────────
+# Where "cover my whole city" gets the city's real outline. The public
+# Nominatim instance is free and fine at this size because every lookup is
+# cached into a Region row forever after — but its usage policy requires a
+# User-Agent that identifies the app and reaches a real person, and it forbids
+# bulk use. Point NOMINATIM_URL at a self-hosted or commercial instance if the
+# lookup volume ever stops being incidental.
+NOMINATIM_URL = config('NOMINATIM_URL', default='https://nominatim.openstreetmap.org')
+NOMINATIM_USER_AGENT = config(
+    'NOMINATIM_USER_AGENT', default='Aura/1.0 (support@aura-app.com)'
+)
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

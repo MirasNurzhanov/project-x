@@ -1,4 +1,5 @@
 from django.contrib.auth.models import AbstractUser
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from datetime import date
 from cloudinary_storage.storage import RawMediaCloudinaryStorage
@@ -23,15 +24,54 @@ class User(AbstractUser):
 
     interests = models.ManyToManyField('interests.Interest', blank=True, related_name='users')
 
-    class ZoneRadius(models.IntegerChoices):
-        SMALL = 100, '100m'
-        MEDIUM = 500, '500m'
-        LARGE = 1000, '1000m'
+    # ── Zone ──────────────────────────────────────────────────────────────────
+    # A zone has two shapes, and `zone_mode` says which one is live. They are
+    # stored side by side rather than in one polymorphic field so switching
+    # back and forth never loses the radius you had set, or the city you picked.
+
+    class ZoneMode(models.TextChoices):
+        RADIUS = 'radius', 'Radius'
+        REGION = 'region', 'Region'
+
+    # Metres. Was a three-value choice field (100/500/1000); now a free dial.
+    # The floor keeps a zone from being smaller than GPS error can resolve, and
+    # the ceiling is where a circle stops being the right tool — past ~5km you
+    # want a city, which is what REGION mode is for.
+    ZONE_RADIUS_MIN_M = 50
+    ZONE_RADIUS_MAX_M = 5000
 
     zone_audio = models.FileField(upload_to='zones/', null=True, blank=True, storage=RawMediaCloudinaryStorage())
     zone_preset = models.CharField(max_length=50, blank=True)
-    zone_radius = models.IntegerField(choices=ZoneRadius.choices, default=ZoneRadius.MEDIUM)
+    zone_mode = models.CharField(max_length=8, choices=ZoneMode.choices, default=ZoneMode.RADIUS)
+    zone_radius = models.IntegerField(
+        default=500,
+        validators=[
+            MinValueValidator(ZONE_RADIUS_MIN_M),
+            MaxValueValidator(ZONE_RADIUS_MAX_M),
+        ],
+    )
+    # SET_NULL, not CASCADE: regions are a shared cache, and evicting one must
+    # never delete the people whose zone pointed at it. A null region with
+    # mode=region falls back to the radius — see `effective_zone_mode`.
+    zone_region = models.ForeignKey(
+        'regions.Region',
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name='zoned_users',
+    )
     zone_active = models.BooleanField(default=False)
+
+    @property
+    def effective_zone_mode(self):
+        """The mode actually in force.
+
+        `zone_mode` is what the user asked for; this is what can be drawn. They
+        differ only when a region was picked and has since been evicted from
+        the cache, and falling back to the circle beats showing no zone at all.
+        """
+        if self.zone_mode == self.ZoneMode.REGION and self.zone_region_id:
+            return self.ZoneMode.REGION
+        return self.ZoneMode.RADIUS
 
     # ── Privacy ───────────────────────────────────────────────────────────────
     # Two independent axes, deliberately kept apart:

@@ -24,6 +24,7 @@ urlpatterns = [
     path("api/users/", include("users.urls")),
     path("api/interests/", include("interests.urls")),
     path("api/proximity/", include("proximity.urls")),
+    path("api/regions/", include("regions.urls")),
     path("api/notifications/", include("notifications.urls")),
     path("api/encounters/", include("encounters.urls")),
     path("api/clubs/", include("clubs.urls")),

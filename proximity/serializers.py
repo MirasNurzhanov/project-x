@@ -70,9 +70,17 @@ class NearbyUserSerializer(serializers.Serializer):
         data['bio'] = obj.bio
 
         # Zone *presence* stays visible to everyone so the map can still draw
-        # the circle; only the audio itself is gated.
+        # the shape; only the audio itself is gated.
         data['zone_radius'] = obj.zone_radius
         data['zone_active'] = obj.zone_active
+        # `effective_` rather than the raw mode: a region that has been evicted
+        # from the cache would otherwise tell the map to draw a polygon it can
+        # never fetch, and it would silently render no zone at all.
+        data['zone_mode'] = obj.effective_zone_mode
+        # The id only. This payload is polled every 10 seconds by every client,
+        # and a city outline is ~1500 points — the map resolves the id against
+        # /api/regions/<id>/ once and caches it, however many people share it.
+        data['zone_region_id'] = obj.zone_region_id
 
         if visibility.can_view(me, obj, 'interests', rel):
             data['interests'] = InterestSerializer(obj.interests.all(), many=True).data
