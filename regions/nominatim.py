@@ -19,6 +19,7 @@ require touching this code.
 """
 import logging
 import time
+from typing import NamedTuple
 
 import requests
 from django.conf import settings
@@ -39,11 +40,15 @@ _THROTTLE_KEY = 'regions:nominatim:next-allowed'
 # slow API for the person waiting on the picker.
 TIMEOUT_S = 8
 
-# A city boundary from OSM routinely carries 20k+ points. Simplified to this
-# tolerance a city keeps its recognisable shape at city zoom while dropping
-# ~95% of its vertices. In degrees: ~0.0005° is roughly 55m, finer than any
-# boundary detail that survives being drawn on a phone screen.
-SIMPLIFY_TOLERANCE_DEG = 0.0005
+# A city boundary from OSM routinely carries 20k+ points, which is more than a
+# phone should download or a map should draw.
+#
+# ~0.0002 degrees is roughly 22m. Chosen against the MAX_POINTS budget below
+# rather than for its own sake: a large city lands around a thousand points at
+# this tolerance, comfortably inside the cap, so there is no reason to blur
+# further. A coarser 0.0005 collapsed a 460-point city district to 18 -- fine
+# from orbit, visibly polygonal once you zoom to the streets it follows.
+SIMPLIFY_TOLERANCE_DEG = 0.0002
 # Hard ceiling regardless of tolerance, so one pathological coastline cannot
 # produce a payload that stalls the map. Tolerance is doubled until it fits.
 MAX_POINTS = 1500
@@ -65,10 +70,28 @@ DISTRICT_TYPES = {
     'borough', 'city_block', 'residential', 'subdistrict',
 }
 
-# Nominatim reverse zoom levels. 10 is its "city" granularity; 14 is the
-# suburb/neighbourhood one. Anything finer starts returning streets, which
-# cannot bound a zone.
-ZOOM_FOR_KIND = {'city': 10, 'district': 14}
+# One fine-grained reverse call, used only to read the *address hierarchy* out
+# of the response — never the object it resolves to.
+#
+# Choosing a level by zoom does not work. Reverse zoom maps onto OSM's
+# admin_level, and admin_level means different things by country: in Almaty the
+# city is level 4 and its districts are level 6, so zoom 10 -- nominally "city"
+# -- returns a district. Go finer and it returns a `place=suburb` *node*, a
+# point with no boundary at all, which cannot bound a zone.
+#
+# The `address` object, by contrast, names every level explicitly and
+# consistently, which is what the two buttons actually need.
+ADDRESS_ZOOM = 14
+
+# Address keys per level, most specific first. Nominatim uses whichever the
+# country's data provides, so all of them have to be tried.
+ADDRESS_KEYS = {
+    'city': ('city', 'town', 'village', 'municipality'),
+    'district': (
+        'city_district', 'district', 'borough', 'suburb', 'quarter',
+        'neighbourhood',
+    ),
+}
 
 
 class NominatimError(Exception):
@@ -364,24 +387,90 @@ def search(query, limit=8):
     return regions
 
 
-def reverse(lat, lon, kind=Region.Kind.CITY):
-    """The area of a given size containing a point.
+class ReverseResult(NamedTuple):
+    """What a "where am I" lookup could establish.
 
-    Asks upstream at the zoom matching the size wanted, because reverse
-    geocoding returns one answer and the zoom is what chooses which. A district
-    lookup that lands on the city anyway is still returned -- some places
-    genuinely have no subdivision, and the caller handles that better than a
-    silent null would.
+    `region` is the boundary at the level asked for, when one exists. `name`
+    and `city_name` come from the address hierarchy and survive even when no
+    polygon could be resolved — enough for the caller to say *which* place it
+    failed to find, which is far more useful than a bare miss.
+    """
+    region: object | None
+    name: str | None
+    city_name: str | None
+
+
+def _address_name(address, kind):
+    for key in ADDRESS_KEYS.get(kind, ()):
+        value = address.get(key)
+        if value:
+            return value
+    return None
+
+
+def _resolve_boundary(query, country_code, kind, lat, lon):
+    """Find the boundary named `query` that actually contains the point.
+
+    Searching by name is what makes this reliable across countries — but a
+    name alone is ambiguous, and there are a dozen places called Almaty. The
+    containment check is what disambiguates: only one of them can contain the
+    coordinates we started from. That is also why the kind is re-checked here
+    rather than trusted from the address key that produced the name.
+    """
+    params = {
+        'q': query,
+        'format': 'jsonv2',
+        'polygon_geojson': 1,
+        'addressdetails': 1,
+        'extratags': 1,
+        'limit': 8,
+    }
+    if country_code:
+        params['countrycodes'] = country_code
+
+    for payload in _get('search', params) or []:
+        if not _is_area(payload):
+            continue
+        region = _region_from_payload(payload)
+        # Everything fetched is worth keeping as cache even when it is not the
+        # answer — but only a containing shape of the right size is the answer.
+        if region and region.kind == kind and region.contains(lat, lon):
+            return region
+    return None
+
+
+def reverse(lat, lon, kind=Region.Kind.CITY):
+    """The boundary of a given size containing a point.
+
+    Two upstream calls on a miss: one reverse to learn what the place is
+    called at each level, one search to fetch that level's actual boundary.
+    Both are cached afterwards, so the second person standing in the same
+    district costs nothing.
     """
     payload = _get('reverse', {
         'lat': lat,
         'lon': lon,
         'format': 'jsonv2',
-        'polygon_geojson': 1,
         'addressdetails': 1,
         'extratags': 1,
-        'zoom': ZOOM_FOR_KIND.get(kind, 10),
+        'zoom': ADDRESS_ZOOM,
     })
     if not isinstance(payload, dict) or payload.get('error'):
-        return None
-    return _region_from_payload(payload)
+        return ReverseResult(None, None, None)
+
+    address = payload.get('address') or {}
+    country_code = (address.get('country_code') or '')[:2]
+    city_name = _address_name(address, Region.Kind.CITY)
+    name = _address_name(address, kind)
+    if not name:
+        return ReverseResult(None, None, city_name)
+
+    # A district is qualified by its city: "Almaly" alone is ambiguous in a way
+    # that "Almaly, Almaty" is not, and it narrows the search enough that the
+    # containing candidate is usually the first result.
+    query = name
+    if kind == Region.Kind.DISTRICT and city_name and city_name != name:
+        query = f'{name}, {city_name}'
+
+    region = _resolve_boundary(query, country_code, kind, lat, lon)
+    return ReverseResult(region, name, city_name)

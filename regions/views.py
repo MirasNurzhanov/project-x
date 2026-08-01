@@ -114,7 +114,7 @@ class RegionForPointView(APIView):
             return Response(RegionSummarySerializer(hits[0]).data)
 
         try:
-            region = nominatim.reverse(lat, lon, kind=level)
+            result = nominatim.reverse(lat, lon, kind=level)
         except nominatim.NominatimError as exc:
             logger.warning('Reverse region lookup failed at %s,%s: %s', lat, lon, exc)
             return Response(
@@ -122,24 +122,22 @@ class RegionForPointView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        if not region:
-            return Response(
-                {'detail': 'No mapped area covers this location.'},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-        # Upstream answers a district lookup with the city when the city has no
-        # mapped subdivisions. Saying so beats returning the city labelled as a
-        # district — the client tells the user rather than quietly widening
-        # their zone to something far larger than they asked for.
-        if level == Region.Kind.DISTRICT and region.kind != Region.Kind.DISTRICT:
-            return Response(
-                {
-                    'detail': 'No smaller area is mapped inside this city.',
-                    'fallback': RegionSummarySerializer(region).data,
-                },
-                status=status.HTTP_404_NOT_FOUND,
-            )
-        return Response(RegionSummarySerializer(region).data)
+        if result.region:
+            return Response(RegionSummarySerializer(result.region).data)
+
+        # A miss still knows *where* it looked, because the address hierarchy
+        # names the place even when no boundary is mapped for it. Saying "no
+        # district is mapped inside Almaty" is worth far more than "not found",
+        # and it is what lets the client point at the other button.
+        detail = (
+            f'No mapped district inside {result.city_name}.'
+            if level == Region.Kind.DISTRICT and result.city_name
+            else 'No mapped area covers this location.'
+        )
+        return Response(
+            {'detail': detail, 'city_name': result.city_name, 'name': result.name},
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
 
 class RegionDetailView(APIView):

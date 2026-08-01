@@ -260,7 +260,8 @@ class RegionEndpointTests(TestCase):
         self.assertEqual(self.client.get('/api/regions/for-point/').status_code, 400)
 
     def test_for_point_with_no_mapped_area_is_a_404(self):
-        with patch('regions.nominatim.reverse', return_value=None):
+        miss = nominatim.ReverseResult(None, None, None)
+        with patch('regions.nominatim.reverse', return_value=miss):
             response = self.client.get('/api/regions/for-point/?lat=0.5&lon=0.5')
         self.assertEqual(response.status_code, 404)
 
@@ -417,20 +418,98 @@ class ForPointLevelTests(TestCase):
     def test_unknown_level_is_rejected(self):
         self.assertEqual(self.get('planet').status_code, 400)
 
-    def test_district_asks_upstream_at_the_finer_zoom(self):
-        cache.clear()
+    def test_miss_names_the_city_it_searched(self):
+        """A bare 404 cannot tell the user which city has no districts mapped,
+        and cannot point them at the other button."""
         Region.objects.all().delete()
-        with patch('regions.nominatim._get', return_value={}) as get:
-            self.get('district')
-        self.assertEqual(get.call_args.args[1]['zoom'], nominatim.ZOOM_FOR_KIND['district'])
-
-    def test_city_with_no_mapped_subdivision_is_not_passed_off_as_a_district(self):
-        """Upstream answers a district lookup with the city when nothing
-        smaller is mapped. Returning it would silently widen the zone to the
-        whole city, which is the opposite of what was asked for."""
-        Region.objects.filter(kind='district').delete()
-        city_only = make_region(osm_id=902, name='Flatville', kind='city', rings=[SQUARE])
-        with patch('regions.nominatim.reverse', return_value=city_only):
+        miss = nominatim.ReverseResult(None, None, 'Almaty')
+        with patch('regions.nominatim.reverse', return_value=miss):
             response = self.get('district')
         self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.json()['fallback']['id'], city_only.pk)
+        self.assertEqual(response.json()['city_name'], 'Almaty')
+        self.assertIn('Almaty', response.json()['detail'])
+
+
+# ─── Level resolution ─────────────────────────────────────────────────────────
+class ReverseByAddressTests(TestCase):
+    """Choosing a level by reverse *zoom* is what broke in the field: in Almaty
+    zoom 10 returns a district and zoom 14 returns a node with no boundary at
+    all. These pin the address-hierarchy approach that replaced it."""
+
+    ALMATY_ADDRESS = {
+        'address': {
+            'suburb': 'Tastak',
+            'city_district': 'Almaly',
+            'city': 'Almaty',
+            'country_code': 'kz',
+        },
+    }
+
+    def setUp(self):
+        cache.clear()
+
+    def city_polygon(self, name, ring, addresstype, osm_id):
+        return {
+            'osm_type': 'relation', 'osm_id': osm_id, 'name': name,
+            'display_name': f'{name}, Kazakhstan', 'addresstype': addresstype,
+            'category': 'boundary',
+            'geojson': {'type': 'Polygon', 'coordinates': [ring]},
+            'address': {'country_code': 'kz'},
+        }
+
+    def test_city_lookup_returns_the_city_not_the_district(self):
+        """The bug as reported: the city button showed a district."""
+        big = [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]
+        responses = [self.ALMATY_ADDRESS, [self.city_polygon('Almaty', big, 'city', 11)]]
+        with patch('regions.nominatim._get', side_effect=responses):
+            result = nominatim.reverse(0.5, 0.5, kind='city')
+        self.assertIsNotNone(result.region)
+        self.assertEqual(result.region.name, 'Almaty')
+        self.assertEqual(result.region.kind, 'city')
+
+    def test_district_lookup_finds_a_boundary_where_zoom_found_a_bare_node(self):
+        """The other half: the district button returned nothing, because the
+        fine zoom resolved to a place node with no polygon."""
+        responses = [
+            self.ALMATY_ADDRESS,
+            [self.city_polygon('Almaly', SQUARE, 'city_district', 12)],
+        ]
+        with patch('regions.nominatim._get', side_effect=responses):
+            result = nominatim.reverse(0.5, 0.5, kind='district')
+        self.assertIsNotNone(result.region)
+        self.assertEqual(result.region.kind, 'district')
+
+    def test_district_query_is_qualified_by_its_city(self):
+        """"Almaly" alone is ambiguous; "Almaly, Almaty" is not."""
+        with patch('regions.nominatim._get', side_effect=[self.ALMATY_ADDRESS, []]) as get:
+            nominatim.reverse(0.5, 0.5, kind='district')
+        self.assertEqual(get.call_args.args[1]['q'], 'Almaly, Almaty')
+        self.assertEqual(get.call_args.args[1]['countrycodes'], 'kz')
+
+    def test_a_same_named_place_elsewhere_is_rejected(self):
+        """Name search is only safe because the result has to contain the
+        point we started from — there are many places called Almaty."""
+        far_away = [[50, 50], [51, 50], [51, 51], [50, 51], [50, 50]]
+        responses = [
+            self.ALMATY_ADDRESS,
+            [self.city_polygon('Almaty', far_away, 'city', 13)],
+        ]
+        with patch('regions.nominatim._get', side_effect=responses):
+            result = nominatim.reverse(0.5, 0.5, kind='city')
+        self.assertIsNone(result.region)
+        # Still cached for anyone who really is there.
+        self.assertTrue(Region.objects.filter(osm_id=13).exists())
+
+    def test_missing_level_reports_the_city_without_a_second_call(self):
+        address = {'address': {'city': 'Flatville', 'country_code': 'kz'}}
+        with patch('regions.nominatim._get', side_effect=[address]) as get:
+            result = nominatim.reverse(0.5, 0.5, kind='district')
+        self.assertIsNone(result.region)
+        self.assertEqual(result.city_name, 'Flatville')
+        self.assertEqual(get.call_count, 1)
+
+    def test_reverse_reads_the_hierarchy_at_one_fixed_zoom(self):
+        with patch('regions.nominatim._get', side_effect=[self.ALMATY_ADDRESS, []]) as get:
+            nominatim.reverse(0.5, 0.5, kind='city')
+        self.assertEqual(get.call_args_list[0].args[1]['zoom'], nominatim.ADDRESS_ZOOM)
+        self.assertEqual(get.call_args_list[0].args[1]['addressdetails'], 1)
