@@ -286,6 +286,15 @@ def _region_from_payload(payload):
 
     existing = Region.objects.filter(osm_type=osm_type, osm_id=osm_id).first()
     if existing:
+        # Re-classify from the fresh payload. A cached row can carry a wrong
+        # size -- it was classified by an older rule, or by a migration working
+        # from less information than this payload has -- and a short-circuit
+        # that trusts it makes that error permanent: the cache satisfies the
+        # lookup, so the upstream answer that would correct it is never seen.
+        kind = _classify(payload)
+        if kind != Region.Kind.OTHER and kind != existing.kind:
+            existing.kind = kind
+            existing.save(update_fields=['kind'])
         return existing
 
     rings = _rings_from_geojson(payload.get('geojson'))
@@ -327,24 +336,20 @@ def _region_from_payload(payload):
 def _classify(payload):
     """Which of the two zone sizes this place is.
 
-    `addresstype` is the strong signal and is checked first. When it says
-    nothing useful, OSM's admin_level decides: 8 and below is a whole
-    settlement, 9 and above is a subdivision of one. Both can be absent, and
-    'other' is an honest answer -- a country or a province is neither of the
-    things the two buttons offer.
+    `addresstype` and nothing else. There used to be an admin_level fallback --
+    6-8 city, 9+ district -- and it is precisely what broke this feature in the
+    field: Almaty's *districts* are admin_level 6, so the fallback labelled a
+    district a city, and the mislabelled row then satisfied every city lookup
+    from cache. Guessing a level's meaning from its number is not possible;
+    the number means different things in different countries.
+
+    'other' is an honest answer. A province or a country is neither of the two
+    things the buttons offer, and saying so beats a confident wrong label.
     """
     addresstype = (payload.get('addresstype') or payload.get('type') or '').lower()
     if addresstype in CITY_TYPES:
         return Region.Kind.CITY
     if addresstype in DISTRICT_TYPES:
-        return Region.Kind.DISTRICT
-
-    level = _admin_level(payload)
-    if level is None:
-        return Region.Kind.OTHER
-    if 6 <= level <= 8:
-        return Region.Kind.CITY
-    if level >= 9:
         return Region.Kind.DISTRICT
     return Region.Kind.OTHER
 

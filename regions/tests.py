@@ -143,6 +143,32 @@ class PayloadTests(TestCase):
         })
         self.assertIsNone(region)
 
+    def test_a_stale_kind_is_corrected_from_a_fresh_payload(self):
+        """A cached row classified by an older rule must not stay wrong.
+
+        The short-circuit on an existing row is what made the production bug
+        permanent: the cache satisfied the lookup, so the upstream answer that
+        would have corrected the label was never consulted."""
+        stale = make_region(osm_id=777, kind='city')  # actually a district
+        nominatim._region_from_payload({
+            'osm_type': 'relation', 'osm_id': 777, 'name': 'Almaly',
+            'display_name': 'Almaly', 'addresstype': 'city_district',
+            'geojson': {'type': 'Polygon', 'coordinates': [SQUARE]},
+        })
+        stale.refresh_from_db()
+        self.assertEqual(stale.kind, 'district')
+
+    def test_an_unclassifiable_payload_does_not_wipe_a_good_kind(self):
+        """'other' means "could not tell", not "is neither" — it must never
+        overwrite a label we already trust."""
+        good = make_region(osm_id=778, kind='city')
+        nominatim._region_from_payload({
+            'osm_type': 'relation', 'osm_id': 778, 'name': 'X', 'display_name': 'X',
+            'geojson': {'type': 'Polygon', 'coordinates': [SQUARE]},
+        })
+        good.refresh_from_db()
+        self.assertEqual(good.kind, 'city')
+
     def test_known_osm_object_is_not_refetched(self):
         existing = make_region(osm_id=555)
         again = nominatim._region_from_payload({
@@ -272,6 +298,10 @@ class ZoneShapeTests(TestCase):
         cache.clear()
         self.client = APIClient()
         self.user = make_user('me')
+        # Standing at (0.5, 0.5), inside SQUARE — a zone may only cover a place
+        # the user is actually in, so every region test needs a position.
+        self.user.latitude, self.user.longitude = 0.5, 0.5
+        self.user.save()
         self.client.force_authenticate(self.user)
 
     def patch_zone(self, **payload):
@@ -356,14 +386,19 @@ class ClassifyTests(TestCase):
                 nominatim._classify({'addresstype': addresstype}), expected, addresstype,
             )
 
-    def test_admin_level_breaks_the_tie_when_the_word_is_ambiguous(self):
-        """'borough' is a whole city in one country and a slice of one in
-        another, so the word alone cannot decide."""
+    def test_admin_level_is_never_guessed_from(self):
+        """This is the regression that broke the feature in production.
+
+        A previous version fell back to admin_level when addresstype said
+        nothing: 6-8 city, 9+ district. Almaty's districts are admin_level 6,
+        so a district was stored as a city, and because for-point answers from
+        cache the wrong label became the permanent answer. Numbers do not carry
+        the same meaning across countries — refusing to guess is the fix."""
         self.assertEqual(
-            nominatim._classify({'extratags': {'admin_level': '8'}}), 'city',
+            nominatim._classify({'extratags': {'admin_level': '6'}}), 'other',
         )
         self.assertEqual(
-            nominatim._classify({'extratags': {'admin_level': '10'}}), 'district',
+            nominatim._classify({'extratags': {'admin_level': '10'}}), 'other',
         )
 
     def test_a_country_is_neither_size_on_offer(self):
@@ -513,3 +548,58 @@ class ReverseByAddressTests(TestCase):
             nominatim.reverse(0.5, 0.5, kind='city')
         self.assertEqual(get.call_args_list[0].args[1]['zoom'], nominatim.ADDRESS_ZOOM)
         self.assertEqual(get.call_args_list[0].args[1]['addressdetails'], 1)
+
+# ─── Only where you are ───────────────────────────────────────────────────────
+class ZoneMustContainYouTests(TestCase):
+    """A zone covers a place you are in. Enforced on the server, because the
+    endpoint takes a region id and the UI is not a security boundary — without
+    this, someone in one city could blanket another."""
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.user = make_user('me')
+        self.client.force_authenticate(self.user)
+        self.here = make_region(osm_id=1100, name='Here', rings=[SQUARE])
+        self.far = make_region(
+            osm_id=1101, name='Far Away',
+            rings=[[[50, 50], [51, 50], [51, 51], [50, 51], [50, 50]]],
+        )
+
+    def stand_at(self, lat, lon):
+        self.user.latitude, self.user.longitude = lat, lon
+        self.user.save()
+
+    def patch_zone(self, **payload):
+        return self.client.patch('/api/users/zone/', payload, format='json')
+
+    def test_a_region_containing_you_is_accepted(self):
+        self.stand_at(0.5, 0.5)
+        self.assertEqual(
+            self.patch_zone(zone_mode='region', zone_region=self.here.pk).status_code, 200,
+        )
+
+    def test_a_region_you_are_not_in_is_rejected(self):
+        self.stand_at(0.5, 0.5)
+        response = self.patch_zone(zone_mode='region', zone_region=self.far.pk)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('Far Away', str(response.json()))
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.zone_region_id)
+
+    def test_without_a_known_position_nothing_can_be_set(self):
+        """No coordinates means no way to check, and an unchecked region is
+        exactly the hole this rule exists to close."""
+        response = self.patch_zone(zone_mode='region', zone_region=self.here.pk)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('location', str(response.json()).lower())
+
+    def test_moving_away_does_not_block_unrelated_zone_edits(self):
+        """The check is on newly supplied regions only. Someone who set a zone
+        at home and then travelled must still be able to change their music or
+        turn the zone off."""
+        self.stand_at(0.5, 0.5)
+        self.patch_zone(zone_mode='region', zone_region=self.here.pk)
+        self.stand_at(50.5, 50.5)  # now inside `far`, not `here`
+        self.assertEqual(self.patch_zone(zone_active=False).status_code, 200)
+        self.assertEqual(self.patch_zone(zone_radius=800).status_code, 200)

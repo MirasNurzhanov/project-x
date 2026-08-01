@@ -330,7 +330,26 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
             )
             if not region:
                 raise serializers.ValidationError(
-                    {'zone_region': 'Pick a city or region before switching to region mode.'}
+                    {'zone_region': 'Pick a city or district before switching to region mode.'}
+                )
+
+        # Your zone covers where you are. Enforced here rather than left to the
+        # UI, because "only the place you are standing in" is the rule itself,
+        # not a convenience: the endpoint takes a region id, and without this
+        # any id would be accepted — someone in one city could blanket another.
+        # Only checked when a region is newly supplied, so moving out of your
+        # own city later does not start rejecting unrelated zone edits.
+        incoming = attrs.get('zone_region')
+        if incoming is not None:
+            user = self.instance
+            lat, lon = getattr(user, 'latitude', None), getattr(user, 'longitude', None)
+            if lat is None or lon is None:
+                raise serializers.ValidationError(
+                    {'zone_region': 'Aura needs your location before it can set a zone here.'}
+                )
+            if not incoming.contains(float(lat), float(lon)):
+                raise serializers.ValidationError(
+                    {'zone_region': f'You can only cover a place you are in, and you are not in {incoming.name}.'}
                 )
 
         has_audio = attrs.get('zone_audio') or (
