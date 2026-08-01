@@ -35,6 +35,7 @@ def make_region(rings=None, **kwargs):
     lons = [p[0] for r in rings for p in r]
     defaults = dict(
         osm_type='relation', osm_id=1, name='Square', display_name='Square, Testland',
+        kind='city',
         min_lat=min(lats), min_lon=min(lons), max_lat=max(lats), max_lon=max(lons),
         centroid_lat=sum(lats) / len(lats), centroid_lon=sum(lons) / len(lons),
         rings=rings, point_count=sum(len(r) for r in rings),
@@ -341,3 +342,95 @@ class ZoneShapeTests(TestCase):
         self.assertEqual(row['zone_mode'], 'region')
         self.assertEqual(row['zone_region_id'], region.pk)
         self.assertNotIn('rings', row)
+
+# ─── Place size ───────────────────────────────────────────────────────────────
+class ClassifyTests(TestCase):
+    def test_addresstype_wins(self):
+        for addresstype, expected in (
+            ('city', 'city'), ('town', 'city'), ('village', 'city'),
+            ('suburb', 'district'), ('neighbourhood', 'district'),
+            ('city_district', 'district'),
+        ):
+            self.assertEqual(
+                nominatim._classify({'addresstype': addresstype}), expected, addresstype,
+            )
+
+    def test_admin_level_breaks_the_tie_when_the_word_is_ambiguous(self):
+        """'borough' is a whole city in one country and a slice of one in
+        another, so the word alone cannot decide."""
+        self.assertEqual(
+            nominatim._classify({'extratags': {'admin_level': '8'}}), 'city',
+        )
+        self.assertEqual(
+            nominatim._classify({'extratags': {'admin_level': '10'}}), 'district',
+        )
+
+    def test_a_country_is_neither_size_on_offer(self):
+        self.assertEqual(
+            nominatim._classify({'addresstype': 'country', 'extratags': {'admin_level': '2'}}),
+            'other',
+        )
+
+    def test_unknown_place_with_no_level_is_other(self):
+        self.assertEqual(nominatim._classify({}), 'other')
+
+
+class ForPointLevelTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.user = make_user('me')
+        self.client.force_authenticate(self.user)
+        # A district nested inside a city, both containing (0.5, 0.5).
+        self.city = make_region(
+            osm_id=900, name='Metropolis', kind='city',
+            rings=[[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]],
+        )
+        self.district = make_region(
+            osm_id=901, name='Old Town', kind='district', rings=[SQUARE],
+        )
+
+    def get(self, level=None):
+        url = '/api/regions/for-point/?lat=0.5&lon=0.5'
+        if level:
+            url += f'&level={level}'
+        return self.client.get(url)
+
+    def test_city_lookup_does_not_return_the_district(self):
+        """The district is the smaller shape, so an unfiltered "smallest
+        containing" search would wrongly prefer it."""
+        with patch('regions.nominatim.reverse') as reverse:
+            body = self.get('city').json()
+        self.assertEqual(body['id'], self.city.pk)
+        reverse.assert_not_called()
+
+    def test_district_lookup_returns_the_district(self):
+        with patch('regions.nominatim.reverse') as reverse:
+            body = self.get('district').json()
+        self.assertEqual(body['id'], self.district.pk)
+        reverse.assert_not_called()
+
+    def test_level_defaults_to_city(self):
+        with patch('regions.nominatim.reverse'):
+            self.assertEqual(self.get().json()['id'], self.city.pk)
+
+    def test_unknown_level_is_rejected(self):
+        self.assertEqual(self.get('planet').status_code, 400)
+
+    def test_district_asks_upstream_at_the_finer_zoom(self):
+        cache.clear()
+        Region.objects.all().delete()
+        with patch('regions.nominatim._get', return_value={}) as get:
+            self.get('district')
+        self.assertEqual(get.call_args.args[1]['zoom'], nominatim.ZOOM_FOR_KIND['district'])
+
+    def test_city_with_no_mapped_subdivision_is_not_passed_off_as_a_district(self):
+        """Upstream answers a district lookup with the city when nothing
+        smaller is mapped. Returning it would silently widen the zone to the
+        whole city, which is the opposite of what was asked for."""
+        Region.objects.filter(kind='district').delete()
+        city_only = make_region(osm_id=902, name='Flatville', kind='city', rings=[SQUARE])
+        with patch('regions.nominatim.reverse', return_value=city_only):
+            response = self.get('district')
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()['fallback']['id'], city_only.pk)

@@ -15,6 +15,18 @@ class Region(models.Model):
         WAY = 'way', 'Way'
         RELATION = 'relation', 'Relation'
 
+    class Kind(models.TextChoices):
+        """How big a place this is, in the only two sizes a zone offers.
+
+        Derived once at fetch time rather than inferred at read time, because
+        "my city" and "my district" are answered from the cache and the two
+        must not be confusable. Without this, a cached district would win a
+        city lookup purely for being the smaller of two containing shapes.
+        """
+        CITY = 'city', 'City or town'
+        DISTRICT = 'district', 'District within a city'
+        OTHER = 'other', 'Other'
+
     osm_type = models.CharField(max_length=10, choices=OSMType.choices)
     osm_id = models.BigIntegerField()
 
@@ -23,6 +35,9 @@ class Region(models.Model):
     # cities are still tellable apart in a picker.
     display_name = models.CharField(max_length=500)
     country_code = models.CharField(max_length=2, blank=True)
+    kind = models.CharField(
+        max_length=10, choices=Kind.choices, default=Kind.OTHER, db_index=True,
+    )
     # OSM's own hierarchy depth: 4 is usually a state/province, 6-8 a city or
     # district. Kept for display ordering, never for logic — the meaning of a
     # given level varies by country.

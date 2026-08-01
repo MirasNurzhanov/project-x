@@ -14,7 +14,7 @@ class RegionSummarySerializer(serializers.ModelSerializer):
     class Meta:
         model = Region
         fields = (
-            'id', 'name', 'display_name', 'country_code', 'admin_level',
+            'id', 'name', 'display_name', 'country_code', 'kind', 'admin_level',
             'min_lat', 'min_lon', 'max_lat', 'max_lon',
             'centroid_lat', 'centroid_lon', 'point_count',
         )

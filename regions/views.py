@@ -62,11 +62,14 @@ class RegionSearchView(APIView):
 
 
 class RegionForPointView(APIView):
-    """GET /api/regions/for-point/?lat=..&lon=..
+    """GET /api/regions/for-point/?lat=..&lon=..&level=city|district
 
-    "The city I am standing in". Answers from the cache when a stored region
-    already contains the point, which makes the common case — a user in a city
-    somebody has already picked — free.
+    "The place I am standing in", at one of the two sizes a zone offers.
+    `level` defaults to city.
+
+    Answers from the cache when a stored region of that size already contains
+    the point, which makes the common case — someone in a place another user
+    has already picked — free and instant.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -85,15 +88,24 @@ class RegionForPointView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        level = (request.query_params.get('level') or Region.Kind.CITY).lower()
+        if level not in (Region.Kind.CITY, Region.Kind.DISTRICT):
+            return Response(
+                {'detail': "level must be 'city' or 'district'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # Bounding box in SQL, exact containment in Python: the box query is
         # indexed and throws away all but a handful of rows, and only those get
-        # the ring walk.
+        # the ring walk. Filtered to the size asked for — without that, a
+        # cached district would win a city lookup just for being smaller.
         candidates = Region.objects.filter(
+            kind=level,
             min_lat__lte=lat, max_lat__gte=lat,
             min_lon__lte=lon, max_lon__gte=lon,
         )
-        # Smallest first: a point inside a city is also inside its province, and
-        # "my city" is the tighter of the two.
+        # Smallest first: two districts can legitimately overlap in OSM, and
+        # the tighter one is the one you are actually standing in.
         hits = sorted(
             (r for r in candidates if r.contains(lat, lon)),
             key=lambda r: (r.max_lat - r.min_lat) * (r.max_lon - r.min_lon),
@@ -102,7 +114,7 @@ class RegionForPointView(APIView):
             return Response(RegionSummarySerializer(hits[0]).data)
 
         try:
-            region = nominatim.reverse(lat, lon)
+            region = nominatim.reverse(lat, lon, kind=level)
         except nominatim.NominatimError as exc:
             logger.warning('Reverse region lookup failed at %s,%s: %s', lat, lon, exc)
             return Response(
@@ -113,6 +125,18 @@ class RegionForPointView(APIView):
         if not region:
             return Response(
                 {'detail': 'No mapped area covers this location.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        # Upstream answers a district lookup with the city when the city has no
+        # mapped subdivisions. Saying so beats returning the city labelled as a
+        # district — the client tells the user rather than quietly widening
+        # their zone to something far larger than they asked for.
+        if level == Region.Kind.DISTRICT and region.kind != Region.Kind.DISTRICT:
+            return Response(
+                {
+                    'detail': 'No smaller area is mapped inside this city.',
+                    'fallback': RegionSummarySerializer(region).data,
+                },
                 status=status.HTTP_404_NOT_FOUND,
             )
         return Response(RegionSummarySerializer(region).data)

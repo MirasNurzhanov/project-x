@@ -52,6 +52,24 @@ MAX_POINTS = 1500
 # returns a bus stop or a shop with the same name, which cannot bound a zone.
 ALLOWED_CLASSES = {'boundary', 'place'}
 
+# Nominatim's `addresstype` for the two sizes a zone offers. The lists are
+# generous because the same word means different things by country: a French
+# "commune" and a US "city" are both what someone means by "my city", and
+# "borough" is a whole city in one country and a slice of one in another --
+# which is why admin_level breaks the tie below rather than the word alone.
+CITY_TYPES = {
+    'city', 'town', 'village', 'municipality', 'hamlet', 'commune',
+}
+DISTRICT_TYPES = {
+    'suburb', 'neighbourhood', 'quarter', 'city_district', 'district',
+    'borough', 'city_block', 'residential', 'subdistrict',
+}
+
+# Nominatim reverse zoom levels. 10 is its "city" granularity; 14 is the
+# suburb/neighbourhood one. Anything finer starts returning streets, which
+# cannot bound a zone.
+ZOOM_FOR_KIND = {'city': 10, 'district': 14}
+
 
 class NominatimError(Exception):
     """Upstream was unreachable, slow, or returned something unusable."""
@@ -266,6 +284,7 @@ def _region_from_payload(payload):
         name=(payload.get('name') or payload.get('display_name') or '')[:200],
         display_name=(payload.get('display_name') or '')[:500],
         country_code=(address.get('country_code') or '')[:2],
+        kind=_classify(payload),
         admin_level=_admin_level(payload),
         min_lat=min_lat, min_lon=min_lon, max_lat=max_lat, max_lon=max_lon,
         centroid_lat=(min_lat + max_lat) / 2,
@@ -280,6 +299,31 @@ def _region_from_payload(payload):
         # here. Theirs is as good as ours.
         return Region.objects.filter(osm_type=osm_type, osm_id=osm_id).first()
     return region
+
+
+def _classify(payload):
+    """Which of the two zone sizes this place is.
+
+    `addresstype` is the strong signal and is checked first. When it says
+    nothing useful, OSM's admin_level decides: 8 and below is a whole
+    settlement, 9 and above is a subdivision of one. Both can be absent, and
+    'other' is an honest answer -- a country or a province is neither of the
+    things the two buttons offer.
+    """
+    addresstype = (payload.get('addresstype') or payload.get('type') or '').lower()
+    if addresstype in CITY_TYPES:
+        return Region.Kind.CITY
+    if addresstype in DISTRICT_TYPES:
+        return Region.Kind.DISTRICT
+
+    level = _admin_level(payload)
+    if level is None:
+        return Region.Kind.OTHER
+    if 6 <= level <= 8:
+        return Region.Kind.CITY
+    if level >= 9:
+        return Region.Kind.DISTRICT
+    return Region.Kind.OTHER
 
 
 def _admin_level(payload):
@@ -320,11 +364,14 @@ def search(query, limit=8):
     return regions
 
 
-def reverse(lat, lon, zoom=10):
-    """The administrative area containing a point.
+def reverse(lat, lon, kind=Region.Kind.CITY):
+    """The area of a given size containing a point.
 
-    zoom=10 is Nominatim's "city" granularity — the level someone means when
-    they say "my city", rather than the neighbourhood or the country.
+    Asks upstream at the zoom matching the size wanted, because reverse
+    geocoding returns one answer and the zoom is what chooses which. A district
+    lookup that lands on the city anyway is still returned -- some places
+    genuinely have no subdivision, and the caller handles that better than a
+    silent null would.
     """
     payload = _get('reverse', {
         'lat': lat,
@@ -333,7 +380,7 @@ def reverse(lat, lon, zoom=10):
         'polygon_geojson': 1,
         'addressdetails': 1,
         'extratags': 1,
-        'zoom': zoom,
+        'zoom': ZOOM_FOR_KIND.get(kind, 10),
     })
     if not isinstance(payload, dict) or payload.get('error'):
         return None
