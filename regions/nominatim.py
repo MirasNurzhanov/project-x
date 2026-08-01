@@ -58,16 +58,40 @@ class NominatimError(Exception):
 
 
 # ─── Rate limiting ────────────────────────────────────────────────────────────
-def _throttle():
-    """Block until the next request is allowed.
+# Process-local fallback, used only when the shared cache is unreachable. Less
+# strict than the real thing — each worker would keep its own clock — but the
+# alternative is either a 500 or an unthrottled call, and both are worse.
+_local_next_allowed = 0.0
 
-    Uses `cache.add`, which is atomic, to claim the next slot: whoever adds the
-    key wins and proceeds, everyone else waits and retries. A plain get/set
-    would let two workers read the same timestamp and both fire.
+
+def _claim_slot():
+    """Try to take the next request slot. True when it is ours.
+
+    `cache.add` is atomic, which is the whole point: whoever adds the key wins
+    and proceeds, everyone else waits. A plain get/set would let two workers
+    read the same timestamp and both fire.
+
+    A cache that raises — Redis restarting, credentials rotated — must not turn
+    a place search into a 500. Falling back keeps the limit approximately held
+    rather than abandoning it.
     """
+    global _local_next_allowed
+    try:
+        return bool(cache.add(_THROTTLE_KEY, '1', timeout=int(MIN_INTERVAL_S) + 1))
+    except Exception:
+        logger.warning('Rate-limit cache unavailable; falling back to a local clock.')
+        now = time.monotonic()
+        if now < _local_next_allowed:
+            return False
+        _local_next_allowed = now + MIN_INTERVAL_S
+        return True
+
+
+def _throttle():
+    """Block until the next request is allowed."""
     deadline = time.monotonic() + TIMEOUT_S
     while True:
-        if cache.add(_THROTTLE_KEY, '1', timeout=int(MIN_INTERVAL_S) + 1):
+        if _claim_slot():
             return
         if time.monotonic() > deadline:
             raise NominatimError('Timed out waiting for a rate-limit slot.')

@@ -172,6 +172,13 @@ class ThrottleTests(TestCase):
             nominatim._throttle()
         sleep.assert_called_once()
 
+    def test_unreachable_cache_degrades_instead_of_500ing(self):
+        """Redis restarting must not turn a place search into a server error."""
+        nominatim._local_next_allowed = 0.0
+        with patch('regions.nominatim.cache.add', side_effect=ConnectionError('redis down')):
+            nominatim._throttle()          # first call still gets through
+            self.assertFalse(nominatim._claim_slot())  # second is still held back
+
     def test_a_slot_that_never_frees_raises_rather_than_hanging(self):
         """A wedged throttle must surface as an error the view can turn into a
         503 — never as a request that hangs until the proxy kills it."""
