@@ -30,13 +30,12 @@ CHANNEL_LAYERS = {
 # Keep file fields on local disk instead of Cloudinary.
 STORAGES = {
     'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
-    'quest_proofs': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
     'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
 }
 
 # Speed up user creation.
 PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 
-# Keep uploaded test files (e.g. quest proof photos) out of the repo.
+# Keep uploaded test files (e.g. story photos) out of the repo.
 import tempfile  # noqa: E402
 MEDIA_ROOT = tempfile.mkdtemp(prefix='aura-test-media-')

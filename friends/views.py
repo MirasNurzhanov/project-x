@@ -14,7 +14,6 @@ from users import visibility
 from users.models import User
 from .models import BlockedUser, FriendRequest, HiRequest, Message
 from .serializers import BasicUserSerializer, FriendRequestSerializer, HiRequestSerializer, MessageSerializer
-from quests.utils import check_and_complete_quest
 from notifications.utils import notify_story_reply, send_push_notification
 from stories.models import Story
 
@@ -99,7 +98,6 @@ class SendHiView(APIView):
         HiRequest.objects.filter(sender=request.user, receiver=receiver).delete()
 
         hi = HiRequest.objects.create(sender=request.user, receiver=receiver)
-        check_and_complete_quest(request.user, 'send_hi')
         send_push_notification(receiver, 'New Hi! 👋', f'@{request.user.username} wants to connect')
         return Response(HiRequestSerializer(hi).data, status=status.HTTP_201_CREATED)
 
@@ -113,8 +111,6 @@ class AcceptHiView(APIView):
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         hi.status = HiRequest.Status.ACCEPTED
         hi.save(update_fields=['status'])
-        check_and_complete_quest(request.user, 'make_friend')
-        check_and_complete_quest(hi.sender, 'make_friend')
         send_push_notification(hi.sender, '🎉 Connected!', f'@{request.user.username} accepted your Hi')
         return Response(HiRequestSerializer(hi).data)
 
@@ -268,8 +264,6 @@ class MessagesView(APIView):
             content=content,
             image=image,
         )
-
-        check_and_complete_quest(request.user, 'send_message')
 
         # A story reply is a normal DM carrying an encoded payload, plus a
         # `story_id` naming what it answers. It gets a story alert instead of the

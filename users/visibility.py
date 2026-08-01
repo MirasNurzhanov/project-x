@@ -111,7 +111,7 @@ def is_approved_viewer(rel):
 
 # ─── Queryset filter ──────────────────────────────────────────────────────────
 def visible_users(viewer, queryset=None, *, exclude_self=True,
-                  on_map=False, discoverable_by=None, leaderboard=False):
+                  on_map=False, discoverable_by=None):
     """Base queryset of users `viewer` is allowed to receive at all.
 
     Always drops both directions of a block. The keyword flags add the
@@ -120,7 +120,6 @@ def visible_users(viewer, queryset=None, *, exclude_self=True,
     on_map          — drop anyone who paused location sharing (proximity only)
     discoverable_by — 'username' or 'interest'; drop anyone opted out of that
                       search surface
-    leaderboard     — drop anyone who opted out of public rankings
     """
     from .models import User
 
@@ -136,8 +135,6 @@ def visible_users(viewer, queryset=None, *, exclude_self=True,
         qs = qs.filter(discoverable_by_interest=True)
     elif discoverable_by is not None:
         raise ValueError(f'unknown discovery surface: {discoverable_by!r}')
-    if leaderboard:
-        qs = qs.filter(show_on_leaderboard=True)
     return qs
 
 

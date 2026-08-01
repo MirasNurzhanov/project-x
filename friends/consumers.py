@@ -126,11 +126,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _save_message(self, content):
         from .models import Message
-        from quests.utils import check_and_complete_quest
         message = Message.objects.create(
             sender=self.user,
             receiver=self.other,
             content=content,
         )
-        check_and_complete_quest(self.user, 'send_message')
         return message

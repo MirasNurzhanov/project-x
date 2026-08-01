@@ -49,7 +49,3 @@ ujson==5.12.1
 urllib3==2.6.3
 uvicorn==0.46.0
 zope.interface==8.4
-# Device attestation (Play Integrity / Apple App Attest) verification
-pyattest==1.0.5
-cbor2==6.0.1
-python-jose==3.5.0

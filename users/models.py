@@ -83,7 +83,6 @@ class User(AbstractUser):
     visibility_presence = models.CharField(
         max_length=8, choices=Audience.choices, default=Audience.FRIENDS)
 
-    show_on_leaderboard = models.BooleanField(default=True)
     discoverable_by_username = models.BooleanField(default=True)
     discoverable_by_interest = models.BooleanField(default=True)
 

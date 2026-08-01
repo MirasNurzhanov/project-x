@@ -30,8 +30,6 @@ INSTALLED_APPS = [
     'users',
     'interests',
     'proximity',
-    'quests',
-    'market',
     'clubs',
     'encounters',
     'notifications',
@@ -175,11 +173,6 @@ STORAGES = {
     "default": {
         "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
     },
-    # Quest proof photos use authenticated delivery: no public URL, access
-    # only via server-signed URLs handed out by the moderation API.
-    "quest_proofs": {
-        "BACKEND": "quests.storage.QuestProofCloudinaryStorage",
-    },
     "staticfiles": {
         "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
     },
@@ -189,31 +182,5 @@ STATIC_URL = "static/"
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
-
-# ── Device attestation for quest photo proofs ────────────────────────────────
-# Modes: 'off' (ignore), 'audit' (verify + record, never block), 'enforce'
-# (a passing attestation is required to submit a proof). Ships as 'audit' so
-# the backend can deploy before the store-side setup exists — clients that
-# send nothing simply record 'missing'. Flip to 'enforce' once builds with
-# @expo/app-integrity are live and the keys below are populated.
-QUEST_ATTESTATION_MODE = config('QUEST_ATTESTATION_MODE', default='audit')
-
-# Android — Play Integrity. Keys come from Play Console under
-# "App integrity → Response encryption" when you choose to manage your own
-# response encryption keys.
-ANDROID_PACKAGE_NAME = config('ANDROID_PACKAGE_NAME', default='com.arcanix.aura')
-PLAY_INTEGRITY_DECRYPTION_KEY = config('PLAY_INTEGRITY_DECRYPTION_KEY', default='')
-PLAY_INTEGRITY_VERIFICATION_KEY = config('PLAY_INTEGRITY_VERIFICATION_KEY', default='')
-PLAY_INTEGRITY_PRODUCTION = config('PLAY_INTEGRITY_PRODUCTION', default=True, cast=bool)
-PLAY_INTEGRITY_ALLOW_NON_PLAY = config('PLAY_INTEGRITY_ALLOW_NON_PLAY', default=False, cast=bool)
-PLAY_INTEGRITY_REQUIRED_VERDICT = config(
-    'PLAY_INTEGRITY_REQUIRED_VERDICT', default='MEETS_DEVICE_INTEGRITY'
-)
-
-# iOS — App Attest. APPLE_APP_ID is "<10-char Team ID>.<bundle id>".
-APPLE_APP_ID = config('APPLE_APP_ID', default='')
-# False uses Apple's development attestation environment; set True for
-# TestFlight/App Store builds.
-APPLE_ATTEST_PRODUCTION = config('APPLE_ATTEST_PRODUCTION', default=False, cast=bool)
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

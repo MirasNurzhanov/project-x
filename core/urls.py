@@ -26,8 +26,6 @@ urlpatterns = [
     path("api/proximity/", include("proximity.urls")),
     path("api/notifications/", include("notifications.urls")),
     path("api/encounters/", include("encounters.urls")),
-    path("api/quests/", include("quests.urls")),
-    path("api/market/", include("market.urls")),
     path("api/clubs/", include("clubs.urls")),
     path("api/friends/", include("friends.urls")),
     path("api/stories/", include("stories.urls")),

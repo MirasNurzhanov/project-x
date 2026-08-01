@@ -17,9 +17,6 @@ class CustomUserAdmin(UserAdmin):
             ),
         }),
         ('Discoverability', {
-            'fields': (
-                'show_on_leaderboard',
-                'discoverable_by_username', 'discoverable_by_interest',
-            ),
+            'fields': ('discoverable_by_username', 'discoverable_by_interest'),
         }),
     )

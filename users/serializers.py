@@ -38,7 +38,6 @@ class RegisterSerializer(serializers.ModelSerializer):
 class UserProfileSerializer(serializers.ModelSerializer):
     interests = InterestSerializer(many=True, read_only=True)
     zone_audio_url = serializers.SerializerMethodField()
-    aura_points = serializers.SerializerMethodField()
     links = serializers.SerializerMethodField()
 
     class Meta:
@@ -47,22 +46,17 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'id', 'username', 'email', 'bio', 'profile_picture',
             'date_of_birth', 'age_tier', 'interests',
             'latitude', 'longitude',
-            'location_sharing', 'privacy_mode', 'date_joined', 'aura_points', 'links',
+            'location_sharing', 'privacy_mode', 'date_joined', 'links',
             'is_private',
             'visibility_interests', 'visibility_stories', 'visibility_stats',
             'visibility_zone_audio', 'visibility_connections', 'visibility_presence',
-            'show_on_leaderboard', 'discoverable_by_username', 'discoverable_by_interest',
+            'discoverable_by_username', 'discoverable_by_interest',
             'zone_audio', 'zone_preset', 'zone_audio_url', 'zone_radius', 'zone_active',
             'push_token',
         )
         # `privacy_mode` is the legacy active/ghost/invisible view of
         # `location_sharing`, kept so app builds predating the split keep working.
         read_only_fields = ('id', 'email', 'age_tier', 'date_joined', 'privacy_mode')
-
-    def get_aura_points(self, obj):
-        # Cached all-time total, derived from the quests point ledger.
-        aura = getattr(obj, 'aura_points', None)
-        return aura.total_points if aura else 0
 
     def get_links(self, obj):
         # Your own profile always shows your own links.
@@ -123,8 +117,6 @@ class PublicProfileSerializer(serializers.Serializer):
 
         if visibility.can_view(me, obj, 'stats', rel):
             data['stats'] = _profile_stats(obj)
-            aura = getattr(obj, 'aura_points', None)
-            data['aura_points'] = aura.total_points if aura else 0
 
         if visibility.can_view(me, obj, 'connections', rel):
             data['connections'] = _connection_summaries(obj, viewer=me)
@@ -144,8 +136,6 @@ class PublicProfileSerializer(serializers.Serializer):
 
 
 def _profile_stats(obj):
-    from quests.models import QuestProof
-
     friend_ids = set()
     for s, r in FriendRequest.objects.filter(
         status=FriendRequest.Status.ACCEPTED,
@@ -161,10 +151,6 @@ def _profile_stats(obj):
     return {
         'friends': len(friend_ids),
         'connections': len(connection_ids - friend_ids),
-        # Only moderator-approved photo proofs count, same as the leaderboard.
-        'quests': QuestProof.objects.filter(
-            user=obj, status=QuestProof.Status.APPROVED,
-        ).count(),
     }
 
 
@@ -276,7 +262,6 @@ class PrivacySettingsSerializer(serializers.ModelSerializer):
             'visibility_connections',
             'visibility_links',
             'visibility_presence',
-            'show_on_leaderboard',
             'discoverable_by_username',
             'discoverable_by_interest',
         )

@@ -11,7 +11,6 @@ from .serializers import LocationUpdateSerializer, NearbyUserSerializer
 from .utils import haversine
 from notifications.utils import notify_nearby_match
 from encounters.utils import delete_old_encounters, record_encounter
-from quests.utils import check_and_complete_quest
 
 
 def _build_relationships(user, nearby_ids):
@@ -159,7 +158,6 @@ class UpdateLocationView(APIView):
 
         user.save(update_fields=fields)
         _trigger_nearby_notifications(user)
-        check_and_complete_quest(user, 'update_location')
         return Response({'latitude': str(user.latitude), 'longitude': str(user.longitude)})
 
 

@@ -37,7 +37,7 @@ class PrivateAccountTests(TestCase):
     """A private account shows non-approved viewers a username and an avatar.
     Everything else must be absent from every endpoint that returns user data."""
 
-    HIDDEN = ('bio', 'interests', 'stats', 'aura_points', 'connections',
+    HIDDEN = ('bio', 'interests', 'stats', 'connections',
               'stories', 'zone_audio_url', 'date_joined')
 
     def setUp(self):
@@ -151,19 +151,15 @@ class FieldVisibilityTests(TestCase):
         befriend(self.viewer, self.target)
         self.assertIn('interests', self.profile())
 
-    def test_stats_and_points_hidden_by_default(self):
-        # Default is Friends, so a stranger gets neither.
+    def test_stats_hidden_by_default(self):
+        # Default is Friends, so a stranger gets nothing.
         body = self.profile()
         self.assertNotIn('stats', body)
-        self.assertNotIn('aura_points', body)
 
         befriend(self.viewer, self.target)
         body = self.profile()
         self.assertIn('stats', body)
-        self.assertIn('aura_points', body)
-        self.assertEqual(
-            set(body['stats']), {'friends', 'connections', 'quests'}
-        )
+        self.assertEqual(set(body['stats']), {'friends', 'connections'})
 
     def test_connections_list_gated(self):
         other = make_user('mutual')
@@ -408,50 +404,6 @@ class BlockedProfileTests(TestCase):
         self.assertEqual(blocked.json(), missing.json())
 
 
-# ─── Leaderboard ──────────────────────────────────────────────────────────────
-class LeaderboardPrivacyTests(TestCase):
-    def setUp(self):
-        from quests.ledger import record_points
-        from quests.models import PointEvent, Quest
-
-        self.client = APIClient()
-        self.me = make_user('me')
-        self.hidden = make_user('hidden', show_on_leaderboard=False)
-        self.shown = make_user('shown')
-
-        quest = Quest.objects.create(
-            title='T', description='d', reward_points=10,
-            quest_type=Quest.QuestType.DAILY,
-        )
-        from quests.ledger import current_week_start
-        week = current_week_start()
-        for user, points in ((self.hidden, 500), (self.shown, 100), (self.me, 50)):
-            record_points(
-                user, points, PointEvent.Reason.QUEST_APPROVED,
-                quest=quest, period_start=week,
-            )
-        self.client.force_authenticate(self.me)
-
-    def test_opted_out_user_is_absent_from_the_board(self):
-        body = self.client.get('/api/quests/leaderboard/').json()
-        self.assertNotIn('hidden', [row['username'] for row in body['leaderboard']])
-
-    def test_ranks_have_no_gaps_after_hiding_someone(self):
-        body = self.client.get('/api/quests/leaderboard/').json()
-        self.assertEqual([row['rank'] for row in body['leaderboard']], [1, 2])
-
-    def test_opted_out_user_sees_points_but_no_rank(self):
-        self.client.force_authenticate(self.hidden)
-        body = self.client.get('/api/quests/leaderboard/').json()
-        self.assertEqual(body['my_points'], 500)
-        self.assertIsNone(body['my_rank'])
-
-    def test_blocked_user_is_absent_from_the_board(self):
-        BlockedUser.objects.create(blocker=self.me, blocked=self.shown)
-        body = self.client.get('/api/quests/leaderboard/').json()
-        self.assertNotIn('shown', [row['username'] for row in body['leaderboard']])
-
-
 # ─── Settings endpoint ────────────────────────────────────────────────────────
 class PrivacySettingsEndpointTests(TestCase):
     def setUp(self):
@@ -464,7 +416,7 @@ class PrivacySettingsEndpointTests(TestCase):
         for key in (
             'location_sharing', 'is_private', 'visibility_interests',
             'visibility_stories', 'visibility_stats', 'visibility_zone_audio',
-            'visibility_connections', 'show_on_leaderboard',
+            'visibility_connections',
             'discoverable_by_username', 'discoverable_by_interest',
         ):
             self.assertIn(key, body)
@@ -516,6 +468,5 @@ class DefaultsTests(TestCase):
         for field in ('visibility_stories', 'visibility_stats',
                       'visibility_zone_audio', 'visibility_connections'):
             self.assertEqual(getattr(user, field), User.Audience.FRIENDS, field)
-        self.assertTrue(user.show_on_leaderboard)
         self.assertTrue(user.discoverable_by_username)
         self.assertTrue(user.discoverable_by_interest)
