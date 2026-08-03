@@ -130,9 +130,13 @@ def _trigger_zone_music_alerts(user):
     if not friend_ids:
         return
 
+    # Not filtered on `zone_active`. That flag is about the zone drawn on the
+    # map, and using it here tied someone's music to whether they wanted a
+    # circle around themselves. Whether there is a track to be in earshot of is
+    # settled by `has_zone_track` in `notify_zone_music_entry`, which is a
+    # property across three columns and so cannot be a filter here.
     owners = User.objects.filter(
         pk__in=friend_ids,
-        zone_active=True,
         latitude__isnull=False,
         longitude__isnull=False,
     ).exclude(location_sharing=User.LocationSharing.PAUSED)

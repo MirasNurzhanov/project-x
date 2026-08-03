@@ -215,6 +215,87 @@ NOMINATIM_USER_AGENT = config(
     'NOMINATIM_USER_AGENT', default='Aura/1.0 (support@aura-app.com)'
 )
 
+# Load shaping. The defaults are the public instance's published policy — one
+# request per second, one at a time — and exist as settings so that pointing
+# NOMINATIM_URL at an instance you run yourself can come with the limits that
+# instance actually has, rather than a code change.
+#
+# MIN_INTERVAL of 0 disables throttling outright. Never do that against the
+# public endpoint: it is the condition of using it.
+NOMINATIM_MIN_INTERVAL_S = config('NOMINATIM_MIN_INTERVAL_S', default=1.1, cast=float)
+NOMINATIM_MAX_CONCURRENCY = config('NOMINATIM_MAX_CONCURRENCY', default=1, cast=int)
+# Queueing for a slot and waiting on the network are budgeted separately, so a
+# caller that queued does not arrive at the request with no time left.
+NOMINATIM_MAX_QUEUE_WAIT_S = config(
+    'NOMINATIM_MAX_QUEUE_WAIT_S', default=5.0, cast=float
+)
+NOMINATIM_TIMEOUT_S = config('NOMINATIM_TIMEOUT_S', default=8.0, cast=float)
+# A border does not move; "nothing is mapped here" is only true until someone
+# maps it. Hence the two orders of magnitude between these.
+NOMINATIM_CACHE_TTL_S = config(
+    'NOMINATIM_CACHE_TTL_S', default=7 * 24 * 60 * 60, cast=int
+)
+NOMINATIM_MISS_TTL_S = config('NOMINATIM_MISS_TTL_S', default=10 * 60, cast=int)
+# Not a cache of failure so much as a few seconds of "we just tried that", so
+# one outage does not become a queue of callers rediscovering it one slot at a
+# time.
+NOMINATIM_ERROR_TTL_S = config('NOMINATIM_ERROR_TTL_S', default=3.0, cast=float)
+NOMINATIM_COALESCE_WAIT_S = config(
+    'NOMINATIM_COALESCE_WAIT_S', default=13.0, cast=float
+)
+
+# ── Boundary relations, direct from OSM ───────────────────────────────────────
+# The last stage of the district pipeline, and the only one that does not need
+# the place to be *named* in Nominatim's address hierarchy — it asks which
+# administrative relations enclose the coordinate. That is what reaches wards in
+# Tanzania, phường in Vietnam and 区 in Japan, all of which are mapped and most
+# of which the hierarchy does not name.
+#
+# It runs behind three caches and only on a miss, so its volume against a free
+# public service stays proportionate. Set OVERPASS_ENABLED=False to drop the
+# stage entirely — the rest of the pipeline is unaffected.
+OVERPASS_ENABLED = config('OVERPASS_ENABLED', default=True, cast=bool)
+OVERPASS_URL = config(
+    'OVERPASS_URL', default='https://overpass-api.de/api/interpreter'
+)
+# Overpass permits ~2 req/s; this path is rare enough that one is plenty.
+OVERPASS_MIN_INTERVAL_S = config('OVERPASS_MIN_INTERVAL_S', default=1.0, cast=float)
+OVERPASS_MAX_CONCURRENCY = config('OVERPASS_MAX_CONCURRENCY', default=1, cast=int)
+OVERPASS_MAX_QUEUE_WAIT_S = config('OVERPASS_MAX_QUEUE_WAIT_S', default=4.0, cast=float)
+# Overpass runs a query rather than a lookup, so it is slower by design.
+OVERPASS_TIMEOUT_S = config('OVERPASS_TIMEOUT_S', default=20.0, cast=float)
+OVERPASS_QUERY_TIMEOUT_S = config('OVERPASS_QUERY_TIMEOUT_S', default=15, cast=int)
+OVERPASS_CACHE_TTL_S = config(
+    'OVERPASS_CACHE_TTL_S', default=7 * 24 * 60 * 60, cast=int
+)
+OVERPASS_MISS_TTL_S = config('OVERPASS_MISS_TTL_S', default=10 * 60, cast=int)
+OVERPASS_ERROR_TTL_S = config('OVERPASS_ERROR_TTL_S', default=3.0, cast=float)
+OVERPASS_COALESCE_WAIT_S = config(
+    'OVERPASS_COALESCE_WAIT_S', default=24.0, cast=float
+)
+
+# ── District resolution ───────────────────────────────────────────────────────
+# How sure the pipeline has to be before it answers instead of asking. A wrong
+# region is not wrong once — it is stored, and every later lookup is served from
+# the store — so the bar is deliberately high and near-ties are never broken
+# silently.
+REGION_MIN_CONFIDENCE = config('REGION_MIN_CONFIDENCE', default=45, cast=int)
+REGION_AMBIGUITY_MARGIN = config('REGION_AMBIGUITY_MARGIN', default=15, cast=int)
+REGION_MAX_NAME_SEARCHES = config('REGION_MAX_NAME_SEARCHES', default=3, cast=int)
+REGION_MAX_CANDIDATES = config('REGION_MAX_CANDIDATES', default=5, cast=int)
+# Largest hand-traced boundary accepted, in square degrees. A district is not
+# the size of a country, and the point of tracing is a shape too small to be
+# mapped rather than one too big.
+REGION_MAX_TRACED_AREA_DEG2 = config(
+    'REGION_MAX_TRACED_AREA_DEG2', default=1.0, cast=float
+)
+
+# Per-country admin_level overrides, merged over regions/admin_levels.py.
+# Shaped {'kz': {'city': (4,), 'district': (6, 7)}}. Left empty here because the
+# table in that module is the documented default; this exists so a deployment
+# can correct one country without a code change.
+REGION_ADMIN_LEVELS = {}
+
 # ── Apple Music ───────────────────────────────────────────────────────────────
 # Credentials for the catalogue proxy in users/applemusic.py. All three come
 # from the Apple Developer portal: a MusicKit key (.p8), the key's id, and the

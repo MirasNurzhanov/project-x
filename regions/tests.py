@@ -4,14 +4,15 @@ Nothing here touches the network: `nominatim._get` is the single seam every
 upstream call passes through, so patching it exercises the whole parse →
 simplify → cache path against fixed payloads.
 """
+from contextlib import contextmanager
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
-from . import nominatim
+from . import geometry, nominatim, resolver
 from .models import Region
 
 User = get_user_model()
@@ -23,6 +24,23 @@ def make_user(username='u'):
     )
 
 
+@contextmanager
+def upstream_says(address=None, boundary=None, relations=()):
+    """Pin every stage of the resolver that would otherwise reach the network.
+
+    The pipeline has three upstream stages and a test that stubs only one will
+    quietly make real requests from the others. Naming all three in one place
+    means a test says what the outside world contains, and nothing else.
+
+    `address` is the reverse-geocoded hierarchy (None for "nowhere"), `boundary`
+    what a name search finds, `relations` what OSM reports enclosing the point.
+    """
+    with patch('regions.nominatim.address_at', return_value=address), \
+         patch('regions.nominatim._resolve_boundary', return_value=boundary), \
+         patch('regions.overpass.boundaries_at', return_value=list(relations)):
+        yield
+
+
 # A unit square from (0,0) to (1,1), as [lon, lat] like GeoJSON.
 SQUARE = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]
 # The same square with a hole from (0.4,0.4) to (0.6,0.6).
@@ -30,14 +48,22 @@ HOLE = [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6], [0.4, 0.4]]
 
 
 def make_region(rings=None, **kwargs):
+    """A stored region, measured the way the real upsert measures one.
+
+    Rings go through `geometry.unwrap_rings` first, so a fixture that crosses
+    the antimeridian is stored in the same unwrapped window production would
+    give it. For every ring that does not cross, unwrapping is the identity and
+    the numbers are exactly what they always were.
+    """
     rings = rings if rings is not None else [SQUARE]
-    lats = [p[1] for r in rings for p in r]
-    lons = [p[0] for r in rings for p in r]
+    rings = geometry.unwrap_rings(rings)
+    min_lat, min_lon, max_lat, max_lon = geometry.bounds(rings)
+    centroid_lat, centroid_lon = geometry.centroid(min_lat, min_lon, max_lat, max_lon)
     defaults = dict(
         osm_type='relation', osm_id=1, name='Square', display_name='Square, Testland',
         kind='city',
-        min_lat=min(lats), min_lon=min(lons), max_lat=max(lats), max_lon=max(lons),
-        centroid_lat=sum(lats) / len(lats), centroid_lon=sum(lons) / len(lons),
+        min_lat=min_lat, min_lon=min_lon, max_lat=max_lat, max_lon=max_lon,
+        centroid_lat=centroid_lat, centroid_lon=centroid_lon,
         rings=rings, point_count=sum(len(r) for r in rings),
     )
     defaults.update(kwargs)
@@ -194,7 +220,7 @@ class ThrottleTests(TestCase):
         caller yielding rather than firing is a correctness property."""
         nominatim._throttle()  # claims the slot
         # Slot is held, then frees on the retry.
-        with patch('regions.nominatim.cache.add', side_effect=[False, True]), \
+        with patch('regions.upstream.cache.add', side_effect=[False, True]), \
              patch('regions.nominatim.time.sleep') as sleep:
             nominatim._throttle()
         sleep.assert_called_once()
@@ -202,14 +228,14 @@ class ThrottleTests(TestCase):
     def test_unreachable_cache_degrades_instead_of_500ing(self):
         """Redis restarting must not turn a place search into a server error."""
         nominatim._local_next_allowed = 0.0
-        with patch('regions.nominatim.cache.add', side_effect=ConnectionError('redis down')):
+        with patch('regions.upstream.cache.add', side_effect=ConnectionError('redis down')):
             nominatim._throttle()          # first call still gets through
             self.assertFalse(nominatim._claim_slot())  # second is still held back
 
     def test_a_slot_that_never_frees_raises_rather_than_hanging(self):
         """A wedged throttle must surface as an error the view can turn into a
         503 — never as a request that hangs until the proxy kills it."""
-        with patch('regions.nominatim.cache.add', return_value=False), \
+        with patch('regions.upstream.cache.add', return_value=False), \
              patch('regions.nominatim.time.sleep'), \
              patch('regions.nominatim.time.monotonic', side_effect=[0, 1, 999]):
             with self.assertRaises(nominatim.NominatimError):
@@ -268,15 +294,21 @@ class RegionEndpointTests(TestCase):
         self.assertEqual(response.status_code, 503)
 
     def test_for_point_prefers_the_smallest_containing_region(self):
-        """A point in a city is also in its province; "my city" is the tighter."""
+        """A point in a city is also in its province; "my city" is the tighter.
+
+        Also the case that says tightness has to be a *decisive* signal rather
+        than a tiebreak: the two shapes are otherwise identical in every piece
+        of metadata, so if being a hundred times smaller did not separate them
+        the pipeline would call this ambiguous and ask."""
         make_region(osm_id=500, name='Province', rings=[
             [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]
         ])
         city = make_region(osm_id=501, name='City', rings=[SQUARE])
-        with patch('regions.nominatim.reverse') as reverse:
+        with patch('regions.nominatim.address_at') as address:
             body = self.client.get('/api/regions/for-point/?lat=0.5&lon=0.5').json()
         self.assertEqual(body['id'], city.pk)
-        reverse.assert_not_called()
+        self.assertEqual(body['outcome'], 'resolved')
+        address.assert_not_called()
 
     def test_for_point_rejects_out_of_range_coordinates(self):
         response = self.client.get('/api/regions/for-point/?lat=91&lon=0')
@@ -286,10 +318,10 @@ class RegionEndpointTests(TestCase):
         self.assertEqual(self.client.get('/api/regions/for-point/').status_code, 400)
 
     def test_for_point_with_no_mapped_area_is_a_404(self):
-        miss = nominatim.ReverseResult(None, None, None)
-        with patch('regions.nominatim.reverse', return_value=miss):
+        with upstream_says(address=None):
             response = self.client.get('/api/regions/for-point/?lat=0.5&lon=0.5')
         self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()['outcome'], 'unmapped')
 
 
 # ─── Zone settings ────────────────────────────────────────────────────────────
@@ -435,19 +467,19 @@ class ForPointLevelTests(TestCase):
     def test_city_lookup_does_not_return_the_district(self):
         """The district is the smaller shape, so an unfiltered "smallest
         containing" search would wrongly prefer it."""
-        with patch('regions.nominatim.reverse') as reverse:
+        with patch('regions.nominatim.address_at') as address:
             body = self.get('city').json()
         self.assertEqual(body['id'], self.city.pk)
-        reverse.assert_not_called()
+        address.assert_not_called()
 
     def test_district_lookup_returns_the_district(self):
-        with patch('regions.nominatim.reverse') as reverse:
+        with patch('regions.nominatim.address_at') as address:
             body = self.get('district').json()
         self.assertEqual(body['id'], self.district.pk)
-        reverse.assert_not_called()
+        address.assert_not_called()
 
     def test_level_defaults_to_city(self):
-        with patch('regions.nominatim.reverse'):
+        with patch('regions.nominatim.address_at'):
             self.assertEqual(self.get().json()['id'], self.city.pk)
 
     def test_unknown_level_is_rejected(self):
@@ -457,19 +489,25 @@ class ForPointLevelTests(TestCase):
         """A bare 404 cannot tell the user which city has no districts mapped,
         and cannot point them at the other button."""
         Region.objects.all().delete()
-        miss = nominatim.ReverseResult(None, None, 'Almaty')
-        with patch('regions.nominatim.reverse', return_value=miss):
+        with upstream_says(address={'city': 'Almaty', 'country_code': 'kz'}):
             response = self.get('district')
         self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()['outcome'], 'unmapped')
         self.assertEqual(response.json()['city_name'], 'Almaty')
         self.assertIn('Almaty', response.json()['detail'])
 
 
 # ─── Level resolution ─────────────────────────────────────────────────────────
+@override_settings(OVERPASS_ENABLED=False)
 class ReverseByAddressTests(TestCase):
     """Choosing a level by reverse *zoom* is what broke in the field: in Almaty
     zoom 10 returns a district and zoom 14 returns a node with no boundary at
-    all. These pin the address-hierarchy approach that replaced it."""
+    all. These pin the address-hierarchy approach that replaced it, now driven
+    through the resolver that owns it.
+
+    Overpass is off throughout: these are about the hierarchy stages, and a
+    fallback firing would mask which of them produced the answer.
+    """
 
     ALMATY_ADDRESS = {
         'address': {
@@ -497,8 +535,8 @@ class ReverseByAddressTests(TestCase):
         big = [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]
         responses = [self.ALMATY_ADDRESS, [self.city_polygon('Almaty', big, 'city', 11)]]
         with patch('regions.nominatim._get', side_effect=responses):
-            result = nominatim.reverse(0.5, 0.5, kind='city')
-        self.assertIsNotNone(result.region)
+            result = resolver.resolve(0.5, 0.5, kind='city')
+        self.assertTrue(result.resolved)
         self.assertEqual(result.region.name, 'Almaty')
         self.assertEqual(result.region.kind, 'city')
 
@@ -510,16 +548,29 @@ class ReverseByAddressTests(TestCase):
             [self.city_polygon('Almaly', SQUARE, 'city_district', 12)],
         ]
         with patch('regions.nominatim._get', side_effect=responses):
-            result = nominatim.reverse(0.5, 0.5, kind='district')
-        self.assertIsNotNone(result.region)
+            result = resolver.resolve(0.5, 0.5, kind='district')
+        self.assertTrue(result.resolved)
         self.assertEqual(result.region.kind, 'district')
+
+    def test_a_confident_answer_costs_one_search(self):
+        """The name budget is spent lazily. Three names are collected here and
+        the first one settles it, so the other two are never asked about — each
+        would be a request against a rate-limited service."""
+        responses = [
+            self.ALMATY_ADDRESS,
+            [self.city_polygon('Almaly', SQUARE, 'city_district', 21)],
+        ]
+        with patch('regions.nominatim._get', side_effect=responses) as get:
+            resolver.resolve(0.5, 0.5, kind='district')
+        self.assertEqual(get.call_count, 2)
 
     def test_district_query_is_qualified_by_its_city(self):
         """"Almaly" alone is ambiguous; "Almaly, Almaty" is not."""
-        with patch('regions.nominatim._get', side_effect=[self.ALMATY_ADDRESS, []]) as get:
-            nominatim.reverse(0.5, 0.5, kind='district')
-        self.assertEqual(get.call_args.args[1]['q'], 'Almaly, Almaty')
-        self.assertEqual(get.call_args.args[1]['countrycodes'], 'kz')
+        responses = [self.ALMATY_ADDRESS, [], []]
+        with patch('regions.nominatim._get', side_effect=responses) as get:
+            resolver.resolve(0.5, 0.5, kind='district')
+        self.assertEqual(get.call_args_list[1].args[1]['q'], 'Almaly, Almaty')
+        self.assertEqual(get.call_args_list[1].args[1]['countrycodes'], 'kz')
 
     def test_a_same_named_place_elsewhere_is_rejected(self):
         """Name search is only safe because the result has to contain the
@@ -528,9 +579,11 @@ class ReverseByAddressTests(TestCase):
         responses = [
             self.ALMATY_ADDRESS,
             [self.city_polygon('Almaty', far_away, 'city', 13)],
+            [], [],
         ]
         with patch('regions.nominatim._get', side_effect=responses):
-            result = nominatim.reverse(0.5, 0.5, kind='city')
+            result = resolver.resolve(0.5, 0.5, kind='city')
+        self.assertFalse(result.resolved)
         self.assertIsNone(result.region)
         # Still cached for anyone who really is there.
         self.assertTrue(Region.objects.filter(osm_id=13).exists())
@@ -538,14 +591,16 @@ class ReverseByAddressTests(TestCase):
     def test_missing_level_reports_the_city_without_a_second_call(self):
         address = {'address': {'city': 'Flatville', 'country_code': 'kz'}}
         with patch('regions.nominatim._get', side_effect=[address]) as get:
-            result = nominatim.reverse(0.5, 0.5, kind='district')
+            result = resolver.resolve(0.5, 0.5, kind='district')
         self.assertIsNone(result.region)
+        self.assertEqual(result.outcome, resolver.Outcome.UNMAPPED)
         self.assertEqual(result.city_name, 'Flatville')
         self.assertEqual(get.call_count, 1)
 
-    def test_reverse_reads_the_hierarchy_at_one_fixed_zoom(self):
-        with patch('regions.nominatim._get', side_effect=[self.ALMATY_ADDRESS, []]) as get:
-            nominatim.reverse(0.5, 0.5, kind='city')
+    def test_the_hierarchy_is_read_at_one_fixed_zoom(self):
+        responses = [self.ALMATY_ADDRESS, [], [], []]
+        with patch('regions.nominatim._get', side_effect=responses) as get:
+            resolver.resolve(0.5, 0.5, kind='city')
         self.assertEqual(get.call_args_list[0].args[1]['zoom'], nominatim.ADDRESS_ZOOM)
         self.assertEqual(get.call_args_list[0].args[1]['addressdetails'], 1)
 

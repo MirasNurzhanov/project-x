@@ -385,6 +385,27 @@ def snap_coordinates(user, lat, lon):
     )
 
 
+def position_tolerance_m(user):
+    """How far the position we store for `user` may be from where they stand.
+
+    Zero for a precise sharer: what we hold is what their phone sent. For an
+    Approximate sharer it is half the diagonal of a grid cell, which is the
+    worst case for a point snapped to that cell's centre.
+
+    The error is ours and deliberate, so anything comparing a stored position
+    against a real-world boundary has to account for it rather than treat it as
+    truth. Setting a region zone is the case that found this: the fuzzed point
+    lands over a district border and the user is told they are not standing
+    where they are standing.
+    """
+    from .models import User
+
+    if user.location_sharing == User.LocationSharing.APPROXIMATE:
+        # Half the diagonal of a square cell: sqrt(2)/2, rounded up a hair.
+        return APPROX_GRID_M * 0.708
+    return 0.0
+
+
 def store_coordinates(user, lat, lon):
     """Apply the user's location-sharing mode and return what to persist.
 

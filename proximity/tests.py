@@ -3,6 +3,9 @@ from rest_framework.test import APIClient
 
 from friends.models import FriendRequest, HiRequest
 from interests.models import Interest
+from notifications.models import Notification
+from notifications.utils import notify_zone_music_entry
+from proximity.views import _trigger_zone_music_alerts
 from users.models import User
 from users.presets import ZONE_PRESETS
 
@@ -138,3 +141,80 @@ class NearbySharedInterestsTests(TestCase):
         stranger.interests.set([self.chess])
         entry = self._nearby_by_id()[stranger.pk]
         self.assertEqual(entry['shared_interests'], [])
+
+
+class ZoneSwitchScopeTests(TestCase):
+    """`zone_active` turns off the zone *drawn on the map*, and nothing else.
+
+    It used to gate the music too — the earshot circles, a friend's ability to
+    play the track, and these alerts — so removing the circle from the map
+    silently muted a song its owner had never touched. The switch is labelled
+    "Zone on the map"; these pin the behaviour to the label.
+    """
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username='owner', email='owner@example.com', password='testpass-123',
+            latitude='10.0', longitude='10.0',
+            zone_preset=ZONE_PRESETS[0]['id'],
+            zone_active=False,          # circle removed from the map
+            zone_radius=500,
+            music_zone_alerts=True,
+        )
+        self.visitor = User.objects.create_user(
+            username='visitor', email='visitor@example.com', password='testpass-123',
+            latitude='10.001', longitude='10.001',
+        )
+        FriendRequest.objects.create(
+            sender=self.visitor, receiver=self.owner,
+            status=FriendRequest.Status.ACCEPTED,
+        )
+
+    def alerts_for(self, user):
+        return Notification.objects.filter(recipient=user)
+
+    def test_music_alerts_still_fire_with_the_map_zone_off(self):
+        notify_zone_music_entry(self.visitor, self.owner, 120)
+        self.assertTrue(self.alerts_for(self.owner).exists())
+
+    def test_no_track_means_no_alert(self):
+        """The track is the switch that was always meant to do this job."""
+        self.owner.zone_preset = ''
+        self.owner.zone_audio = None
+        self.owner.zone_apple_preview_url = ''
+        self.owner.save()
+        notify_zone_music_entry(self.visitor, self.owner, 120)
+        self.assertFalse(self.alerts_for(self.owner).exists())
+
+    def test_the_sweep_still_considers_an_owner_with_the_map_zone_off(self):
+        """The queryset used to filter these owners out before anything else
+        got a chance to look at them."""
+        _trigger_zone_music_alerts(self.visitor)
+        self.assertTrue(self.alerts_for(self.owner).exists())
+
+    def test_a_friend_out_of_earshot_is_still_not_alerted(self):
+        """Decoupling the switch must not widen who counts as being in
+        earshot — that is still the radius, and only the radius."""
+        self.visitor.latitude, self.visitor.longitude = 20.0, 20.0
+        self.visitor.save()
+        _trigger_zone_music_alerts(self.visitor)
+        self.assertFalse(self.alerts_for(self.owner).exists())
+
+    def test_muting_music_zone_alerts_still_silences_them(self):
+        self.owner.music_zone_alerts = False
+        self.owner.save()
+        notify_zone_music_entry(self.visitor, self.owner, 120)
+        self.assertFalse(self.alerts_for(self.owner).exists())
+
+    def test_a_friend_is_still_sent_the_track_with_the_map_zone_off(self):
+        """The client used to drop this URL when the zone was off. The server
+        always sent it; nothing here should have to change for the map to stop
+        throwing it away, but it is worth pinning that it really does arrive."""
+        client = APIClient()
+        client.force_authenticate(self.visitor)
+        entry = next(
+            row for row in client.get('/api/proximity/nearby/').json()
+            if row['id'] == self.owner.pk
+        )
+        self.assertFalse(entry['zone_active'])
+        self.assertTrue(entry.get('zone_audio_url'))

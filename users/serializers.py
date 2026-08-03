@@ -398,9 +398,24 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {'zone_region': 'Aura needs your location before it can set a zone here.'}
                 )
-            if not incoming.contains(float(lat), float(lon)):
+            # Tested against the position we *store*, which on Approximate
+            # sharing is a ~500m grid-cell centre rather than where the user is
+            # standing. Checking that strictly told people in Бостандық that
+            # they were not in Бостандық, because the cell centre had landed
+            # over the border in Алмалы. The tolerance is the error we
+            # introduced ourselves — zero for anyone sharing precisely — so the
+            # rule this exists to enforce, that you cannot blanket a city you
+            # are not in, is unchanged for them and only softened by a few
+            # hundred metres at the border for everyone else.
+            if not incoming.could_contain(
+                float(lat), float(lon), visibility.position_tolerance_m(user),
+            ):
                 raise serializers.ValidationError(
-                    {'zone_region': f'You can only cover a place you are in, and you are not in {incoming.name}.'}
+                    {'zone_region': (
+                        f'You can only cover a place you are in, and the location Aura '
+                        f'has for you is not inside {incoming.name}. If you have just '
+                        f'moved, open the map for a moment so it can catch up.'
+                    )}
                 )
 
         has_audio = attrs.get('zone_audio') or (
