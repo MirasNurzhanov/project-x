@@ -69,11 +69,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
         return serialize_links(obj)
 
     def get_zone_audio_url(self, obj):
-        if obj.zone_preset and obj.zone_preset in PRESET_MAP:
-            return PRESET_MAP[obj.zone_preset]['url']
-        if obj.zone_audio:
-            return obj.zone_audio.url
-        return None
+        # Shared with the zone and public-profile serializers, so an Apple track
+        # cannot be the answer on one endpoint and invisible on another.
+        return _zone_audio_url(obj)
 
 
 def _pending_relationship(me, obj):
@@ -201,7 +199,23 @@ def _live_story_summaries(obj):
     ]
 
 
+#: The Apple track slot, emptied. Five fields move together or the zone ends up
+#: showing one song's artwork over another's audio.
+_CLEARED_APPLE_TRACK = {
+    'zone_apple_id': '',
+    'zone_apple_title': '',
+    'zone_apple_artist': '',
+    'zone_apple_artwork': '',
+    'zone_apple_preview_url': '',
+}
+
+
 def _zone_audio_url(obj):
+    # One zone plays one thing, and this is the order that decides which. An
+    # Apple track wins because picking one clears the other two — the order
+    # only matters for rows written before that rule existed.
+    if obj.zone_apple_preview_url:
+        return obj.zone_apple_preview_url
     if obj.zone_preset and obj.zone_preset in PRESET_MAP:
         return PRESET_MAP[obj.zone_preset]['url']
     if obj.zone_audio:
@@ -300,20 +314,42 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
         },
     )
 
+    # Same treatment as `zone_radius` above, with its own copy: the ceiling on
+    # earshot is not the ceiling on a zone, and telling someone to "switch to a
+    # region" would be nonsense advice about a circle that has no region mode.
+    music_zone_radius = serializers.IntegerField(
+        required=False,
+        min_value=User.ZONE_RADIUS_MIN_M,
+        max_value=User.ZONE_RADIUS_MAX_M,
+        error_messages={
+            'min_value': f'A music zone cannot be smaller than {User.ZONE_RADIUS_MIN_M}m.',
+            'max_value': f'A music zone tops out at {User.ZONE_RADIUS_MAX_M // 1000}km.',
+        },
+    )
+    #: What earshot actually is right now, separate or inherited. Read-only, so
+    #: the client never has to reimplement the fallback.
+    music_radius_m = serializers.IntegerField(read_only=True)
+
     class Meta:
         model = User
         fields = (
             'zone_audio', 'zone_preset', 'zone_audio_url', 'zone_active',
             'zone_mode', 'zone_radius', 'zone_region', 'zone_region_detail',
             'effective_zone_mode',
+            'music_zone_separate', 'music_zone_radius', 'music_zone_alerts',
+            'music_radius_m',
+            # Written through ZoneAppleMusicView, which resolves an id against
+            # Apple rather than trusting a phone with a URL the map will play.
+            'zone_apple_id', 'zone_apple_title', 'zone_apple_artist',
+            'zone_apple_artwork', 'zone_apple_preview_url',
+        )
+        read_only_fields = (
+            'zone_apple_id', 'zone_apple_title', 'zone_apple_artist',
+            'zone_apple_artwork', 'zone_apple_preview_url',
         )
 
     def get_zone_audio_url(self, obj):
-        if obj.zone_preset and obj.zone_preset in PRESET_MAP:
-            return PRESET_MAP[obj.zone_preset]['url']
-        if obj.zone_audio:
-            return obj.zone_audio.url
-        return None
+        return _zone_audio_url(obj)
 
     def validate_zone_preset(self, value):
         if value and value not in PRESET_MAP:
@@ -366,6 +402,12 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
         # Selecting a preset clears any existing uploaded file
         if attrs.get('zone_preset') and has_audio:
             attrs['zone_audio'] = None
+        # …and either of them clears an Apple track, which is the third way to
+        # fill the same slot. Without this a user who picked a song and then a
+        # preset would keep hearing the song: `_zone_audio_url` reads the Apple
+        # field first.
+        if attrs.get('zone_audio') or attrs.get('zone_preset'):
+            attrs.update(_CLEARED_APPLE_TRACK)
         return attrs
 
 

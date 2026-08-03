@@ -7,6 +7,11 @@ class Notification(models.Model):
         NEARBY_USER = 'nearby_user', 'Nearby User'
         STORY_REACTION = 'story_reaction', 'Story Reaction'
         STORY_REPLY = 'story_reply', 'Story Reply'
+        # Someone walked into earshot of a zone's music, or theirs came into
+        # earshot of you. Deliberately *not* NEARBY_USER: proximity alone is
+        # not news and the client drops those on arrival, but a track you can
+        # only hear while you are standing here expires when you walk away.
+        ZONE_MUSIC = 'zone_music', 'Zone Music'
 
     recipient = models.ForeignKey(
         settings.AUTH_USER_MODEL,

@@ -9,7 +9,7 @@ from users.models import User
 from friends.models import FriendRequest, HiRequest
 from .serializers import LocationUpdateSerializer, NearbyUserSerializer
 from .utils import haversine
-from notifications.utils import notify_nearby_match
+from notifications.utils import notify_nearby_match, notify_zone_music_entry
 from encounters.utils import delete_old_encounters, record_encounter
 
 
@@ -107,6 +107,48 @@ def _trigger_nearby_notifications(user):
             record_encounter(user, candidate, dist)
 
 
+def _trigger_zone_music_alerts(user):
+    """`user` has just reported a position. Whose music are they now inside?
+
+    Friends only, in both roles. A stranger's zone music is not something they
+    asked to be told about, and a stranger walking past is not news to the
+    owner either — the map already shows both of them to each other.
+
+    Only the person who *moved* is evaluated, which is enough to cover both
+    directions: when you walk into a stationary friend's zone this runs for
+    you, and when they walk into yours it runs for them.
+    """
+    if user.latitude is None or user.longitude is None:
+        return
+    if user.location_sharing == User.LocationSharing.PAUSED:
+        return
+
+    lat = float(user.latitude)
+    lon = float(user.longitude)
+
+    friend_ids, _ = _get_relationship_ids(user, visibility.blocked_ids_for(user) | {user.pk})
+    if not friend_ids:
+        return
+
+    owners = User.objects.filter(
+        pk__in=friend_ids,
+        zone_active=True,
+        latitude__isnull=False,
+        longitude__isnull=False,
+    ).exclude(location_sharing=User.LocationSharing.PAUSED)
+
+    for owner in owners:
+        # A region zone is a city border, not a distance, and its owner did not
+        # choose it as a listening range — inheriting it here would alert on
+        # every friend anywhere in town. Separating the music zone is exactly
+        # how someone in region mode opts into these.
+        if owner.effective_zone_mode == User.ZoneMode.REGION and not owner.music_zone_separate:
+            continue
+        metres = haversine(lat, lon, float(owner.latitude), float(owner.longitude)) * 1000
+        if metres <= owner.music_radius_m:
+            notify_zone_music_entry(user, owner, metres)
+
+
 #: Speed bucket edges in m/s. 2.2 m/s ≈ 8 km/h, above a walk; 8.0 m/s ≈ 29 km/h,
 #: which separates a cyclist from a vehicle well enough for a visual hint. The
 #: client applies hysteresis around these before reporting, so a user hovering
@@ -158,6 +200,12 @@ class UpdateLocationView(APIView):
 
         user.save(update_fields=fields)
         _trigger_nearby_notifications(user)
+        # Best-effort: a zone alert is a nice-to-have, and a failure inside it
+        # must not fail the location write that every other feature depends on.
+        try:
+            _trigger_zone_music_alerts(user)
+        except Exception as exc:  # noqa: BLE001
+            print(f'[Zone] music alert sweep failed: {exc}')
         return Response({'latitude': str(user.latitude), 'longitude': str(user.longitude)})
 
 

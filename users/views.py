@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from friends.models import FriendRequest
-from . import visibility
+from . import applemusic, visibility
 from .links import LinkError, MAX_LINKS_PER_USER, normalize_link
 from .serializers import (
     RegisterSerializer, UserProfileSerializer, EditProfileSerializer,
@@ -244,6 +244,83 @@ class ZonePresetsView(APIView):
 
     def get(self, request):
         return Response(ZONE_PRESETS)
+
+
+class AppleMusicSearchView(APIView):
+    """Search the Apple Music catalogue on the caller's behalf.
+
+    Authenticated, because it spends this server's Apple credentials: an open
+    proxy to a rate-limited third-party API is someone else's free search
+    backend. Two characters minimum for the same reason.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        term = (request.query_params.get('q') or '').strip()
+        if len(term) < MIN_SEARCH_LENGTH:
+            return Response([])
+        try:
+            songs = applemusic.search_songs(
+                term,
+                storefront=request.query_params.get('storefront'),
+                limit=request.query_params.get('limit') or 25,
+            )
+        except applemusic.AppleMusicError as exc:
+            return Response({'detail': str(exc)}, status=exc.status)
+        return Response(songs)
+
+
+class ZoneAppleMusicView(APIView):
+    """The Apple track a zone is playing: set it by id, or clear it.
+
+    POST takes `{song_id}` and nothing else that matters. Title, artist,
+    artwork and the preview URL are read back from Apple here — a client that
+    could name its own preview URL could point every listener's player at any
+    file on the internet.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        try:
+            song = applemusic.get_song(
+                request.data.get('song_id') or request.data.get('id'),
+                storefront=request.data.get('storefront'),
+            )
+        except applemusic.AppleMusicError as exc:
+            return Response({'detail': str(exc)}, status=exc.status)
+
+        user = request.user
+        user.zone_apple_id = song['id']
+        user.zone_apple_title = song['title'][:200]
+        user.zone_apple_artist = song['artist'][:200]
+        user.zone_apple_artwork = song['artwork'][:500]
+        user.zone_apple_preview_url = song['preview_url'][:500]
+        # A zone plays one thing. The preset and the upload are the other two
+        # ways to fill this slot, and they lose — the same rule ZoneUpdate
+        # applies in the other direction.
+        user.zone_preset = ''
+        user.zone_audio = None
+        user.save(update_fields=[
+            'zone_apple_id', 'zone_apple_title', 'zone_apple_artist',
+            'zone_apple_artwork', 'zone_apple_preview_url',
+            'zone_preset', 'zone_audio', 'updated_at',
+        ])
+        return Response(ZoneUpdateSerializer(user).data)
+
+    def delete(self, request):
+        user = request.user
+        user.zone_apple_id = ''
+        user.zone_apple_title = ''
+        user.zone_apple_artist = ''
+        user.zone_apple_artwork = ''
+        user.zone_apple_preview_url = ''
+        user.save(update_fields=[
+            'zone_apple_id', 'zone_apple_title', 'zone_apple_artist',
+            'zone_apple_artwork', 'zone_apple_preview_url', 'updated_at',
+        ])
+        return Response(ZoneUpdateSerializer(user).data)
 
 
 MIN_SEARCH_LENGTH = 2

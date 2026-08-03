@@ -89,12 +89,27 @@ class NearbyUserSerializer(serializers.Serializer):
 
         if visibility.can_view(me, obj, 'zone_audio', rel):
             data['zone_audio'] = obj.zone_audio.url if obj.zone_audio else None
-            data['zone_audio_url'] = _preset_or_upload_url(obj)
+            data['zone_audio_url'] = _zone_track_url(obj)
+            # How close you have to be to hear it, which is no longer the same
+            # as how big their zone is. Sent inside this gate rather than with
+            # `zone_radius` above: to someone who may not hear the track, the
+            # earshot circle is a shape with no meaning.
+            data['music_zone_radius'] = obj.music_radius_m
+            data['music_zone_separate'] = obj.music_zone_separate
+            # Apple tracks have a real name and cover art. Without these the
+            # map would fall back to parsing a title out of the preview URL's
+            # filename, which for Apple's CDN is a hash.
+            if obj.zone_apple_preview_url:
+                data['zone_track_title'] = obj.zone_apple_title
+                data['zone_track_artist'] = obj.zone_apple_artist
+                data['zone_track_artwork'] = obj.zone_apple_artwork
 
         return data
 
 
-def _preset_or_upload_url(obj):
+def _zone_track_url(obj):
+    if obj.zone_apple_preview_url:
+        return obj.zone_apple_preview_url
     if obj.zone_preset and obj.zone_preset in PRESET_MAP:
         return PRESET_MAP[obj.zone_preset]['url']
     if obj.zone_audio:

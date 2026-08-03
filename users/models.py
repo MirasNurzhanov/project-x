@@ -61,6 +61,75 @@ class User(AbstractUser):
     )
     zone_active = models.BooleanField(default=False)
 
+    # ── Music zone ────────────────────────────────────────────────────────────
+    # How far the *sound* carries, which is not the same question as how far you
+    # carry. The zone is a radar: it says who counts as near you, and people
+    # widen it to be found. Earshot is the opposite instinct — a track you want
+    # a friend at the next table to catch is not one you want playing for
+    # everyone in a 5km circle. They were one number, so tuning either ruined
+    # the other.
+    #
+    # Off by default, and inheriting `zone_radius` while off, so nothing changes
+    # for anyone who never opens this. See `music_radius_m`.
+    music_zone_separate = models.BooleanField(default=False)
+    music_zone_radius = models.IntegerField(
+        default=200,
+        validators=[
+            MinValueValidator(ZONE_RADIUS_MIN_M),
+            MaxValueValidator(ZONE_RADIUS_MAX_M),
+        ],
+    )
+    #: Both directions of the music-zone alert: whether friends stepping into
+    #: your earshot is news to you, and whether their music is news to you. One
+    #: switch rather than two, because "quiet, please" is one intention.
+    music_zone_alerts = models.BooleanField(default=True)
+
+    # ── Apple Music ───────────────────────────────────────────────────────────
+    # A catalogue track, resolved server-side from a song id (see
+    # users/applemusic.py) so nothing here is a URL the phone made up.
+    #
+    # `zone_apple_preview_url` is Apple's 30-second preview, and that is a hard
+    # ceiling rather than a shortcut: full playback requires MusicKit and the
+    # *listener's* own subscription, and a stranger walking past your zone has
+    # neither. A preview is what can legally and technically reach them.
+    zone_apple_id = models.CharField(max_length=64, blank=True)
+    zone_apple_title = models.CharField(max_length=200, blank=True)
+    zone_apple_artist = models.CharField(max_length=200, blank=True)
+    zone_apple_artwork = models.URLField(max_length=500, blank=True)
+    zone_apple_preview_url = models.URLField(max_length=500, blank=True)
+
+    @property
+    def music_radius_m(self):
+        """Metres someone must be within to hear this zone's track.
+
+        Falls back to the zone's own radius, so a user who never separates the
+        two keeps the single circle they already had.
+        """
+        if self.music_zone_separate:
+            return self.music_zone_radius
+        return self.zone_radius
+
+    @property
+    def zone_track_title(self):
+        """What is playing, by name — empty when there is no name to give.
+
+        An upload has only a filename, and "nocturne_04_ab12cd.mp3" in a push
+        notification is worse than a sentence that does not name the track at
+        all. Callers phrase around the empty string rather than filling it.
+        """
+        if self.zone_apple_preview_url:
+            return self.zone_apple_title
+        if self.zone_preset:
+            from .presets import PRESET_MAP
+            preset = PRESET_MAP.get(self.zone_preset)
+            if preset:
+                return preset['name']
+        return ''
+
+    @property
+    def has_zone_track(self):
+        return bool(self.zone_apple_preview_url or self.zone_preset or self.zone_audio)
+
     @property
     def effective_zone_mode(self):
         """The mode actually in force.

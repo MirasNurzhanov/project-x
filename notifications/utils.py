@@ -111,6 +111,88 @@ def notify_story_reply(story, sender, comment: str):
     )
 
 
+#: A music zone is a place you stand in, not an event, so someone pacing across
+#: its edge must not produce a stream of alerts. Longer than the nearby cooldown
+#: because a track is the same track an hour later.
+ZONE_MUSIC_COOLDOWN_MINUTES = 90
+
+
+def _recently_alerted(recipient, sender, notification_type, minutes):
+    cutoff = timezone.now() - timedelta(minutes=minutes)
+    return Notification.objects.filter(
+        recipient=recipient,
+        sender=sender,
+        notification_type=notification_type,
+        created_at__gte=cutoff,
+    ).exists()
+
+
+def _zone_music_alert(recipient, sender, message, push_title):
+    if _recently_alerted(
+        recipient, sender, Notification.Type.ZONE_MUSIC, ZONE_MUSIC_COOLDOWN_MINUTES,
+    ):
+        return None
+    notification = Notification.objects.create(
+        recipient=recipient,
+        sender=sender,
+        notification_type=Notification.Type.ZONE_MUSIC,
+        message=message,
+    )
+    try:
+        send_push_notification(recipient, push_title, message)
+    except Exception as exc:  # noqa: BLE001 — push is never worth a 500
+        print(f'[Push] zone music alert failed: {exc}')
+    return notification
+
+
+def notify_zone_music_entry(visitor, owner, distance_m: float):
+    """`visitor` is standing inside `owner`'s music zone.
+
+    Two alerts, because the two people learn different things:
+
+      - the owner learns a friend is close enough to hear what they are playing,
+      - the visitor learns there is something here to play at all, which is the
+        half that used to be a banner floating over the map and autoplaying
+        before anyone had read it.
+
+    Neither is sent to someone who turned music-zone alerts off, and the
+    visitor's half additionally requires that they are allowed to hear the
+    track — being told about music you are not permitted to play is worse than
+    silence. Both sides share one cooldown row per direction.
+    """
+    from users.visibility import blocked_ids_for, can_view
+
+    if visitor.pk == owner.pk:
+        return
+    if not owner.zone_active or not owner.has_zone_track:
+        return
+    if visitor.pk in blocked_ids_for(owner):
+        return
+
+    # An upload has no name worth printing, so both sentences are written to
+    # survive an empty title rather than filling it with a filename.
+    title = owner.zone_track_title
+    near = f'{int(round(distance_m))}m' if distance_m < 1000 else f'{distance_m / 1000:.1f}km'
+
+    if owner.music_zone_alerts:
+        heard = f'in earshot of {title}' if title else 'in earshot of your track'
+        _zone_music_alert(
+            recipient=owner,
+            sender=visitor,
+            message=f'@{visitor.username} is in your music zone — {near} away, {heard}.',
+            push_title='🎵 Someone is in your music zone',
+        )
+
+    if visitor.music_zone_alerts and can_view(visitor, owner, 'zone_audio'):
+        playing = f'{title} is playing here' if title else 'there is something playing here'
+        _zone_music_alert(
+            recipient=visitor,
+            sender=owner,
+            message=f"You're in @{owner.username}'s music zone — {playing}.",
+            push_title='🎵 There is music where you are',
+        )
+
+
 def notify_nearby_match(user, nearby_user, distance_km: float):
     """
     Create a NEARBY_USER notification for both users.

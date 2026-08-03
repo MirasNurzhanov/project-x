@@ -215,4 +215,20 @@ NOMINATIM_USER_AGENT = config(
     'NOMINATIM_USER_AGENT', default='Aura/1.0 (support@aura-app.com)'
 )
 
+# ── Apple Music ───────────────────────────────────────────────────────────────
+# Credentials for the catalogue proxy in users/applemusic.py. All three come
+# from the Apple Developer portal: a MusicKit key (.p8), the key's id, and the
+# team id. Absent, /api/users/zone/apple-music/ answers 503 and the app hides
+# the feature — the rest of the zone works untouched.
+#
+# APPLE_MUSIC_PRIVATE_KEY holds the *contents* of the .p8, not a path: the file
+# cannot be committed and there is nowhere to put it on a Railway dyno. Literal
+# `\n` in the variable is fine; applemusic.py unescapes it.
+APPLE_MUSIC_TEAM_ID = config('APPLE_MUSIC_TEAM_ID', default='')
+APPLE_MUSIC_KEY_ID = config('APPLE_MUSIC_KEY_ID', default='')
+APPLE_MUSIC_PRIVATE_KEY = config('APPLE_MUSIC_PRIVATE_KEY', default='')
+#: Which country's catalogue to search when the client does not say. Availability
+#: and preview URLs genuinely differ by storefront.
+APPLE_MUSIC_STOREFRONT = config('APPLE_MUSIC_STOREFRONT', default='us')
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
