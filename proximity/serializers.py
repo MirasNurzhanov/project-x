@@ -68,6 +68,9 @@ class NearbyUserSerializer(serializers.Serializer):
             return data
 
         data['bio'] = obj.bio
+        data['date_of_birth'] = obj.date_of_birth
+        data['nationality'] = obj.nationality
+        data['profession'] = obj.profession
 
         # Zone *presence* stays visible to everyone so the map can still draw
         # the shape; only the audio itself is gated.
