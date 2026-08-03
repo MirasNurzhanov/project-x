@@ -118,6 +118,7 @@ class PublicProfileSerializer(serializers.Serializer):
         data['date_of_birth'] = obj.date_of_birth
         data['nationality'] = obj.nationality
         data['profession'] = obj.profession
+        data['clubs'] = _club_memberships(obj)
 
         if visibility.can_view(me, obj, 'interests', rel):
             data['interests'] = InterestSerializer(obj.interests.all(), many=True).data
@@ -199,6 +200,19 @@ def _live_story_summaries(obj):
             'created_at': s.created_at,
         }
         for s in Story.objects.filter(user=obj, expires_at__gt=timezone.now()).order_by('-created_at')
+    ]
+
+
+def _club_memberships(obj):
+    from clubs.models import ClubMember
+    return [
+        {
+            'id': m.club_id,
+            'name': m.club.name,
+            'emblem': m.club.emblem.url if m.club.emblem else None,
+            'role': m.role,
+        }
+        for m in obj.club_memberships.select_related('club').all()
     ]
 
 
