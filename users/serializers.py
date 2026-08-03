@@ -49,7 +49,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
         model = User
         fields = (
             'id', 'username', 'email', 'bio', 'profile_picture',
-            'date_of_birth', 'age_tier', 'interests',
+            'date_of_birth', 'age_tier', 'nationality', 'profession', 'interests',
             'latitude', 'longitude',
             'location_sharing', 'privacy_mode', 'date_joined', 'links',
             'is_private',
@@ -420,7 +420,7 @@ class EditProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('bio', 'profile_picture', 'date_of_birth', 'interests', 'push_token')
+        fields = ('bio', 'profile_picture', 'date_of_birth', 'nationality', 'profession', 'interests', 'push_token')
 
     def update(self, instance, validated_data):
         interests = validated_data.pop('interests', None)

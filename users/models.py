@@ -195,6 +195,9 @@ class User(AbstractUser):
     discoverable_by_username = models.BooleanField(default=True)
     discoverable_by_interest = models.BooleanField(default=True)
 
+    nationality = models.CharField(max_length=100, blank=True, null=True)
+    profession = models.CharField(max_length=100, blank=True, null=True)
+
     push_token = models.CharField(max_length=200, blank=True, null=True)
 
     # ── Presence ──────────────────────────────────────────────────────────────
