@@ -115,6 +115,9 @@ class PublicProfileSerializer(serializers.Serializer):
 
         data['bio'] = obj.bio
         data['date_joined'] = obj.date_joined
+        data['date_of_birth'] = obj.date_of_birth
+        data['nationality'] = obj.nationality
+        data['profession'] = obj.profession
 
         if visibility.can_view(me, obj, 'interests', rel):
             data['interests'] = InterestSerializer(obj.interests.all(), many=True).data
