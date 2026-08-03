@@ -98,6 +98,25 @@ class User(AbstractUser):
     zone_apple_artwork = models.URLField(max_length=500, blank=True)
     zone_apple_preview_url = models.URLField(max_length=500, blank=True)
 
+    # ── The loop ──────────────────────────────────────────────────────────────
+    # Which slice of the track actually repeats. Source-agnostic on purpose: an
+    # upload is a whole song and the interesting part is fifteen seconds of it,
+    # and even Apple's 30-second preview is usually longer than anyone wants
+    # going round and round.
+    #
+    # A null end means "play to the end of the file", which is what everyone
+    # gets until they trim — the duration is not known here, and storing a
+    # guess would be worse than storing nothing. Both are reset whenever the
+    # track changes; a window chosen for one song means nothing in another.
+    MIN_LOOP_MS = 3000
+
+    zone_track_start_ms = models.PositiveIntegerField(default=0)
+    zone_track_end_ms = models.PositiveIntegerField(null=True, blank=True)
+
+    @property
+    def has_trimmed_loop(self):
+        return self.zone_track_start_ms > 0 or self.zone_track_end_ms is not None
+
     @property
     def music_radius_m(self):
         """Metres someone must be within to hear this zone's track.

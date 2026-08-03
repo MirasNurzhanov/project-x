@@ -209,6 +209,15 @@ _CLEARED_APPLE_TRACK = {
     'zone_apple_preview_url': '',
 }
 
+#: The loop, back to the whole track. Applied whenever the track changes:
+#: "seconds 40 to 55" was chosen while listening to one song and is arbitrary
+#: in the next, and silently carrying it over would leave someone's zone
+#: looping a window they never picked — or, on a shorter track, past its end.
+_CLEARED_LOOP = {
+    'zone_track_start_ms': 0,
+    'zone_track_end_ms': None,
+}
+
 
 def _zone_audio_url(obj):
     # One zone plays one thing, and this is the order that decides which. An
@@ -342,6 +351,7 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
             # Apple rather than trusting a phone with a URL the map will play.
             'zone_apple_id', 'zone_apple_title', 'zone_apple_artist',
             'zone_apple_artwork', 'zone_apple_preview_url',
+            'zone_track_start_ms', 'zone_track_end_ms',
         )
         read_only_fields = (
             'zone_apple_id', 'zone_apple_title', 'zone_apple_artist',
@@ -357,6 +367,11 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
+        # Two independent rulesets, kept apart because they have nothing to say
+        # to each other: what the zone *is*, and which slice of its track loops.
+        return self._validate_loop(self._validate_zone(attrs))
+
+    def _validate_zone(self, attrs):
         # Region mode needs a region: either arriving in this request or
         # already stored. Without one the zone would have no shape at all.
         mode = attrs.get('zone_mode') or (self.instance and self.instance.zone_mode)
@@ -408,6 +423,43 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
         # field first.
         if attrs.get('zone_audio') or attrs.get('zone_preset'):
             attrs.update(_CLEARED_APPLE_TRACK)
+
+        # A new track means a new loop. Cleared on any change of source —
+        # including clearing one, so a silent zone does not keep a window.
+        if (
+            'zone_audio' in attrs or 'zone_preset' in attrs
+        ) and 'zone_track_start_ms' not in attrs:
+            attrs.update(_CLEARED_LOOP)
+
+        return attrs
+
+    def _validate_loop(self, attrs):
+        """The loop has to be a real window: ordered, and long enough to be a
+        loop rather than a stutter.
+
+        The track's true length is not known here — it lives in the audio file,
+        which this server never decodes — so an end past the end of the track
+        cannot be rejected. The player clamps to the duration it actually
+        loaded, which is the only place that number exists.
+        """
+        start = attrs.get('zone_track_start_ms')
+        end = attrs.get('zone_track_end_ms')
+        if start is None and self.instance:
+            start = self.instance.zone_track_start_ms
+        if end is None and 'zone_track_end_ms' not in attrs and self.instance:
+            end = self.instance.zone_track_end_ms
+
+        if end is not None:
+            if end <= (start or 0):
+                raise serializers.ValidationError(
+                    {'zone_track_end_ms': 'The loop has to end after it starts.'}
+                )
+            if end - (start or 0) < User.MIN_LOOP_MS:
+                raise serializers.ValidationError({
+                    'zone_track_end_ms':
+                        f'A loop shorter than {User.MIN_LOOP_MS // 1000} seconds is a stutter, '
+                        'not a track.',
+                })
         return attrs
 
 

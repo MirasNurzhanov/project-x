@@ -103,6 +103,12 @@ class NearbyUserSerializer(serializers.Serializer):
                 data['zone_track_title'] = obj.zone_apple_title
                 data['zone_track_artist'] = obj.zone_apple_artist
                 data['zone_track_artwork'] = obj.zone_apple_artwork
+            # The slice that loops. Sent to listeners, not just the owner — the
+            # trim is part of what the zone plays, so a card that ignored it
+            # would play a different thing from what its owner set up.
+            if obj.has_trimmed_loop:
+                data['zone_track_start_ms'] = obj.zone_track_start_ms
+                data['zone_track_end_ms'] = obj.zone_track_end_ms
 
         return data
 

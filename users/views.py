@@ -339,10 +339,16 @@ class ZoneAppleMusicView(APIView):
         # applies in the other direction.
         user.zone_preset = ''
         user.zone_audio = None
+        # A new song means a new loop — "seconds 12 to 24" was chosen against a
+        # different piece of audio and is meaningless here, and on a shorter
+        # preview it would point past the end.
+        user.zone_track_start_ms = 0
+        user.zone_track_end_ms = None
         user.save(update_fields=[
             'zone_apple_id', 'zone_apple_title', 'zone_apple_artist',
             'zone_apple_artwork', 'zone_apple_preview_url',
-            'zone_preset', 'zone_audio', 'updated_at',
+            'zone_preset', 'zone_audio',
+            'zone_track_start_ms', 'zone_track_end_ms', 'updated_at',
         ])
         return Response(ZoneUpdateSerializer(user).data)
 
