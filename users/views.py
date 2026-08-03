@@ -246,6 +246,40 @@ class ZonePresetsView(APIView):
         return Response(ZONE_PRESETS)
 
 
+class AppleMusicStatusView(APIView):
+    """Is Apple Music usable, and if not, precisely why.
+
+    Exists so the answer does not have to be inferred from a failed search.
+    It reports which variables are missing by name, and — when they are all
+    present — actually mints a token and asks Apple, because a key that is set
+    and rejected looks identical to a working one from the outside.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        absent = applemusic.missing_settings()
+        if absent:
+            return Response({
+                'configured': False,
+                'code': 'not_configured',
+                'missing': list(absent),
+                'detail': f"Not set on this server: {', '.join(absent)}.",
+            })
+        try:
+            # One real search, because signing succeeding proves nothing about
+            # whether Apple will accept the result.
+            applemusic.search_songs('a', limit=1)
+        except applemusic.AppleMusicError as exc:
+            return Response({
+                'configured': False,
+                'code': exc.code,
+                'missing': [],
+                'detail': str(exc),
+            })
+        return Response({'configured': True, 'code': 'ok', 'missing': [], 'detail': ''})
+
+
 class AppleMusicSearchView(APIView):
     """Search the Apple Music catalogue on the caller's behalf.
 
@@ -267,7 +301,10 @@ class AppleMusicSearchView(APIView):
                 limit=request.query_params.get('limit') or 25,
             )
         except applemusic.AppleMusicError as exc:
-            return Response({'detail': str(exc)}, status=exc.status)
+            # `code` travels with the message: the app picks its wording from
+            # the code and shows the message underneath, so a misconfiguration
+            # reads the same in the UI as it does in the logs.
+            return Response({'detail': str(exc), 'code': exc.code}, status=exc.status)
         return Response(songs)
 
 
@@ -289,7 +326,7 @@ class ZoneAppleMusicView(APIView):
                 storefront=request.data.get('storefront'),
             )
         except applemusic.AppleMusicError as exc:
-            return Response({'detail': str(exc)}, status=exc.status)
+            return Response({'detail': str(exc), 'code': exc.code}, status=exc.status)
 
         user = request.user
         user.zone_apple_id = song['id']

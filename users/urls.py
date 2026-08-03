@@ -4,7 +4,7 @@ from .views import (
     RegisterView, LogoutView, ProfileView, PrivacySettingsView, PublicProfileView,
     ProfileLinksView, ProfileLinkDetailView, UserSearchView, ZoneView,
     ZonePresetsView, DeleteAccountView, MeView,
-    AppleMusicSearchView, ZoneAppleMusicView,
+    AppleMusicSearchView, AppleMusicStatusView, ZoneAppleMusicView,
 )
 
 urlpatterns = [
@@ -18,6 +18,7 @@ urlpatterns = [
     path('links/', ProfileLinksView.as_view(), name='profile-links'),
     path('links/<int:link_id>/', ProfileLinkDetailView.as_view(), name='profile-link-detail'),
     path('zone/presets/', ZonePresetsView.as_view(), name='zone-presets'),
+    path('zone/apple-music/status/', AppleMusicStatusView.as_view(), name='apple-music-status'),
     path('zone/apple-music/search/', AppleMusicSearchView.as_view(), name='apple-music-search'),
     path('zone/apple-music/', ZoneAppleMusicView.as_view(), name='zone-apple-music'),
     path('zone/', ZoneView.as_view(), name='zone'),

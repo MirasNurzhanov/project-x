@@ -35,29 +35,58 @@ TIMEOUT_S = 6
 
 
 class AppleMusicError(Exception):
-    """Apple could not answer. Carries an HTTP status for the view to mirror."""
+    """Apple could not answer.
 
-    def __init__(self, message, status=502):
+    Carries an HTTP status for the view to mirror, and a `code` naming *which*
+    failure this is. The status alone cannot: "no credentials set", "the key
+    will not sign" and "Apple rejected the token" are all 503, and they are
+    three completely different things to go and fix. Without the code the app
+    can only say "unavailable", which sent at least one person hunting for a
+    missing variable that was in fact present and wrong.
+    """
+
+    def __init__(self, message, status=502, code='unavailable'):
         super().__init__(message)
         self.status = status
+        self.code = code
 
 
 class AppleMusicUnavailable(AppleMusicError):
     """No credentials configured. A deployment fact, not a user error."""
 
-    def __init__(self):
+    def __init__(self, missing=()):
+        names = ', '.join(missing)
         super().__init__(
-            'Apple Music is not configured on this server.',
+            f'Apple Music is not configured on this server. Missing: {names}.'
+            if names else 'Apple Music is not configured on this server.',
             status=503,
+            code='not_configured',
         )
 
 
-def is_configured():
-    return bool(
-        getattr(settings, 'APPLE_MUSIC_TEAM_ID', '')
-        and getattr(settings, 'APPLE_MUSIC_KEY_ID', '')
-        and getattr(settings, 'APPLE_MUSIC_PRIVATE_KEY', '')
+#: Every variable that has to be present, in the order a person sets them.
+REQUIRED_SETTINGS = (
+    'APPLE_MUSIC_TEAM_ID',
+    'APPLE_MUSIC_KEY_ID',
+    'APPLE_MUSIC_PRIVATE_KEY',
+)
+
+
+def missing_settings():
+    """Which of the three are absent or blank.
+
+    Named rather than counted: "missing APPLE_MUSIC_TEAM_ID" is a fix, and
+    "not configured" is a scavenger hunt across three variables that are set
+    in three different places in the Apple portal.
+    """
+    return tuple(
+        name for name in REQUIRED_SETTINGS
+        if not str(getattr(settings, name, '') or '').strip()
     )
+
+
+def is_configured():
+    return not missing_settings()
 
 
 # ─── Developer token ──────────────────────────────────────────────────────────
@@ -72,8 +101,9 @@ def developer_token():
     """A valid developer token, minted on demand and reused until it nears expiry."""
     global _token, _token_expires_at
 
-    if not is_configured():
-        raise AppleMusicUnavailable()
+    absent = missing_settings()
+    if absent:
+        raise AppleMusicUnavailable(absent)
 
     now = time.time()
     if _token and now < _token_expires_at - TOKEN_REFRESH_MARGIN_S:
@@ -95,7 +125,11 @@ def developer_token():
         )
     except Exception as exc:  # noqa: BLE001 — a bad key is a config error, not a 500
         raise AppleMusicError(
-            f'Apple Music key could not be used to sign a token: {exc}', status=503,
+            'APPLE_MUSIC_PRIVATE_KEY is not a usable signing key — it should be '
+            'the whole .p8 file including the BEGIN and END lines. '
+            f'({exc})',
+            status=503,
+            code='bad_key',
         ) from exc
 
     _token_expires_at = expires
@@ -118,7 +152,13 @@ def _get(path, params=None):
         # the same token would only repeat it — so the cached one is dropped.
         global _token, _token_expires_at
         _token, _token_expires_at = None, 0.0
-        raise AppleMusicError('Apple Music rejected this server\'s credentials.', status=503)
+        raise AppleMusicError(
+            'Apple rejected this server\'s token. The key, APPLE_MUSIC_KEY_ID and '
+            'APPLE_MUSIC_TEAM_ID do not belong together, or the key has been '
+            'revoked or has no MusicKit service enabled.',
+            status=503,
+            code='rejected',
+        )
     if response.status_code == 404:
         raise AppleMusicError('That track is not in the Apple Music catalogue.', status=404)
     if response.status_code >= 400:
