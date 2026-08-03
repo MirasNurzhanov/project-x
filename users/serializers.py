@@ -205,6 +205,7 @@ def _live_story_summaries(obj):
 
 def _club_memberships(obj):
     from clubs.models import ClubMember
+    qs = ClubMember.objects.filter(user=obj).select_related('club')
     return [
         {
             'id': m.club_id,
@@ -212,7 +213,7 @@ def _club_memberships(obj):
             'emblem': m.club.emblem.url if m.club.emblem else None,
             'role': m.role,
         }
-        for m in obj.club_memberships.select_related('club').all()
+        for m in qs
     ]
 
 
