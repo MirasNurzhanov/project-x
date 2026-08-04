@@ -19,8 +19,8 @@ class User(AbstractUser):
     )
     bio = models.TextField(blank=True)
     profile_picture = models.ImageField(upload_to='profile_pictures/', null=True, blank=True)
-    latitude = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True)
-    longitude = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True)
+    latitude = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True, db_index=True)
+    longitude = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True, db_index=True)
 
     # When the position above was last *reported*, and how good the phone said
     # the fix was. Both exist because anything deciding access from a location

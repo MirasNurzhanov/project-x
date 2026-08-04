@@ -513,7 +513,8 @@ class ClubMessageListView(APIView):
 
         content = request.data.get('content', '').strip()
         image = request.FILES.get('image')
-        if not content and not image:
+        image_url = (request.data.get('image_url') or '').strip()
+        if not content and not image and not image_url:
             return Response({'detail': 'content or image is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         message_type = request.data.get('message_type', ClubMessage.MessageType.TEXT)
@@ -525,9 +526,18 @@ class ClubMessageListView(APIView):
             sender=request.user,
             content=content,
             image=image,
+            image_url=image_url,
             message_type=message_type,
         )
-        return Response(ClubMessageSerializer(message).data, status=status.HTTP_201_CREATED)
+
+        # Socket-sent messages are broadcast by the consumer; REST-sent ones
+        # (photos) previously reached other members only on their next fetch.
+        data = ClubMessageSerializer(message).data
+        async_to_sync(get_channel_layer().group_send)(
+            f'club_{club.pk}',
+            {'type': 'club.message', 'message_data': dict(data)},
+        )
+        return Response(data, status=status.HTTP_201_CREATED)
 
 
 class ClubEventDetailView(APIView):

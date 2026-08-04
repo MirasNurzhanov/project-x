@@ -18,12 +18,14 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import path, include
+from proximity.urls import map_urlpatterns
 
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/users/", include("users.urls")),
     path("api/interests/", include("interests.urls")),
     path("api/proximity/", include("proximity.urls")),
+    path("api/map/", include(map_urlpatterns)),
     path("api/regions/", include("regions.urls")),
     path("api/notifications/", include("notifications.urls")),
     path("api/encounters/", include("encounters.urls")),

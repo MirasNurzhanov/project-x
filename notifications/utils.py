@@ -1,3 +1,5 @@
+import threading
+
 import requests
 from django.utils import timezone
 from datetime import timedelta
@@ -8,18 +10,26 @@ EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send'
 
 
 def send_push_notification(user, title, message):
+    """Fire-and-forget push. The Expo call runs in a daemon thread: it is a
+    network round trip with a 5s timeout, and several request cycles (DM
+    send, every location report via nearby-match alerts) were paying for it
+    synchronously before responding."""
     token = user.push_token
     if not token:
         return
-    print(f'[Push] sending to token: {token}')
-    print(f'[Push] title: {title}, body: {message}')
-    response = requests.post(
-        EXPO_PUSH_URL,
-        json={'to': token, 'title': title, 'body': message},
-        headers={'Content-Type': 'application/json'},
-        timeout=5,
-    )
-    print(f'[Push] Expo API response: {response.json()}')
+
+    def _send():
+        try:
+            requests.post(
+                EXPO_PUSH_URL,
+                json={'to': token, 'title': title, 'body': message},
+                headers={'Content-Type': 'application/json'},
+                timeout=5,
+            )
+        except requests.RequestException:
+            pass
+
+    threading.Thread(target=_send, daemon=True).start()
 
 
 REACTION_VERB = {

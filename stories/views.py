@@ -60,7 +60,6 @@ class CreateStoryView(APIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def post(self, request):
-        print('[Story] received image:', request.FILES.get('image'))
         serializer = StoryCreateSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -105,7 +104,14 @@ class NearbyStoriesView(APIView):
             if s.user_id == user.pk or haversine(lat, lon, float(s.latitude), float(s.longitude)) <= NEARBY_RADIUS_KM
         ]
 
-        serializer = StorySerializer(stories, many=True, context={'request': request})
+        saved_ids = set(
+            SavedStory.objects.filter(
+                user=user, story_id__in=[s.pk for s in stories],
+            ).values_list('story_id', flat=True)
+        )
+        serializer = StorySerializer(
+            stories, many=True, context={'request': request, 'saved_ids': saved_ids},
+        )
         return Response(serializer.data)
 
 
@@ -172,10 +178,17 @@ class MyStoriesView(APIView):
 
     def get(self, request):
         limit, offset = _page_params(request)
-        qs = Story.objects.filter(user=request.user).select_related('user')
+        qs = Story.objects.filter(user=request.user).select_related('user').prefetch_related('reactions')
         count = qs.count()
-        page = qs[offset:offset + limit]
-        serializer = StorySerializer(page, many=True, context={'request': request})
+        page = list(qs[offset:offset + limit])
+        saved_ids = set(
+            SavedStory.objects.filter(
+                user=request.user, story_id__in=[s.pk for s in page],
+            ).values_list('story_id', flat=True)
+        )
+        serializer = StorySerializer(
+            page, many=True, context={'request': request, 'saved_ids': saved_ids},
+        )
         return Response({'count': count, 'results': serializer.data})
 
     def delete(self, request):
@@ -197,12 +210,17 @@ class SavedStoriesView(APIView):
             story__user_id__in=_blocked_ids_for(request.user)
         ).filter(
             visibility.visible_field_q(request.user, 'stories', prefix='story__user')
-        ).select_related('story__user')
+        ).select_related('story__user').prefetch_related('story__reactions')
         count = qs.count()
-        page = qs[offset:offset + limit]
+        page = list(qs[offset:offset + limit])
+        # Everything on this page is by definition saved — skip the per-story
+        # existence checks the serializer would otherwise run.
+        saved_ids = {saved.story_id for saved in page}
         results = []
         for saved in page:
-            data = StorySerializer(saved.story, context={'request': request}).data
+            data = StorySerializer(
+                saved.story, context={'request': request, 'saved_ids': saved_ids},
+            ).data
             data['saved_at'] = saved.created_at.isoformat()
             results.append(data)
         return Response({'count': count, 'results': results})

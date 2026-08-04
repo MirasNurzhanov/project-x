@@ -71,6 +71,9 @@ class Message(models.Model):
     )
     content = models.TextField(blank=True)
     image = models.FileField(upload_to='chat_images/', null=True, blank=True)
+    # Set when the client uploaded straight to Cloudinary and only the URL
+    # passed through here. Takes precedence over `image` when both exist.
+    image_url = models.URLField(max_length=500, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     is_read = models.BooleanField(default=False)
     deleted_for_sender = models.BooleanField(default=False)
