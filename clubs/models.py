@@ -76,7 +76,7 @@ class ClubEvent(models.Model):
         related_name='approved_club_events',
     )
     approved_at = models.DateTimeField(null=True, blank=True)
-    expires_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

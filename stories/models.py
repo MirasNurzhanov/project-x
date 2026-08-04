@@ -11,7 +11,7 @@ class Story(models.Model):
     latitude = models.DecimalField(max_digits=9, decimal_places=6)
     longitude = models.DecimalField(max_digits=9, decimal_places=6)
     place_name = models.CharField(max_length=200, blank=True)
-    expires_at = models.DateTimeField()
+    expires_at = models.DateTimeField(db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     likes_count = models.IntegerField(default=0)
 

@@ -19,8 +19,8 @@ class User(AbstractUser):
     )
     bio = models.TextField(blank=True)
     profile_picture = models.ImageField(upload_to='profile_pictures/', null=True, blank=True)
-    latitude = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True)
-    longitude = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True)
+    latitude = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True, db_index=True)
+    longitude = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True, db_index=True)
 
     interests = models.ManyToManyField('interests.Interest', blank=True, related_name='users')
 

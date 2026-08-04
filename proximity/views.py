@@ -327,3 +327,28 @@ class NearbyUsersView(APIView):
             },
         )
         return Response(serializer.data)
+
+
+class NearbyMapView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if user.latitude is None or user.longitude is None:
+            return Response(
+                {'detail': 'Your location is not set.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from stories.views import NearbyStoriesView
+        from clubs.views import ClubEventNearbyView
+
+        users_resp = NearbyUsersView().get(request)
+        stories_resp = NearbyStoriesView().get(request)
+        meetups_resp = ClubEventNearbyView().get(request)
+
+        return Response({
+            'users': users_resp.data,
+            'stories': stories_resp.data,
+            'meetups': meetups_resp.data,
+        })
