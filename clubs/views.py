@@ -16,7 +16,33 @@ from .models import Club, ClubEvent, ClubMember, ClubMessage
 from .serializers import (
     ClubDetailSerializer, ClubEventNearbySerializer, ClubEventSerializer,
     ClubMemberSerializer, ClubMessageSerializer, ClubSerializer, PlaceSerializer,
+    with_card_data,
 )
+
+
+#: Ceiling on one page of the club list, and the default page size.
+#
+# The endpoint used to return every matching club with no bound at all, which
+# was survivable only because no city has many yet. It still answers with a bare
+# JSON array — the app reads `Club[]` and changing that shape would break every
+# build in the field — so paging is opt-in through `?limit=`/`?offset=` rather
+# than a wrapper object. The default is set well above any real district's club
+# count so that today nothing is cut off; see the audit note about moving the
+# app onto the parameters before a city can plausibly exceed it.
+LIST_MAX = 200
+
+
+def _page(request):
+    """`(limit, offset)` for the club list, clamped to sane bounds."""
+    try:
+        limit = min(max(int(request.query_params.get('limit', LIST_MAX)), 1), LIST_MAX)
+    except (TypeError, ValueError):
+        limit = LIST_MAX
+    try:
+        offset = max(int(request.query_params.get('offset', 0)), 0)
+    except (TypeError, ValueError):
+        offset = 0
+    return limit, offset
 
 
 def _get_membership(club, user):
@@ -46,9 +72,10 @@ def _out_of_area(place):
     return Response(body, status=status.HTTP_404_NOT_FOUND)
 
 
-def _accessible_club_or_none(pk, user, place, **filters):
+def _accessible_club_or_none(pk, user, place, queryset=None, **filters):
     """A club this user may open, or None. Membership counts; see visibility."""
-    club = Club.objects.filter(pk=pk, **filters).first()
+    qs = Club.objects.all() if queryset is None else queryset
+    club = qs.filter(pk=pk, **filters).first()
     if club is None or not visibility.can_access(club, user, place):
         return None
     return club
@@ -85,7 +112,15 @@ class ClubListCreateView(APIView):
         if search:
             qs = qs.filter(name__icontains=search)
 
-        return Response(ClubSerializer(qs, many=True, context={'request': request}).data)
+        # Newest first, and explicitly: an unordered queryset with a LIMIT on it
+        # is free to return a different slice each time it is asked.
+        limit, offset = _page(request)
+        qs = with_card_data(qs, request.user).order_by('-created_at', '-pk')
+        return Response(
+            ClubSerializer(
+                qs[offset:offset + limit], many=True, context={'request': request},
+            ).data
+        )
 
     def post(self, request):
         name = request.data.get('name', '').strip()
@@ -209,7 +244,14 @@ class ClubDetailView(APIView):
         # The direct-lookup hole this feature exists to close: without this, a
         # club hidden from every list is still one guessed id away.
         place = visibility.place_for(request.user)
-        club = _accessible_club_or_none(pk, request.user, place)
+        club = _accessible_club_or_none(
+            pk, request.user, place,
+            # The roster is nested in this response, so its users are fetched
+            # here rather than one per member by the serializer.
+            queryset=with_card_data(
+                Club.objects.all(), request.user,
+            ).prefetch_related('members__user'),
+        )
         if club is None:
             return _out_of_area(place)
         return Response(ClubDetailSerializer(club, context={'request': request}).data)

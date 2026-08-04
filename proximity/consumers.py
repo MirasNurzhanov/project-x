@@ -44,8 +44,8 @@ class LocationConsumer(AsyncWebsocketConsumer):
     def _update_and_find_nearby(self, lat, lon):
         from users import visibility
         from users.models import User
-        from notifications.utils import notify_nearby_match
-        from encounters.utils import record_encounter
+        from notifications.utils import notify_nearby_matches
+        from encounters.utils import record_encounters
         from friends.models import FriendRequest, HiRequest
         from django.db.models import Q
 
@@ -124,6 +124,10 @@ class LocationConsumer(AsyncWebsocketConsumer):
 
         nearby = []
         seen = set()
+        # Alerts and encounter rows are collected here and written once at the
+        # end, rather than costing ~10 queries per person in range. See
+        # notifications.utils.notify_nearby_matches.
+        matches = []
 
         # Distances come from the stored position, which is already snapped for
         # anyone on Approximate — coarse by construction, not by withholding.
@@ -141,8 +145,7 @@ class LocationConsumer(AsyncWebsocketConsumer):
 
         for candidate in friend_candidates:
             dist = round(haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
-            notify_nearby_match(user, candidate, dist)
-            record_encounter(user, candidate, dist)
+            matches.append((candidate, dist))
             nearby.append(entry_for(candidate, dist))
             seen.add(candidate.pk)
 
@@ -151,8 +154,7 @@ class LocationConsumer(AsyncWebsocketConsumer):
                 continue
             dist = round(haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
             if dist <= CONNECTED_RADIUS_KM:
-                notify_nearby_match(user, candidate, dist)
-                record_encounter(user, candidate, dist)
+                matches.append((candidate, dist))
                 nearby.append(entry_for(candidate, dist))
                 seen.add(candidate.pk)
 
@@ -161,10 +163,12 @@ class LocationConsumer(AsyncWebsocketConsumer):
                 continue
             dist = round(haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
             if dist <= DEFAULT_RADIUS_KM:
-                notify_nearby_match(user, candidate, dist)
-                record_encounter(user, candidate, dist)
+                matches.append((candidate, dist))
                 nearby.append(entry_for(candidate, dist))
                 seen.add(candidate.pk)
+
+        notify_nearby_matches(user, matches)
+        record_encounters(user, matches)
 
         nearby.sort(key=lambda u: (u['distance_km'] is None, u['distance_km'] or 0))
         return nearby

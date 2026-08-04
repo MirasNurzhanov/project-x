@@ -13,8 +13,8 @@ from users.models import User
 from friends.models import FriendRequest, HiRequest
 from .serializers import LocationUpdateSerializer, NearbyUserSerializer
 from .utils import haversine
-from notifications.utils import notify_nearby_match, notify_zone_music_entry
-from encounters.utils import delete_old_encounters, record_encounter
+from notifications.utils import notify_nearby_matches, notify_zone_music_entry
+from encounters.utils import delete_old_encounters_throttled, record_encounters
 
 
 def _build_relationships(user, nearby_ids):
@@ -104,11 +104,17 @@ def _trigger_nearby_notifications(user):
             interests__in=user_interest_ids, discoverable_by_interest=True,
         ).distinct()
 
+    # Collected first, then written once. The per-candidate version issued about
+    # ten queries each on the endpoint every phone reports to every thirty
+    # seconds; these two calls are a fixed cost however many people are in range.
+    matches = []
     for candidate in candidates:
         dist = round(haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
         if dist <= DEFAULT_RADIUS_KM:
-            notify_nearby_match(user, candidate, dist)
-            record_encounter(user, candidate, dist)
+            matches.append((candidate, dist))
+
+    notify_nearby_matches(user, matches)
+    record_encounters(user, matches)
 
 
 def _trigger_zone_music_alerts(user):
@@ -234,7 +240,7 @@ class NearbyUsersView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        delete_old_encounters()
+        delete_old_encounters_throttled()
         user = request.user
 
         if user.location_sharing == User.LocationSharing.PAUSED:

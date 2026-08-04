@@ -1,6 +1,7 @@
 import threading
 
 import requests
+from django.db.models import Q
 from django.utils import timezone
 from datetime import timedelta
 from .models import Notification
@@ -206,36 +207,75 @@ def notify_zone_music_entry(visitor, owner, distance_m: float):
         )
 
 
-def notify_nearby_match(user, nearby_user, distance_km: float):
+def notify_nearby_matches(user, matches):
+    """Nearby-match alerts for one sweep, in a fixed number of queries.
+
+    `matches` is `[(other_user, distance_km), ...]` — everyone `user` was found
+    standing near on this location report.
+
+    The per-pair version of this ran roughly ten queries each: two relationship
+    lookups of three queries apiece, two cooldown checks, and the writes. On the
+    endpoint every phone hits every thirty seconds, with a few dozen people in
+    range, that was the single most expensive thing the backend did. Nothing
+    about *which* alerts get written changes here — only how many round trips it
+    takes to decide.
+
+    Two facts make the batching exact rather than approximate. Blocking,
+    friendship and connection are all symmetric, so one relationship map read
+    from `user`'s side settles both directions of every pair. And every pair has
+    `user` on one side, so a single query finds every standing cooldown row.
     """
-    Create a NEARBY_USER notification for both users.
-    Skipped if the same pair was already notified within the cooldown window.
-    """
-    from users.visibility import can_surface_in_proximity
+    from users.visibility import STRANGER, can_surface_in_proximity, relationship_map
+
+    matches = [(other, distance) for other, distance in matches if other.pk != user.pk]
+    if not matches:
+        return
+
+    other_ids = [other.pk for other, _ in matches]
+    rels = relationship_map(user, other_ids)
+
+    # Both directions are written, but each is gated on the *sender's* own
+    # settings. Without the second check, someone who opted out of interest
+    # discovery would still be announced to a stranger the moment that stranger
+    # moved. `can_surface_in_proximity` reads only the sender and the tier when
+    # a tier is handed to it, so no query is issued here.
+    wanted = []
+    for other, distance in matches:
+        rel = rels.get(other.pk, STRANGER)
+        if can_surface_in_proximity(user, other, rel):
+            wanted.append((user, other, distance))
+        if can_surface_in_proximity(other, user, rel):
+            wanted.append((other, user, distance))
+    if not wanted:
+        return
 
     cutoff = timezone.now() - timedelta(minutes=NEARBY_COOLDOWN_MINUTES)
+    already = set(
+        Notification.objects.filter(
+            notification_type=Notification.Type.NEARBY_USER,
+            created_at__gte=cutoff,
+        ).filter(
+            Q(recipient=user, sender_id__in=other_ids)
+            | Q(sender=user, recipient_id__in=other_ids)
+        ).values_list('recipient_id', 'sender_id')
+    )
 
-    # This writes to *both* accounts, but only one direction was checked by the
-    # caller's queryset. Without the second check, someone who opted out of
-    # interest discovery would still be announced to a stranger the moment that
-    # stranger moved.
-    pairs = [
-        (user, nearby_user, nearby_user.username),
-        (nearby_user, user, user.username),
-    ]
-    for recipient, sender, sender_name in pairs:
-        if not can_surface_in_proximity(recipient, sender):
-            continue
-        already_notified = Notification.objects.filter(
+    Notification.objects.bulk_create([
+        Notification(
             recipient=recipient,
             sender=sender,
             notification_type=Notification.Type.NEARBY_USER,
-            created_at__gte=cutoff,
-        ).exists()
-        if not already_notified:
-            Notification.objects.create(
-                recipient=recipient,
-                sender=sender,
-                notification_type=Notification.Type.NEARBY_USER,
-                message=f'{sender_name} with shared interests is {distance_km} km away.',
-            )
+            message=f'{sender.username} with shared interests is {distance} km away.',
+        )
+        for recipient, sender, distance in wanted
+        if (recipient.pk, sender.pk) not in already
+    ])
+
+
+def notify_nearby_match(user, nearby_user, distance_km: float):
+    """One pair's worth of `notify_nearby_matches`.
+
+    Kept because a caller that genuinely has one pair should not have to build a
+    list, and because it is the shape the tests describe the rule in.
+    """
+    notify_nearby_matches(user, [(nearby_user, distance_km)])

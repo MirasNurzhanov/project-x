@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 from datetime import timedelta
 from decouple import config
@@ -40,6 +41,16 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Above everything that writes a body, so it compresses the finished
+    # response. The map poll is ~25KB of JSON every ten seconds per client and
+    # the club list ~18KB; both are highly repetitive and compress by roughly
+    # 80%. On a phone on mobile data in the Gulf that is the difference the user
+    # actually feels, and it costs a few milliseconds of CPU.
+    #
+    # Safe for this API: the BREACH class of attack needs a secret reflected in
+    # a compressed body next to attacker-controlled text, and auth here is a
+    # bearer token in a header, which is not compressed.
+    "django.middleware.gzip.GZipMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -73,9 +84,38 @@ TEMPLATES = [
 WSGI_APPLICATION = 'core.wsgi.application'
 ASGI_APPLICATION = 'core.asgi.application'
 
+# ── Database ──────────────────────────────────────────────────────────────────
+# How long a worker keeps a connection open between requests. Every connection
+# is a real backend process on the server, so this trades server memory for not
+# paying TCP + TLS + authentication on every request — which matters here in
+# proportion to how far away the database is.
+#
+# The budget is: (processes × threads per process) ≤ the provider's connection
+# limit, with headroom for migrations and a psql session. A single Daphne
+# process running sync views hands them to a thread pool, so its thread count —
+# not its process count — is what multiplies. Raise the worker count and this
+# number has to be re-checked; see the deployment notes in the audit.
+CONN_MAX_AGE = config('CONN_MAX_AGE', default=600, cast=int)
+
+# A ceiling on any single statement, so one pathological query cannot hold a
+# connection — and, with CONN_MAX_AGE above, a pooled slot — indefinitely.
+#
+# Deliberately not applied to `migrate`: building an index on a large table is
+# exactly the kind of long statement this is meant to kill, and killing it
+# halfway through a release is worse than any query it protects against.
+_DB_STATEMENT_TIMEOUT_MS = config('DB_STATEMENT_TIMEOUT_MS', default=15000, cast=int)
+_RUNNING_MIGRATIONS = any(
+    arg in sys.argv for arg in ('migrate', 'makemigrations', 'sqlmigrate')
+)
+_DB_OPTIONS = {}
+if _DB_STATEMENT_TIMEOUT_MS > 0 and not _RUNNING_MIGRATIONS:
+    _DB_OPTIONS['options'] = f'-c statement_timeout={_DB_STATEMENT_TIMEOUT_MS}'
+
 _database_url = config('DATABASE_URL', default=None)
 if _database_url:
-    DATABASES = {'default': dj_database_url.parse(_database_url, conn_max_age=600)}
+    DATABASES = {
+        'default': dj_database_url.parse(_database_url, conn_max_age=CONN_MAX_AGE),
+    }
 else:
     DATABASES = {
         'default': {
@@ -85,9 +125,15 @@ else:
             'PASSWORD': config('DB_PASSWORD'),
             'HOST': config('DB_HOST'),
             'PORT': config('DB_PORT'),
-            'CONN_MAX_AGE': 60,
+            'CONN_MAX_AGE': CONN_MAX_AGE,
         }
     }
+
+# Applied after the fact so it reaches both branches, and only to PostgreSQL —
+# `options` is a libpq connection string and SQLite has no idea what to do with
+# it, which is what the test settings run on.
+if _DB_OPTIONS and 'postgresql' in DATABASES['default'].get('ENGINE', ''):
+    DATABASES['default'].setdefault('OPTIONS', {}).update(_DB_OPTIONS)
 
 CHANNEL_LAYERS = {
     'default': {

@@ -18,6 +18,7 @@ import os
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
+from interests import categories
 from interests.models import Interest
 
 
@@ -45,26 +46,73 @@ class Command(BaseCommand):
         with open(path, encoding='utf-8') as f:
             catalog = json.load(f)
 
-        existing = {n.lower() for n in Interest.objects.values_list('name', flat=True)}
+        existing = {
+            row.name.lower(): row
+            for row in Interest.objects.all().only('id', 'name', 'category')
+        }
         to_create = []
-        for items in catalog.values():
+        to_regroup = []
+        unknown_headings = []
+
+        for heading, items in catalog.items():
+            key = categories.slug_for(heading)
+            if not key:
+                # A heading nobody has mapped yet. Reported rather than raised:
+                # this runs on the release line, so failing here would take the
+                # deploy down over a grouping.
+                unknown_headings.append(heading)
             for item in items:
                 name = item['name']
-                if name.lower() in existing:
+                current = existing.get(name.lower())
+                if current is None:
+                    row = Interest(name=name, icon=item.get('icon', ''), category=key)
+                    to_create.append(row)
+                    existing[name.lower()] = row
                     continue
-                to_create.append(Interest(name=name, icon=item.get('icon', '')))
-                existing.add(name.lower())
+                # Already here, but possibly from before this column existed, or
+                # under a heading that has since moved. The category is the one
+                # field the seed file is authoritative about for an existing
+                # row — the name is the key and the icon may have been edited in
+                # the admin, so neither is touched.
+                if key and current.category != key:
+                    current.category = key
+                    to_regroup.append(current)
+
+        # Rows the catalogue has forgotten but the database still holds — see
+        # categories.LEGACY_GROUPS. Placed, never re-created.
+        for lowered, row in existing.items():
+            if row.pk is None or row.category:
+                continue
+            key = categories.legacy_group_for(lowered)
+            if key:
+                row.category = key
+                to_regroup.append(row)
+
+        if unknown_headings:
+            self.stderr.write(
+                'Unrecognised headings (their interests will have no group): '
+                + ', '.join(unknown_headings)
+            )
 
         if options['dry_run']:
-            self.stdout.write(f'Would create {len(to_create)} interests.')
+            self.stdout.write(
+                f'Would create {len(to_create)} interests '
+                f'and regroup {len(to_regroup)}.'
+            )
             for i in to_create[:20]:
-                self.stdout.write(f'  + {i.name}')
+                self.stdout.write(f'  + {i.name} [{i.category or "ungrouped"}]')
+            for i in to_regroup[:20]:
+                self.stdout.write(f'  ~ {i.name} → {i.category}')
             return
 
-        if to_create:
-            with transaction.atomic():
+        with transaction.atomic():
+            if to_create:
                 Interest.objects.bulk_create(to_create, ignore_conflicts=True)
+            if to_regroup:
+                Interest.objects.bulk_update(to_regroup, ['category'], batch_size=200)
 
+        ungrouped = Interest.objects.filter(category='').count()
         self.stdout.write(
-            f'Interests: {len(to_create)} created, {Interest.objects.count()} total.'
+            f'Interests: {len(to_create)} created, {len(to_regroup)} regrouped, '
+            f'{Interest.objects.count()} total ({ungrouped} ungrouped).'
         )

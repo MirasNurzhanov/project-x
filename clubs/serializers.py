@@ -1,8 +1,47 @@
+from django.db.models import Count, IntegerField, OuterRef, Subquery
 from rest_framework import serializers
 
 from regions import places
 from users.models import User
 from .models import Club, ClubEvent, ClubMember, ClubMessage
+
+#: Where `with_card_data` parks the two facts `ClubSerializer` would otherwise
+#: fetch one club at a time. Named rather than inlined so the annotation and the
+#: reader that falls back when it is absent cannot drift apart.
+MEMBER_COUNT_ATTR = 'member_count_annotated'
+MY_ROLE_ATTR = 'my_role_annotated'
+
+
+def with_card_data(queryset, user):
+    """Fetch a club list's member counts and the viewer's own role in one query.
+
+    Without this, every club on the list costs three: one for the creator, one
+    to count members, one to look up the viewer's membership. A thirty-five club
+    discovery list was a hundred and seven queries, and the club screens poll it
+    every fifteen seconds.
+
+    Correlated subqueries rather than `annotate(Count('members'))` on purpose.
+    Both call sites already filter on `members` — discovery excludes the
+    viewer's own clubs, the joined list selects them — and a plain aggregate
+    would reuse that join and count only the rows the filter left behind. A
+    subquery brings its own join and cannot be narrowed by the outer one.
+    """
+    memberships = ClubMember.objects.filter(club=OuterRef('pk'))
+    return queryset.select_related('creator').annotate(
+        **{
+            MEMBER_COUNT_ATTR: Subquery(
+                memberships.order_by().values('club').annotate(
+                    n=Count('pk'),
+                ).values('n'),
+                output_field=IntegerField(),
+            ),
+            # May legitimately be NULL — the viewer is not a member — which is
+            # exactly what the un-annotated path returns too.
+            MY_ROLE_ATTR: Subquery(
+                memberships.filter(user=user).values('role')[:1],
+            ),
+        }
+    )
 
 
 def _tier(region_id, name):
@@ -110,9 +149,19 @@ class ClubSerializer(serializers.ModelSerializer):
         }
 
     def get_member_count(self, obj):
+        # `with_card_data` puts this on the row; the fallback is for the
+        # single-club paths that serialise an object they just created.
+        count = getattr(obj, MEMBER_COUNT_ATTR, None)
+        if count is not None:
+            return count
         return obj.members.count()
 
     def get_my_role(self, obj):
+        # `hasattr`, not a None check: a null annotation is the real answer for
+        # a club the viewer has not joined, and re-querying would just confirm
+        # it one row at a time.
+        if hasattr(obj, MY_ROLE_ATTR):
+            return getattr(obj, MY_ROLE_ATTR)
         request = self.context.get('request')
         if not request:
             return None

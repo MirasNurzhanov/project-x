@@ -116,6 +116,23 @@ class Region(models.Model):
         ]
         indexes = [
             models.Index(fields=['name']),
+            # `resolver.cached_regions` is the read behind every "which district
+            # am I in" — it asks for boundaries of a given size whose bounding
+            # box straddles a point. Without an index that is a full scan, and
+            # an unusually expensive one: every row it touches carries a `rings`
+            # JSON blob of up to a few thousand coordinate pairs, so the cost is
+            # paid in deserialisation as much as in IO.
+            #
+            # Two indexes rather than one four-column index, because only the
+            # first range column in a btree can be used for seeking. `kind`
+            # leads both — it is an equality match and the most selective thing
+            # available.
+            models.Index(
+                fields=['kind', 'min_lat', 'max_lat'], name='region_kind_lat_idx',
+            ),
+            models.Index(
+                fields=['kind', 'min_lon', 'max_lon'], name='region_kind_lon_idx',
+            ),
         ]
         ordering = ['name']
 

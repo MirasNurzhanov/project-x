@@ -5,8 +5,13 @@ from .models import Interest
 
 @admin.register(Interest)
 class InterestAdmin(admin.ModelAdmin):
-    list_display = ('name', 'icon', 'needs_review')
-    list_filter = ('needs_review',)
+    # `category` is editable in the list because the one thing that needs doing
+    # by hand is filing a custom interest under a heading — the seeder handles
+    # everything the catalogue knows about, and will not touch a row it has
+    # never heard of.
+    list_display = ('name', 'icon', 'category', 'needs_review')
+    list_filter = ('category', 'needs_review')
+    list_editable = ('category',)
     search_fields = ('name',)
     actions = ('approve_interests',)
 

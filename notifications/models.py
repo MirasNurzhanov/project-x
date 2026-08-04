@@ -44,6 +44,21 @@ class Notification(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        indexes = [
+            # The alerts list: this user's notifications, newest first. The FK
+            # index alone finds the rows but leaves the sort to be done in
+            # memory, which is the expensive half for a busy account.
+            models.Index(
+                fields=['recipient', '-created_at'],
+                name='notification_recipient_idx',
+            ),
+            # The cooldown checks — nearby-match and zone-music both ask
+            # "has this pair had one of these lately".
+            models.Index(
+                fields=['recipient', 'sender', 'notification_type', 'created_at'],
+                name='notification_cooldown_idx',
+            ),
+        ]
 
     def __str__(self):
         return f'{self.notification_type} → {self.recipient}'

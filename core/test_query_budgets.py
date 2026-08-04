@@ -1,0 +1,261 @@
+"""Ceilings on how many queries the hot endpoints may run.
+
+These are regression guards, not micro-benchmarks. Each one existed as an N+1
+that grew with the size of the response, and the way that comes back is a
+serializer method or a loop added later that looks harmless on a list of three.
+The fixture is deliberately large enough that a per-row query would blow the
+budget by an order of magnitude rather than by one.
+
+The budgets are ceilings with a little headroom, so an honest extra query is a
+one-line change here rather than a puzzle. What they will not tolerate is a
+count that scales with `N_*` below.
+
+Run just these:
+    python manage.py test core.test_query_budgets --settings=core.test_settings
+"""
+from datetime import date, timedelta
+from decimal import Decimal
+
+from django.core.cache import cache
+from django.db import connection
+from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
+from rest_framework.test import APIClient
+
+from clubs.models import Club, ClubEvent, ClubMember
+from friends.models import FriendRequest, HiRequest, Message
+from interests.models import Interest
+from notifications.models import Notification
+from regions.models import Region, UserPlace
+from stories.models import Story
+from users.models import User
+
+LAT, LON = Decimal('25.20000000'), Decimal('55.27000000')  # Dubai
+
+
+def _ring(min_lat, min_lon, max_lat, max_lon):
+    return [[[min_lon, min_lat], [max_lon, min_lat], [max_lon, max_lat],
+             [min_lon, max_lat], [min_lon, min_lat]]]
+
+
+class QueryBudgetTests(TestCase):
+    #: Big enough that a per-row query is unmistakable in the count.
+    N_NEARBY = 25
+    N_CLUBS = 30
+    N_FRIENDS = 12
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.interests = [Interest.objects.create(name=f'i{i}') for i in range(6)]
+
+        cls.city = Region.objects.create(
+            name='Dubai', display_name='Dubai, UAE', country_code='ae',
+            kind=Region.Kind.CITY, admin_level=4,
+            min_lat=24.8, min_lon=54.9, max_lat=25.6, max_lon=55.6,
+            centroid_lat=25.2, centroid_lon=55.27,
+            rings=_ring(24.8, 54.9, 25.6, 55.6),
+        )
+        cls.district = Region.objects.create(
+            name='Al Barsha', display_name='Al Barsha, Dubai', country_code='ae',
+            kind=Region.Kind.DISTRICT, admin_level=7,
+            min_lat=25.1, min_lon=55.2, max_lat=25.3, max_lon=55.35,
+            centroid_lat=25.2, centroid_lon=55.27,
+            rings=_ring(25.1, 55.2, 25.3, 55.35),
+        )
+
+        cls.me = cls._user('me', 0)
+        cls._place(cls.me)
+        cls.others = []
+        for i in range(cls.N_NEARBY):
+            other = cls._user(f'u{i}', i + 1)
+            cls._place(other)
+            cls.others.append(other)
+
+        for other in cls.others[:cls.N_FRIENDS]:
+            HiRequest.objects.create(
+                sender=cls.me, receiver=other, status=HiRequest.Status.ACCEPTED)
+            FriendRequest.objects.create(
+                sender=cls.me, receiver=other, status=FriendRequest.Status.ACCEPTED)
+            Message.objects.create(sender=other, receiver=cls.me, content='hi')
+
+        for i in range(cls.N_CLUBS):
+            club = Club.objects.create(
+                name=f'club-{i}',
+                creator=cls.others[i % len(cls.others)],
+                visibility_level=(
+                    Club.Visibility.DISTRICT if i % 2 else Club.Visibility.CITY
+                ),
+                visibility_city=cls.city, visibility_city_name='Dubai',
+                visibility_city_osm=cls.city.osm_ref,
+                visibility_district=cls.district,
+                visibility_district_name='Al Barsha',
+                visibility_district_osm=cls.district.osm_ref,
+                visibility_country_code='ae',
+            )
+            for other in cls.others[: (i % 5) + 1]:
+                ClubMember.objects.create(user=other, club=club)
+            if i < 4:
+                ClubMember.objects.create(
+                    user=cls.me, club=club, role=ClubMember.Role.OWNER)
+                ClubEvent.objects.create(
+                    club=club, created_by=cls.me, title=f'meet-{i}',
+                    event_datetime=timezone.now() + timedelta(hours=2),
+                    status=ClubEvent.Status.APPROVED,
+                    expires_at=timezone.now() + timedelta(hours=20),
+                    latitude=LAT, longitude=LON,
+                )
+
+        for i, other in enumerate(cls.others[:15]):
+            Story.objects.create(
+                user=other, content=f's{i}', latitude=LAT, longitude=LON,
+                expires_at=timezone.now() + timedelta(hours=5),
+            )
+            Notification.objects.create(
+                recipient=cls.me, sender=other,
+                notification_type=Notification.Type.NEARBY_USER, message='near',
+            )
+
+    @classmethod
+    def _user(cls, name, i):
+        user = User.objects.create_user(
+            username=name, email=f'{name}@example.com', password='pw',
+            latitude=LAT + Decimal(i) / Decimal('100000'),
+            longitude=LON + Decimal(i) / Decimal('100000'),
+            location_updated_at=timezone.now(), location_accuracy_m=10.0,
+            last_seen=timezone.now(), age_tier=User.AgeTier.ADULT,
+            date_of_birth=date(1995, 1, 1),
+        )
+        user.interests.set(cls.interests[: (i % 4) + 2])
+        return user
+
+    @classmethod
+    def _place(cls, user):
+        UserPlace.objects.create(
+            user=user, city=cls.city, region=cls.district,
+            city_name='Dubai', region_name='Al Barsha',
+            city_osm=cls.city.osm_ref, region_osm=cls.district.osm_ref,
+            country_code='ae',
+            area_ids=[cls.district.pk, cls.city.pk],
+            area_osm_refs=[cls.district.osm_ref, cls.city.osm_ref],
+            latitude=float(user.latitude), longitude=float(user.longitude),
+            outcome='resolved',
+        )
+
+    def setUp(self):
+        # The encounter-cleanup throttle is a cache key; a leaked one from
+        # another test would silently change the count under /nearby/.
+        cache.clear()
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.me)
+
+    def assertWithinBudget(self, budget, method, path, data=None):
+        """Assert the request runs at most `budget` queries.
+
+        A ceiling rather than `assertNumQueries`' exact match, deliberately: an
+        exact count turns every honest refactor into a failing test and trains
+        people to bump the number without reading it. What these guard against
+        is a count that scales with the fixture, and a ceiling catches that just
+        as well while tolerating a query moving from one place to another.
+        """
+        call = getattr(self.client, method)
+
+        def fire():
+            return call(path, data, format='json') if data else call(path)
+
+        # Warm first: the very first request of a test also populates
+        # content-type and permission caches, which are not per-request costs.
+        fire()
+        with CaptureQueriesContext(connection) as captured:
+            response = fire()
+        self.assertEqual(response.status_code, 200)
+        self.assertLessEqual(
+            len(captured), budget,
+            f'{method.upper()} {path} ran {len(captured)} queries, budget is '
+            f'{budget}. If this grew with the fixture size it is an N+1:\n'
+            + '\n'.join(q['sql'][:160] for q in captured.captured_queries),
+        )
+        return response
+
+    # ── Discovery ─────────────────────────────────────────────────────────────
+    def test_club_discovery_does_not_query_per_club(self):
+        """Was 3 queries per club — creator, member count, my role — plus 2."""
+        response = self.assertWithinBudget(4, 'get', '/api/clubs/')
+        self.assertGreaterEqual(len(response.data), 10)
+
+    def test_club_discovery_still_reports_member_counts(self):
+        """The annotation has to produce the same numbers the loop did."""
+        response = self.client.get('/api/clubs/')
+        by_name = {club['name']: club for club in response.data}
+        for club in Club.objects.all():
+            if club.name in by_name:
+                self.assertEqual(
+                    by_name[club.name]['member_count'],
+                    club.members.count(),
+                    f'member_count wrong for {club.name}',
+                )
+
+    def test_joined_list_does_not_query_per_club(self):
+        response = self.assertWithinBudget(4, 'get', '/api/clubs/?joined=true')
+        # Every club here is one the viewer owns, and the annotation must say so.
+        self.assertTrue(response.data)
+        for club in response.data:
+            self.assertEqual(club['my_role'], ClubMember.Role.OWNER)
+
+    def test_discovery_reports_no_role_for_unjoined_clubs(self):
+        response = self.client.get('/api/clubs/')
+        for club in response.data:
+            self.assertIsNone(club['my_role'])
+
+    def test_club_detail_does_not_query_per_member(self):
+        club = Club.objects.filter(members__user=self.me).first()
+        self.assertWithinBudget(6, 'get', f'/api/clubs/{club.pk}/')
+
+    # ── Map ───────────────────────────────────────────────────────────────────
+    def test_nearby_users_is_a_fixed_number_of_queries(self):
+        self.assertWithinBudget(20, 'get', '/api/proximity/nearby/')
+
+    def test_nearby_stories_is_a_fixed_number_of_queries(self):
+        self.assertWithinBudget(13, 'get', '/api/stories/nearby/')
+
+    def test_nearby_meetups_is_a_fixed_number_of_queries(self):
+        self.assertWithinBudget(3, 'get', '/api/clubs/events/nearby/')
+
+    # ── Everything else the app polls ─────────────────────────────────────────
+    def test_friends_list_is_a_fixed_number_of_queries(self):
+        self.assertWithinBudget(8, 'get', '/api/friends/list/')
+
+    def test_notifications_are_a_fixed_number_of_queries(self):
+        self.assertWithinBudget(10, 'get', '/api/notifications/')
+
+    # ── Response size ─────────────────────────────────────────────────────────
+    def test_large_json_responses_are_compressed(self):
+        """The map poll and the club list are the two big repetitive payloads,
+        and every client on mobile data pays for them every few seconds."""
+        plain = self.client.get('/api/clubs/')
+        gzipped = self.client.get('/api/clubs/', headers={'accept-encoding': 'gzip'})
+
+        self.assertEqual(gzipped['Content-Encoding'], 'gzip')
+        self.assertLess(
+            len(gzipped.content), len(plain.content) / 2,
+            'JSON this repetitive should compress by well over half',
+        )
+
+    def test_small_responses_are_left_alone(self):
+        """Below ~200 bytes compression costs more than it saves, and Django
+        declines it — asserted so a future middleware reorder is visible."""
+        response = self.client.get(
+            '/api/friends/messages/unread/', headers={'accept-encoding': 'gzip'},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('Content-Encoding', response)
+
+    # ── The hottest write ─────────────────────────────────────────────────────
+    def test_location_report_does_not_query_per_person_in_range(self):
+        """Was ~10 queries per nearby candidate: two relationship lookups, two
+        cooldown checks and the writes, for everyone within 500m."""
+        self.assertWithinBudget(
+            20, 'patch', '/api/proximity/location/',
+            {'latitude': '25.20050000', 'longitude': '55.27050000',
+             'accuracy': 8.0, 'speed': 1.1},
+        )

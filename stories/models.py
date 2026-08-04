@@ -25,6 +25,17 @@ class Story(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        indexes = [
+            # The map's story pins: live stories inside a bounding box.
+            # `expires_at` leads because it eliminates most of the table on its
+            # own — a story lives 24 hours and the table does not.
+            models.Index(
+                fields=['expires_at', 'latitude', 'longitude'],
+                name='story_live_box_idx',
+            ),
+            # The author's own archive, newest first.
+            models.Index(fields=['user', '-created_at'], name='story_author_idx'),
+        ]
 
     def __str__(self):
         return f"{self.user} — {self.created_at:%Y-%m-%d %H:%M}"

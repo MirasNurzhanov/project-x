@@ -183,6 +183,12 @@ class ClubEvent(models.Model):
 
     class Meta:
         ordering = ['event_datetime']
+        indexes = [
+            # The map's meetup pins: approved events that have not expired.
+            models.Index(
+                fields=['status', 'expires_at'], name='clubevent_live_idx',
+            ),
+        ]
 
     def __str__(self):
         return f'{self.title} @ {self.club}'

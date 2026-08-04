@@ -79,6 +79,22 @@ class Message(models.Model):
     deleted_for_sender = models.BooleanField(default=False)
     deleted_for_receiver = models.BooleanField(default=False)
 
+    class Meta:
+        indexes = [
+            # The unread badge, which every authenticated screen polls about
+            # every ten seconds, and the per-sender breakdown beside it.
+            models.Index(
+                fields=['receiver', 'is_read', 'sender'],
+                name='message_unread_idx',
+            ),
+            # One conversation in order, and the chat list's "latest message per
+            # counterpart" walk, which reads the same index backwards.
+            models.Index(
+                fields=['sender', 'receiver', '-created_at'],
+                name='message_thread_idx',
+            ),
+        ]
+
     def __str__(self):
         preview = self.content[:30] if self.content else '[image]'
         return f"{self.sender} -> {self.receiver}: {preview}"
