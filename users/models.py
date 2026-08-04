@@ -53,7 +53,6 @@ class User(AbstractUser):
     ZONE_RADIUS_MAX_M = 5000
 
     zone_audio = models.FileField(upload_to='zones/', null=True, blank=True, storage=RawMediaCloudinaryStorage())
-    zone_preset = models.CharField(max_length=50, blank=True)
     zone_mode = models.CharField(max_length=8, choices=ZoneMode.choices, default=ZoneMode.RADIUS)
     zone_radius = models.IntegerField(
         default=500,
@@ -150,16 +149,11 @@ class User(AbstractUser):
         """
         if self.zone_apple_preview_url:
             return self.zone_apple_title
-        if self.zone_preset:
-            from .presets import PRESET_MAP
-            preset = PRESET_MAP.get(self.zone_preset)
-            if preset:
-                return preset['name']
         return ''
 
     @property
     def has_zone_track(self):
-        return bool(self.zone_apple_preview_url or self.zone_preset or self.zone_audio)
+        return bool(self.zone_apple_preview_url or self.zone_audio)
 
     @property
     def effective_zone_mode(self):

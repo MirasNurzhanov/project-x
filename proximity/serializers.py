@@ -1,7 +1,6 @@
 from rest_framework import serializers
 from users import visibility
 from users.models import User
-from users.presets import PRESET_MAP
 from interests.serializers import InterestSerializer
 
 
@@ -125,8 +124,6 @@ class NearbyUserSerializer(serializers.Serializer):
 def _zone_track_url(obj):
     if obj.zone_apple_preview_url:
         return obj.zone_apple_preview_url
-    if obj.zone_preset and obj.zone_preset in PRESET_MAP:
-        return PRESET_MAP[obj.zone_preset]['url']
     if obj.zone_audio:
         return obj.zone_audio.url
     return None

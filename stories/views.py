@@ -1,4 +1,6 @@
 import math
+from django.db.models import F, Value
+from django.db.models.functions import Greatest
 from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -47,6 +49,25 @@ def _page_params(request, default_limit=30):
     except (TypeError, ValueError):
         offset = 0
     return limit, offset
+
+
+def _adjust_likes(story, delta):
+    """Move a story's like counter by `delta`, in the database.
+
+    `F()` rather than `likes_count=story.likes_count + delta`, which is what
+    this used to be. That form reads the count into Python and writes back
+    read-value-plus-one, so two people liking the same story at the same moment
+    both read N and both write N+1 — and one of the likes is silently lost. A
+    story on a busy map is exactly where simultaneous likes happen.
+
+    The floor is applied in SQL for the same reason: a Python `max(0, ...)`
+    would be computed from the same stale read it is meant to protect.
+    """
+    if delta >= 0:
+        new_value = F('likes_count') + delta
+    else:
+        new_value = Greatest(F('likes_count') + delta, Value(0))
+    Story.objects.filter(pk=story.pk).update(likes_count=new_value)
 
 
 def _bounding_box(lat, lon, radius_km):
@@ -150,7 +171,7 @@ class ReactToStoryView(APIView):
                 # Toggle off
                 existing.delete()
                 if was_like:
-                    Story.objects.filter(pk=story.pk).update(likes_count=max(0, story.likes_count - 1))
+                    _adjust_likes(story, -1)
                 return Response({'detail': 'Reaction removed.', 'user_reaction': None}, status=status.HTTP_200_OK)
             else:
                 old_type = existing.reaction
@@ -158,15 +179,15 @@ class ReactToStoryView(APIView):
                 existing.save(update_fields=['reaction'])
                 # Adjust likes_count
                 if old_type == StoryReaction.ReactionType.LIKE:
-                    Story.objects.filter(pk=story.pk).update(likes_count=max(0, story.likes_count - 1))
+                    _adjust_likes(story, -1)
                 elif reaction_type == StoryReaction.ReactionType.LIKE:
-                    Story.objects.filter(pk=story.pk).update(likes_count=story.likes_count + 1)
+                    _adjust_likes(story, 1)
                 notify_story_reaction(story, user, reaction_type)
                 return Response({'detail': 'Reaction updated.', 'user_reaction': reaction_type}, status=status.HTTP_200_OK)
         else:
             StoryReaction.objects.create(user=user, story=story, reaction=reaction_type)
             if reaction_type == StoryReaction.ReactionType.LIKE:
-                Story.objects.filter(pk=story.pk).update(likes_count=story.likes_count + 1)
+                _adjust_likes(story, 1)
             notify_story_reaction(story, user, reaction_type)
             return Response({'detail': 'Reaction added.', 'user_reaction': reaction_type}, status=status.HTTP_201_CREATED)
 

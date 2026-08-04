@@ -14,8 +14,11 @@ from friends.models import BlockedUser, FriendRequest, HiRequest
 from interests.models import Interest
 from stories.models import Story
 from users.models import User
-from users.presets import ZONE_PRESETS
 from users.visibility import APPROX_GRID_M, snap_coordinates
+
+#: Stands in for "this user has a zone track" in tests that only care about
+#: visibility gating, not about what the track actually is.
+TEST_TRACK_URL = 'https://example.com/test-track.mp3'
 
 
 def make_user(name, **extra):
@@ -50,7 +53,7 @@ class PrivateAccountTests(TestCase):
             'target',
             latitude='10.001', longitude='10.001',
             is_private=True,
-            zone_preset=ZONE_PRESETS[0]['id'],
+            zone_apple_preview_url=TEST_TRACK_URL,
             zone_active=True,
         )
         self.target.interests.set([self.interest])
@@ -118,7 +121,7 @@ class FieldVisibilityTests(TestCase):
         self.viewer.interests.set([self.interest])
         self.target = make_user(
             'target', latitude='10.001', longitude='10.001',
-            zone_preset=ZONE_PRESETS[0]['id'], zone_active=True,
+            zone_apple_preview_url=TEST_TRACK_URL, zone_active=True,
         )
         self.target.interests.set([self.interest])
         self.client.force_authenticate(self.viewer)
@@ -239,7 +242,7 @@ class FieldVisibilityTests(TestCase):
         # same as a friend — see users.visibility.can_view.
         connect(self.viewer, self.target)
         entries = {e['id']: e for e in self.client.get('/api/proximity/nearby/').json()}
-        self.assertEqual(entries[self.target.pk]['zone_audio_url'], ZONE_PRESETS[0]['url'])
+        self.assertEqual(entries[self.target.pk]['zone_audio_url'], TEST_TRACK_URL)
 
 
 # ─── Discoverability ──────────────────────────────────────────────────────────

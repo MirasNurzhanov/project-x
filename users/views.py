@@ -16,7 +16,6 @@ from .serializers import (
     UserSearchSerializer, ZoneUpdateSerializer, serialize_links,
 )
 from .models import ProfileLink, User
-from .presets import ZONE_PRESETS
 
 
 class RegisterView(generics.CreateAPIView):
@@ -239,13 +238,6 @@ class ZoneView(APIView):
         return Response(serializer.data)
 
 
-class ZonePresetsView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request):
-        return Response(ZONE_PRESETS)
-
-
 class AppleMusicStatusView(APIView):
     """Is Apple Music usable, and if not, precisely why.
 
@@ -334,10 +326,9 @@ class ZoneAppleMusicView(APIView):
         user.zone_apple_artist = song['artist'][:200]
         user.zone_apple_artwork = song['artwork'][:500]
         user.zone_apple_preview_url = song['preview_url'][:500]
-        # A zone plays one thing. The preset and the upload are the other two
-        # ways to fill this slot, and they lose — the same rule ZoneUpdate
-        # applies in the other direction.
-        user.zone_preset = ''
+        # A zone plays one thing. The upload is the other way to fill this
+        # slot, and it loses — the same rule ZoneUpdate applies in the other
+        # direction.
         user.zone_audio = None
         # A new song means a new loop — "seconds 12 to 24" was chosen against a
         # different piece of audio and is meaningless here, and on a shorter
@@ -347,7 +338,7 @@ class ZoneAppleMusicView(APIView):
         user.save(update_fields=[
             'zone_apple_id', 'zone_apple_title', 'zone_apple_artist',
             'zone_apple_artwork', 'zone_apple_preview_url',
-            'zone_preset', 'zone_audio',
+            'zone_audio',
             'zone_track_start_ms', 'zone_track_end_ms', 'updated_at',
         ])
         return Response(ZoneUpdateSerializer(user).data)

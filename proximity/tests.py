@@ -7,7 +7,10 @@ from notifications.models import Notification
 from notifications.utils import notify_zone_music_entry
 from proximity.views import _trigger_zone_music_alerts
 from users.models import User
-from users.presets import ZONE_PRESETS
+
+#: Stands in for "this user has a zone track" in tests that only care about
+#: visibility gating, not about what the track actually is.
+TEST_TRACK_URL = 'https://example.com/test-track.mp3'
 
 
 class NearbyZoneAudioTests(TestCase):
@@ -22,7 +25,7 @@ class NearbyZoneAudioTests(TestCase):
             'other',
             latitude='10.001',
             longitude='10.001',
-            zone_preset=ZONE_PRESETS[0]['id'],
+            zone_apple_preview_url=TEST_TRACK_URL,
             zone_active=True,
         )
         self.client.force_authenticate(self.me)
@@ -63,7 +66,7 @@ class NearbyZoneAudioTests(TestCase):
         )
         entry = self._nearby_by_id()[self.other.pk]
         self.assertEqual(entry['relationship'], 'connected')
-        self.assertEqual(entry['zone_audio_url'], ZONE_PRESETS[0]['url'])
+        self.assertEqual(entry['zone_audio_url'], TEST_TRACK_URL)
 
     def test_friend_gets_zone_audio(self):
         FriendRequest.objects.create(
@@ -71,7 +74,7 @@ class NearbyZoneAudioTests(TestCase):
         )
         entry = self._nearby_by_id()[self.other.pk]
         self.assertEqual(entry['relationship'], 'friend')
-        self.assertEqual(entry['zone_audio_url'], ZONE_PRESETS[0]['url'])
+        self.assertEqual(entry['zone_audio_url'], TEST_TRACK_URL)
 
 
 class NearbySharedInterestsTests(TestCase):
@@ -156,7 +159,7 @@ class ZoneSwitchScopeTests(TestCase):
         self.owner = User.objects.create_user(
             username='owner', email='owner@example.com', password='testpass-123',
             latitude='10.0', longitude='10.0',
-            zone_preset=ZONE_PRESETS[0]['id'],
+            zone_apple_preview_url=TEST_TRACK_URL,
             zone_active=False,          # circle removed from the map
             zone_radius=500,
             music_zone_alerts=True,
@@ -179,7 +182,6 @@ class ZoneSwitchScopeTests(TestCase):
 
     def test_no_track_means_no_alert(self):
         """The track is the switch that was always meant to do this job."""
-        self.owner.zone_preset = ''
         self.owner.zone_audio = None
         self.owner.zone_apple_preview_url = ''
         self.owner.save()

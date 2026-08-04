@@ -5,7 +5,6 @@ from django.contrib.auth.password_validation import validate_password
 from friends.models import FriendRequest, HiRequest
 from . import visibility
 from .models import ProfileLink, User
-from .presets import PRESET_MAP, ZONE_PRESETS
 from interests.models import Interest
 from interests.serializers import InterestSerializer
 from regions.models import Region
@@ -56,7 +55,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'visibility_interests', 'visibility_stories', 'visibility_stats',
             'visibility_zone_audio', 'visibility_connections', 'visibility_presence',
             'discoverable_by_username', 'discoverable_by_interest',
-            'zone_audio', 'zone_preset', 'zone_audio_url', 'zone_active',
+            'zone_audio', 'zone_audio_url', 'zone_active',
             'zone_mode', 'zone_radius', 'zone_region', 'zone_region_detail',
             'push_token',
         )
@@ -257,12 +256,10 @@ _CLEARED_LOOP = {
 
 def _zone_audio_url(obj):
     # One zone plays one thing, and this is the order that decides which. An
-    # Apple track wins because picking one clears the other two — the order
-    # only matters for rows written before that rule existed.
+    # Apple track wins because picking one clears the upload — the order only
+    # matters for rows written before that rule existed.
     if obj.zone_apple_preview_url:
         return obj.zone_apple_preview_url
-    if obj.zone_preset and obj.zone_preset in PRESET_MAP:
-        return PRESET_MAP[obj.zone_preset]['url']
     if obj.zone_audio:
         return obj.zone_audio.url
     return None
@@ -378,7 +375,7 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = (
-            'zone_audio', 'zone_preset', 'zone_audio_url', 'zone_active',
+            'zone_audio', 'zone_audio_url', 'zone_active',
             'zone_mode', 'zone_radius', 'zone_region', 'zone_region_detail',
             'effective_zone_mode',
             'music_zone_separate', 'music_zone_radius', 'music_zone_alerts',
@@ -396,11 +393,6 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
 
     def get_zone_audio_url(self, obj):
         return _zone_audio_url(obj)
-
-    def validate_zone_preset(self, value):
-        if value and value not in PRESET_MAP:
-            raise serializers.ValidationError(f"'{value}' is not a valid preset id.")
-        return value
 
     def validate(self, attrs):
         # Two independent rulesets, kept apart because they have nothing to say
@@ -454,32 +446,16 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
                     )}
                 )
 
-        has_audio = attrs.get('zone_audio') or (
-            'zone_audio' not in attrs and self.instance and self.instance.zone_audio
-        )
-        has_preset = attrs.get('zone_preset') or (
-            'zone_preset' not in attrs and self.instance and self.instance.zone_preset
-        )
-        if attrs.get('zone_audio') and attrs.get('zone_preset'):
-            raise serializers.ValidationError('Set either zone_audio or zone_preset, not both.')
-        # Uploading a new file clears any existing preset
-        if attrs.get('zone_audio') and has_preset:
-            attrs['zone_preset'] = ''
-        # Selecting a preset clears any existing uploaded file
-        if attrs.get('zone_preset') and has_audio:
-            attrs['zone_audio'] = None
-        # …and either of them clears an Apple track, which is the third way to
-        # fill the same slot. Without this a user who picked a song and then a
-        # preset would keep hearing the song: `_zone_audio_url` reads the Apple
+        # An upload clears an Apple track, which is the other way to fill the
+        # same slot. Without this a user who picked a song and then uploaded a
+        # file would keep hearing the song: `_zone_audio_url` reads the Apple
         # field first.
-        if attrs.get('zone_audio') or attrs.get('zone_preset'):
+        if attrs.get('zone_audio'):
             attrs.update(_CLEARED_APPLE_TRACK)
 
         # A new track means a new loop. Cleared on any change of source —
         # including clearing one, so a silent zone does not keep a window.
-        if (
-            'zone_audio' in attrs or 'zone_preset' in attrs
-        ) and 'zone_track_start_ms' not in attrs:
+        if 'zone_audio' in attrs and 'zone_track_start_ms' not in attrs:
             attrs.update(_CLEARED_LOOP)
 
         return attrs
