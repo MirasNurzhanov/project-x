@@ -17,6 +17,12 @@ class LocationUpdateSerializer(serializers.Serializer):
     #: Accepted, bucketed, and thrown away — never stored, never echoed back.
     #: expo-location reports -1 when it has no speed estimate.
     speed = serializers.FloatField(required=False, allow_null=True, min_value=-1)
+    #: Radius of the phone's own confidence in this fix, in metres. Unlike
+    #: `speed` this *is* stored, because anything deciding what a user may see
+    #: from where they are has to know how well the position is known — a fix
+    #: with a two-kilometre radius cannot place anyone in a district.
+    #: expo-location reports -1 when it has no estimate.
+    accuracy = serializers.FloatField(required=False, allow_null=True, min_value=-1)
 
 
 class NearbyUserSerializer(serializers.Serializer):

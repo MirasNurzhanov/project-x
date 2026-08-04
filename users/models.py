@@ -22,6 +22,18 @@ class User(AbstractUser):
     latitude = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True)
     longitude = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True)
 
+    # When the position above was last *reported*, and how good the phone said
+    # the fix was. Both exist because anything deciding access from a location
+    # has to be able to tell a position apart from a memory of one: `updated_at`
+    # moves on any save at all, so it cannot answer "is this where they are".
+    #
+    # Null on rows that predate the columns and on anyone who has never shared
+    # a position; readers fall back to `updated_at` for the age, which is an
+    # upper bound rather than an answer — see clubs.visibility.
+    location_updated_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    #: Metres, as reported by the platform. Null when the phone did not say.
+    location_accuracy_m = models.FloatField(null=True, blank=True)
+
     interests = models.ManyToManyField('interests.Interest', blank=True, related_name='users')
 
     # ── Zone ──────────────────────────────────────────────────────────────────

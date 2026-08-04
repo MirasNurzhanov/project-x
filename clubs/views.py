@@ -9,11 +9,13 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from regions import upstream
 from users.models import User
+from . import visibility
 from .models import Club, ClubEvent, ClubMember, ClubMessage
 from .serializers import (
     ClubDetailSerializer, ClubEventNearbySerializer, ClubEventSerializer,
-    ClubMemberSerializer, ClubMessageSerializer, ClubSerializer,
+    ClubMemberSerializer, ClubMessageSerializer, ClubSerializer, PlaceSerializer,
 )
 
 
@@ -24,20 +26,61 @@ def _get_membership(club, user):
         return None
 
 
+def _out_of_area(place):
+    """The answer for a club the requester may not have from where they are.
+
+    A 404, and the same 404 a deleted club gives, so the endpoint cannot be
+    used to ask whether a club exists somewhere else — the name is unique
+    across the app, which makes that a real question rather than a theoretical
+    one.
+
+    What it does add is `location_status`, and that is a fact about the
+    *requester*, not about any club: it is how the app knows to offer "turn on
+    location" instead of "this club is gone". It is present only when we could
+    not place them at all.
+    """
+    body = {'detail': 'Not found.'}
+    if hasattr(place, 'as_payload'):
+        body.update(place.as_payload())
+        body['detail'] = 'Not found.'
+    return Response(body, status=status.HTTP_404_NOT_FOUND)
+
+
+def _accessible_club_or_none(pk, user, place, **filters):
+    """A club this user may open, or None. Membership counts; see visibility."""
+    club = Club.objects.filter(pk=pk, **filters).first()
+    if club is None or not visibility.can_access(club, user, place):
+        return None
+    return club
+
+
 class ClubListCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
+        """Discovery, and the joined list.
+
+        The two branches differ by more than a filter. Discovery is narrowed to
+        the requester's own area, because that is what discovery *means* now.
+        The joined list is not narrowed at all: those are clubs this person
+        belongs to, and belonging does not lapse because they went somewhere.
+        """
+        place = visibility.place_for(request.user)
+
         if request.query_params.get('joined') == 'true':
             qs = Club.objects.filter(is_active=True, members__user=request.user)
         else:
-            qs = Club.objects.filter(is_active=True).exclude(members__user=request.user)
+            qs = visibility.visible_to(
+                Club.objects.filter(is_active=True), place,
+            ).exclude(members__user=request.user)
 
         interest_id = request.query_params.get('interest')
         if interest_id:
             qs = qs.filter(interest_id=interest_id)
 
+        # Search runs *inside* the visible set rather than beside it: a name
+        # somebody types is not a key to a club in another city.
         search = request.query_params.get('search')
         if search:
             qs = qs.filter(name__icontains=search)
@@ -52,6 +95,63 @@ class ClubListCreateView(APIView):
         if Club.objects.filter(name__iexact=name).exists():
             return Response({'detail': 'A club with this name already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        level = (request.data.get('visibility_level') or '').strip().lower()
+        if level not in Club.SELECTABLE:
+            return Response(
+                {
+                    'detail': 'Choose how far this club should spread.',
+                    'visibility_level': f'Must be one of: {", ".join(Club.SELECTABLE)}.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Resolved here, from the position the server holds, and never taken
+        # from the request: a client that could name its own city could scope a
+        # club to a city it is not in, which is the whole rule.
+        try:
+            place = visibility.place_for(request.user, allow_upstream=True)
+        except upstream.UpstreamError as exc:
+            return Response(
+                {
+                    'detail': 'Could not work out where you are right now. Please try again.',
+                    'retry_after': getattr(exc, 'retry_after', None),
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        if not place.resolved:
+            return Response(place.as_payload(), status=status.HTTP_400_BAD_REQUEST)
+
+        if level not in visibility.available_levels(place):
+            return Response(
+                {
+                    'detail': (
+                        f'Aura has no {level} boundary for where you are, so a club '
+                        f'cannot be limited to one. Pick a wider option.'
+                    ),
+                    'available_levels': visibility.available_levels(place),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # The screen sends back the tier ids it showed. They are not trusted for
+        # anything — the scope comes from `place` either way — but disagreeing
+        # with them means the user has moved since the picker was drawn, and
+        # silently scoping the club to somewhere they are no longer standing is
+        # worse than asking them to look again.
+        claimed = request.data.get('visibility_place_id')
+        if claimed and str(claimed) != str(getattr(place, f'{level}_id', '')):
+            return Response(
+                {
+                    'detail': (
+                        'Your location changed while you were filling this in. '
+                        'Check the area and create the club again.'
+                    ),
+                    'location_changed': True,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
         description = request.data.get('description', '').strip()
         interest_id = request.data.get('interest')
         emblem = request.FILES.get('emblem')
@@ -63,20 +163,60 @@ class ClubListCreateView(APIView):
                 interest_id=interest_id or None,
                 emblem=emblem,
                 creator=request.user,
+                **visibility.scope_fields(level, place),
             )
             ClubMember.objects.create(user=request.user, club=club, role=ClubMember.Role.OWNER)
 
         return Response(ClubSerializer(club, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 
+class MyClubLocationView(APIView):
+    """GET  /api/clubs/my-location/          — where the app thinks you are
+    POST /api/clubs/my-location/           — work it out again, properly
+
+    Two verbs because the two cost wildly different amounts. The GET answers
+    from stored boundaries and never leaves the database, so the club screens
+    can call it freely. The POST is allowed to ask OpenStreetMap, which is what
+    the create screen does once — and what the "I have moved" button does — so
+    the first person to open a club screen in a new city pays for everybody who
+    follows them there.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        place = visibility.place_for(request.user)
+        return Response(PlaceSerializer(place).data)
+
+    def post(self, request):
+        try:
+            place = visibility.place_for(request.user, allow_upstream=True, force=True)
+        except upstream.UpstreamError as exc:
+            body = {'detail': 'Could not find your area right now. Please try again.'}
+            retry_after = getattr(exc, 'retry_after', None)
+            response = Response(body, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            if retry_after:
+                body['retry_after'] = retry_after
+                response['Retry-After'] = str(retry_after)
+            return response
+        return Response(PlaceSerializer(place).data)
+
+
 class ClubDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
-        club = get_object_or_404(Club, pk=pk)
+        # The direct-lookup hole this feature exists to close: without this, a
+        # club hidden from every list is still one guessed id away.
+        place = visibility.place_for(request.user)
+        club = _accessible_club_or_none(pk, request.user, place)
+        if club is None:
+            return _out_of_area(place)
         return Response(ClubDetailSerializer(club, context={'request': request}).data)
 
     def delete(self, request, pk):
+        # Deliberately not location-gated. Deleting is management, and a
+        # creator on holiday is still the creator.
         club = get_object_or_404(Club, pk=pk)
         if request.user != club.creator:
             return Response({'detail': 'Only the club creator can delete the club.'}, status=status.HTTP_403_FORBIDDEN)
@@ -88,7 +228,14 @@ class ClubJoinView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        club = get_object_or_404(Club, pk=pk, is_active=True)
+        # Joining needs `can_see`, not `can_access`: membership is what turns
+        # the location rule off, so it cannot also be what gets you past it.
+        place = visibility.place_for(request.user)
+        club = Club.objects.filter(pk=pk, is_active=True).first()
+        if club is None or not visibility.can_see(club, place):
+            if club is not None and visibility.is_member(club, request.user):
+                return Response({'detail': 'Already a member.'}, status=status.HTTP_400_BAD_REQUEST)
+            return _out_of_area(place)
         if club.members.filter(user=request.user).exists():
             return Response({'detail': 'Already a member.'}, status=status.HTTP_400_BAD_REQUEST)
         member = ClubMember.objects.create(user=request.user, club=club)
@@ -118,6 +265,11 @@ class ClubInviteView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk, user_id):
+        # Not location-gated, on either side. An owner is a member, so they can
+        # always reach their own club; and an invitation is a deliberate act by
+        # somebody who *is* in the area, which is a better authority on who
+        # belongs there than the invitee's current coordinates. The invitee then
+        # holds access through membership, like every other member.
         club = get_object_or_404(Club, pk=pk, is_active=True)
         membership = _get_membership(club, request.user)
         if not membership or membership.role != ClubMember.Role.OWNER:
@@ -177,7 +329,12 @@ class ClubMembersView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
-        club = get_object_or_404(Club, pk=pk)
+        # Same gate as the club page it belongs to, or the roster becomes the
+        # way to read a hidden club's contents.
+        place = visibility.place_for(request.user)
+        club = _accessible_club_or_none(pk, request.user, place)
+        if club is None:
+            return _out_of_area(place)
         members = club.members.select_related('user').order_by('joined_at')
         return Response(ClubMemberSerializer(members, many=True).data)
 
@@ -186,14 +343,24 @@ class ClubEventListCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
-        club = get_object_or_404(Club, pk=pk)
+        # Two gates in order, and the order is the point: somewhere they cannot
+        # see is "not found", somewhere they can see but have not joined is
+        # "members only". Reversing them would let a stranger tell a hidden
+        # club apart from a missing one by the wording of the refusal.
+        place = visibility.place_for(request.user)
+        club = _accessible_club_or_none(pk, request.user, place)
+        if club is None:
+            return _out_of_area(place)
         if not club.members.filter(user=request.user).exists():
             return Response({'detail': 'Members only.'}, status=status.HTTP_403_FORBIDDEN)
         events = club.events.filter(event_datetime__gte=timezone.now()).select_related('created_by', 'approved_by')
         return Response(ClubEventSerializer(events, many=True).data)
 
     def post(self, request, pk):
-        club = get_object_or_404(Club, pk=pk)
+        place = visibility.place_for(request.user)
+        club = _accessible_club_or_none(pk, request.user, place)
+        if club is None:
+            return _out_of_area(place)
         if not club.members.filter(user=request.user).exists():
             return Response({'detail': 'Must be a club member to create events.'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -300,6 +467,9 @@ class ClubEventNearbyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        # The map's club pins. Already scoped to clubs this user belongs to,
+        # which is the membership rule doing the work — there is no path here
+        # to a club they could not open, so no second gate is needed.
         now = timezone.now()
         events = (
             ClubEvent.objects
@@ -319,7 +489,10 @@ class ClubMessageListView(APIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request, pk):
-        club = get_object_or_404(Club, pk=pk)
+        place = visibility.place_for(request.user)
+        club = _accessible_club_or_none(pk, request.user, place)
+        if club is None:
+            return _out_of_area(place)
         if not club.members.filter(user=request.user).exists():
             return Response({'detail': 'Members only.'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -331,7 +504,10 @@ class ClubMessageListView(APIView):
         return Response(ClubMessageSerializer(messages, many=True).data)
 
     def post(self, request, pk):
-        club = get_object_or_404(Club, pk=pk)
+        place = visibility.place_for(request.user)
+        club = _accessible_club_or_none(pk, request.user, place)
+        if club is None:
+            return _out_of_area(place)
         if not club.members.filter(user=request.user).exists():
             return Response({'detail': 'Members only.'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -358,7 +534,13 @@ class ClubEventDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, event_id):
+        # An event is a club's business, so it inherits the club's gate. Without
+        # this, a meetup carries the name, the place and the time of a club the
+        # requester is not allowed to know about.
         event = get_object_or_404(ClubEvent.objects.select_related('created_by', 'approved_by', 'club'), pk=event_id)
+        place = visibility.place_for(request.user)
+        if not visibility.can_access(event.club, request.user, place):
+            return _out_of_area(place)
         return Response(ClubEventSerializer(event).data)
 
     def delete(self, request, event_id):

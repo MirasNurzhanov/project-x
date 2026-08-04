@@ -118,7 +118,7 @@ class PublicProfileSerializer(serializers.Serializer):
         data['date_of_birth'] = obj.date_of_birth
         data['nationality'] = obj.nationality
         data['profession'] = obj.profession
-        data['clubs'] = _club_memberships(obj)
+        data['clubs'] = _club_memberships(obj, viewer=me)
 
         if visibility.can_view(me, obj, 'interests', rel):
             data['interests'] = InterestSerializer(obj.interests.all(), many=True).data
@@ -203,9 +203,27 @@ def _live_story_summaries(obj):
     ]
 
 
-def _club_memberships(obj):
+def _club_memberships(obj, viewer=None):
+    """The clubs on somebody's profile, minus the ones the viewer may not see.
+
+    A profile is a list of clubs like any other, and without this it is the
+    easy way round the location rule: read a stranger's profile, learn the name
+    and id of a club scoped to a district on the other side of the country.
+
+    The viewer's own memberships come through regardless — that is the same
+    membership rule the club page applies, and a member seeing their own club
+    named on a friend's profile is not a leak.
+    """
     from clubs.models import ClubMember
+    from clubs import visibility as club_visibility
+
     qs = ClubMember.objects.filter(user=obj).select_related('club')
+    if viewer is not None:
+        place = club_visibility.place_for(viewer)
+        qs = [
+            m for m in qs
+            if club_visibility.can_access(m.club, viewer, place)
+        ]
     return [
         {
             'id': m.club_id,

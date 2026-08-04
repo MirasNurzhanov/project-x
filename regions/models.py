@@ -123,6 +123,23 @@ class Region(models.Model):
         return self.display_name or self.name
 
     @property
+    def osm_ref(self) -> str:
+        """This region's identity in OpenStreetMap — 'R1234', 'W56' — or ''.
+
+        The only identifier here that survives eviction. A row's primary key is
+        this database's name for a place and dies with the row; the OSM
+        reference is the *place's* name for itself, and re-fetching the same
+        boundary tomorrow produces a new pk carrying this same string. Anything
+        that has to recognise a place across a cache eviction matches on this.
+
+        Blank for a hand-traced boundary, which corresponds to no OSM object at
+        all and so has nothing but its pk and its name.
+        """
+        if not self.osm_type or self.osm_id is None:
+            return ''
+        return f'{self.osm_type[0].upper()}{self.osm_id}'
+
+    @property
     def crosses_antimeridian(self) -> bool:
         """Whether this region's window runs over the dateline.
 
@@ -159,3 +176,111 @@ class Region(models.Model):
             self.min_lat, self.min_lon, self.max_lat, self.max_lon,
             lat, lon, tolerance_m,
         )
+
+    @property
+    def box_area(self) -> float:
+        """Bounding-box area in square degrees — a size *ordering*, not a size.
+
+        Degrees of longitude shrink towards the poles, so this is not an area
+        anyone should print. It is only ever used to compare two shapes that
+        contain the same point, which are by definition at the same latitude,
+        and there it orders them correctly for a fraction of the cost of a real
+        spherical area.
+        """
+        return max((self.max_lat - self.min_lat) * (self.max_lon - self.min_lon), 1e-12)
+
+
+class UserPlace(models.Model):
+    """Where a user is, administratively: city, region, district.
+
+    A *derived* row — the answer to "which polygons contain the position we
+    hold for this person", cached because the question is asked on every club
+    query and answering it walks polygon rings.
+
+    Three tiers, widest first, and each one is a `Region` so comparisons are by
+    primary key rather than by name. See regions.places for how the tiers are
+    picked out of the containment chain and when this is recomputed.
+
+    Nothing here is authoritative on its own: `latitude`/`longitude` record the
+    position it was derived from, so a stale snapshot is detectable rather than
+    silently trusted.
+    """
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='place',
+    )
+
+    # SET_NULL for the same reason as `User.zone_region`: regions are a shared
+    # cache and evicting one must not delete the people standing in it. A null
+    # tier falls back to its stored name — see regions.places.tier_matches.
+    city = models.ForeignKey(
+        Region, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='users_in_city',
+    )
+    region = models.ForeignKey(
+        Region, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='users_in_region',
+    )
+    district = models.ForeignKey(
+        Region, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='users_in_district',
+    )
+
+    # Denormalised so a tier survives its region row being evicted, and so the
+    # name shown to the user does not need three joins. The OSM reference is
+    # the one that survives *usefully*: a re-fetched boundary comes back under
+    # a new primary key carrying the same 'R1234'.
+    city_name = models.CharField(max_length=200, blank=True)
+    region_name = models.CharField(max_length=200, blank=True)
+    district_name = models.CharField(max_length=200, blank=True)
+    city_osm = models.CharField(max_length=24, blank=True)
+    region_osm = models.CharField(max_length=24, blank=True)
+    district_osm = models.CharField(max_length=24, blank=True)
+    country_code = models.CharField(max_length=2, blank=True)
+
+    # ── Everywhere this person is ─────────────────────────────────────────────
+    # Every stored boundary containing them, not just the three that got a tier.
+    # The tiers are for *showing* somebody where they are and for offering a
+    # creator three choices; this is what visibility is actually decided on.
+    #
+    # The difference matters when the map changes underneath us. Tiers are
+    # positions in a chain — widest sub-area, narrowest sub-area — so caching
+    # one new boundary can shuffle which shape sits in which slot, and a club
+    # scoped to the old slot would quietly stop matching. Membership of the
+    # chain does not shuffle: if you were inside Bostandyk yesterday you are
+    # inside it today, whatever else has since been mapped around it.
+    area_ids = models.JSONField(default=list, blank=True)
+    area_osm_refs = models.JSONField(default=list, blank=True)
+
+    # The position this was derived from, not the user's current one. They are
+    # the same until the user moves, and the difference is exactly what
+    # `regions.places` checks before trusting the snapshot.
+    latitude = models.FloatField(null=True, blank=True)
+    longitude = models.FloatField(null=True, blank=True)
+
+    #: A resolver Outcome value, kept so an unresolved snapshot can say *why*
+    #: rather than looking identical to one that was never computed.
+    outcome = models.CharField(max_length=20, blank=True)
+    detail = models.CharField(max_length=300, blank=True)
+
+    resolved_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['city']),
+            models.Index(fields=['region']),
+            models.Index(fields=['district']),
+        ]
+
+    def __str__(self):
+        parts = [p for p in (self.district_name, self.region_name, self.city_name) if p]
+        return f'{self.user_id}: {", ".join(parts) or "unresolved"}'
+
+    @property
+    def resolved(self) -> bool:
+        """Whether this is usable for a visibility decision.
+
+        The city is the floor: every location-restricted club names one, so a
+        snapshot without a city cannot admit anybody to anything.
+        """
+        return bool(self.city_id or self.city_name)

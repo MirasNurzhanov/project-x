@@ -359,7 +359,7 @@ def _decide(candidates, context, stage):
 
 
 # ─── Stages ───────────────────────────────────────────────────────────────────
-def cached_regions(lat, lon, kind, viewer=None):
+def cached_regions(lat, lon, kind, viewer=None, tolerance_m=0.0):
     """Stored polygons of this size containing the point, tightest first.
 
     Bounding box in SQL, exact containment in Python: the box query is indexed
@@ -369,10 +369,21 @@ def cached_regions(lat, lon, kind, viewer=None):
     ±180 (see regions.geometry), so a query at -179.9 has to be offered as
     180.1 as well. The shifted clauses can only match rows whose window leaves
     the ordinary range, which is exactly the crossing ones.
+
+    `tolerance_m` widens both the box and the ring test by a known position
+    error — the fuzz an Approximate sharer's own privacy setting introduced, or
+    a poor GPS fix — so somebody standing in Бостандық is not told they are
+    not. Zero, the default, is exactly the old strict behaviour.
     """
-    window = Q(min_lon__lte=lon, max_lon__gte=lon)
+    lat_pad = tolerance_m / 111_320.0 if tolerance_m else 0.0
+    lon_pad = (
+        tolerance_m / (111_320.0 * max(math.cos(math.radians(lat)), 0.01))
+        if tolerance_m else 0.0
+    )
+
+    window = Q(min_lon__lte=lon + lon_pad, max_lon__gte=lon - lon_pad)
     for shifted in (lon + 360.0, lon - 360.0):
-        window |= Q(min_lon__lte=shifted, max_lon__gte=shifted)
+        window |= Q(min_lon__lte=shifted + lon_pad, max_lon__gte=shifted - lon_pad)
 
     # A boundary somebody traced by hand is theirs until it is checked. Serving
     # an unverified shape to everyone would let one person redraw a district
@@ -392,10 +403,11 @@ def cached_regions(lat, lon, kind, viewer=None):
     sizes = (kind, Region.Kind.OTHER)
 
     candidates = Region.objects.filter(
-        Q(kind__in=sizes, min_lat__lte=lat, max_lat__gte=lat) & window & trust
+        Q(kind__in=sizes, min_lat__lte=lat + lat_pad, max_lat__gte=lat - lat_pad)
+        & window & trust
     )
     return sorted(
-        (r for r in candidates if r.contains(lat, lon)),
+        (r for r in candidates if r.could_contain(lat, lon, tolerance_m)),
         key=lambda r: (r.max_lat - r.min_lat) * (r.max_lon - r.min_lon),
     )
 
@@ -411,7 +423,9 @@ def _collect_address(context):
     if not address:
         return None
 
-    context.country_code = (address.get('country_code') or '')[:2]
+    # A hint only ever fills a blank: upstream's answer wins, but an upstream
+    # response that names no country must not erase what the caller knew.
+    context.country_code = (address.get('country_code') or '')[:2] or context.country_code
     context.state_name = address.get('state') or address.get('province')
     for key in CITY_FIELDS:
         if address.get(key):
@@ -505,13 +519,27 @@ def _from_boundary_relations(context):
 
 
 # ─── Pipeline ─────────────────────────────────────────────────────────────────
-def resolve(lat, lon, kind=Region.Kind.CITY, viewer=None):
+def resolve(lat, lon, kind=Region.Kind.CITY, viewer=None, allow_upstream=True,
+            country_hint=''):
     """The place of a given size containing a point, or an honest reason why not.
 
     Stops at the first stage that produces a confident winner, so the common
     case is one indexed query and the expensive stages stay rare.
+
+    `allow_upstream=False` stops after stage 1 — stored polygons only, no
+    network, no rate limiter. That is the mode anything on a read path uses:
+    working out which district a viewer is standing in happens on every club
+    query, and a lookup that could block on Nominatim has no business there.
+    A cache miss then reports UNMAPPED, which callers must read as "not known
+    yet" rather than "nowhere", and resolve properly on an explicit request.
+
+    `country_hint` supplies the country the address hierarchy would otherwise
+    have told us, which matters only on the cache-only path: without it Almaty
+    is *vetoed* as a city, because level 4 is a province everywhere the table
+    does not say otherwise. Stage 2 overwrites it with the real thing the
+    moment it runs, so it can never override upstream.
     """
-    context = _Context(lat=lat, lon=lon, kind=kind)
+    context = _Context(lat=lat, lon=lon, kind=kind, country_code=(country_hint or '')[:2])
     pool = []
 
     # Stage 1 — what we already hold.
@@ -519,6 +547,15 @@ def resolve(lat, lon, kind=Region.Kind.CITY, viewer=None):
     decision = _decide(pool, context, 'cache')
     if decision and decision.resolved:
         return _finish(decision, context)
+
+    if not allow_upstream:
+        return _finish(
+            decision or Resolution(
+                outcome=Outcome.UNMAPPED, stage='cache',
+                detail='No stored area covers this location yet.',
+            ),
+            context,
+        )
 
     # Stage 2 — what this place is called, at every level.
     address = _collect_address(context)

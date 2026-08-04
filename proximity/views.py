@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db.models import Q
 from django.utils import timezone
+from regions import places
 from users import visibility
 from users.models import User
 from friends.models import FriendRequest, HiRequest
@@ -194,7 +195,16 @@ class UpdateLocationView(APIView):
             serializer.validated_data['latitude'],
             serializer.validated_data['longitude'],
         )
-        fields = ['latitude', 'longitude', 'updated_at']
+        user.location_updated_at = timezone.now()
+        # Absent and -1 both mean "the phone did not say", which is not the same
+        # claim as "perfect", so neither is allowed to overwrite a real figure
+        # with a better-looking one.
+        accuracy = serializer.validated_data.get('accuracy')
+        user.location_accuracy_m = float(accuracy) if accuracy is not None and accuracy >= 0 else None
+        fields = [
+            'latitude', 'longitude', 'location_updated_at', 'location_accuracy_m',
+            'updated_at',
+        ]
 
         motion = classify_speed(serializer.validated_data.get('speed'))
         if motion is not None:
@@ -203,6 +213,10 @@ class UpdateLocationView(APIView):
             fields += ['motion_class', 'motion_updated_at']
 
         user.save(update_fields=fields)
+        # Which city/region/district this position falls in, recomputed only
+        # when the user has actually left the area we had for them. Cache-only,
+        # so it never reaches upstream on the hot path.
+        places.refresh_quietly(user)
         _trigger_nearby_notifications(user)
         # Best-effort: a zone alert is a nice-to-have, and a failure inside it
         # must not fail the location write that every other feature depends on.
