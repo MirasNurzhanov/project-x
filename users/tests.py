@@ -223,11 +223,21 @@ class FieldVisibilityTests(TestCase):
         self.set_visibility(visibility_stories=User.Audience.NOBODY)
         self.assertEqual(self.client.get('/api/stories/saved/').json()['count'], 0)
 
-    def test_zone_audio_gated_on_map(self):
+    def test_zone_audio_never_reaches_a_stranger(self):
         entries = {e['id']: e for e in self.client.get('/api/proximity/nearby/').json()}
         self.assertNotIn('zone_audio_url', entries[self.target.pk])
 
+        # "Everyone" is not literal for zone audio — it still caps at friend
+        # or connected, exactly like the default "Friends" setting. A
+        # stranger gets nothing from either.
         self.set_visibility(visibility_zone_audio=User.Audience.EVERYONE)
+        entries = {e['id']: e for e in self.client.get('/api/proximity/nearby/').json()}
+        self.assertNotIn('zone_audio_url', entries[self.target.pk])
+
+    def test_zone_audio_reaches_a_connection_by_default(self):
+        # Default is Friends, but zone audio treats an accepted connection the
+        # same as a friend — see users.visibility.can_view.
+        connect(self.viewer, self.target)
         entries = {e['id']: e for e in self.client.get('/api/proximity/nearby/').json()}
         self.assertEqual(entries[self.target.pk]['zone_audio_url'], ZONE_PRESETS[0]['url'])
 

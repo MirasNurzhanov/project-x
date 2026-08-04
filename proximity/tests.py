@@ -11,8 +11,9 @@ from users.presets import ZONE_PRESETS
 
 
 class NearbyZoneAudioTests(TestCase):
-    """Zone music is friends-only: /api/proximity/nearby/ must not expose
-    another user's zone audio unless the requester is an accepted friend."""
+    """Zone music is friends-and-connections-only: /api/proximity/nearby/
+    must not expose another user's zone audio to a stranger, however the
+    owner's Zone audio setting is configured."""
 
     def setUp(self):
         self.client = APIClient()
@@ -56,14 +57,13 @@ class NearbyZoneAudioTests(TestCase):
         self.assertNotIn('zone_audio', entry)
         self.assertNotIn('zone_audio_url', entry)
 
-    def test_connected_via_hi_gets_no_zone_audio(self):
+    def test_connected_via_hi_gets_zone_audio(self):
         HiRequest.objects.create(
             sender=self.me, receiver=self.other, status=HiRequest.Status.ACCEPTED
         )
         entry = self._nearby_by_id()[self.other.pk]
         self.assertEqual(entry['relationship'], 'connected')
-        self.assertNotIn('zone_audio', entry)
-        self.assertNotIn('zone_audio_url', entry)
+        self.assertEqual(entry['zone_audio_url'], ZONE_PRESETS[0]['url'])
 
     def test_friend_gets_zone_audio(self):
         FriendRequest.objects.create(
