@@ -254,8 +254,9 @@ class MessagesView(APIView):
 
         content = request.data.get('content', '').strip()
         image = request.FILES.get('image')
+        image_url = (request.data.get('image_url') or '').strip()
 
-        if not content and not image:
+        if not content and not image and not image_url:
             return Response({'detail': 'content or image is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         message = Message.objects.create(
@@ -263,6 +264,7 @@ class MessagesView(APIView):
             receiver=other,
             content=content,
             image=image,
+            image_url=image_url,
         )
 
         # A story reply is a normal DM carrying an encoded payload, plus a
@@ -285,7 +287,7 @@ class MessagesView(APIView):
                 'id': message.id,
                 'sender_id': request.user.pk,
                 'content': message.content,
-                'image_url': message.image.url if message.image else None,
+                'image_url': message.image_url or (message.image.url if message.image else None),
                 'created_at': message.created_at.isoformat(),
             },
         )

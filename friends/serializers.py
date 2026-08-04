@@ -29,7 +29,15 @@ class FriendRequestSerializer(serializers.ModelSerializer):
 
 class MessageSerializer(serializers.ModelSerializer):
     sender = BasicUserSerializer(read_only=True)
+    # Kept under the old key: clients read `image` whether the file went
+    # through Django or straight to Cloudinary.
+    image = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
         fields = ('id', 'sender', 'content', 'image', 'created_at', 'is_read')
+
+    def get_image(self, obj):
+        if obj.image_url:
+            return obj.image_url
+        return obj.image.url if obj.image else None

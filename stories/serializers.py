@@ -5,6 +5,9 @@ from .models import SavedStory, Story, StoryReaction
 
 class StorySerializer(serializers.ModelSerializer):
     author = serializers.SerializerMethodField()
+    # Kept under the old key: clients read `image` whether the file went
+    # through Django or straight to Cloudinary.
+    image = serializers.SerializerMethodField()
     is_expired = serializers.SerializerMethodField()
     user_reaction = serializers.SerializerMethodField()
     reactions = serializers.SerializerMethodField()
@@ -18,6 +21,11 @@ class StorySerializer(serializers.ModelSerializer):
             'is_expired', 'user_reaction', 'reactions', 'is_saved',
         ]
         read_only_fields = ['id', 'expires_at', 'created_at', 'likes_count']
+
+    def get_image(self, obj):
+        if obj.image_url:
+            return obj.image_url
+        return obj.image.url if obj.image else None
 
     def get_author(self, obj):
         from django.utils import timezone
@@ -36,26 +44,35 @@ class StorySerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if not request:
             return None
-        reaction = obj.reactions.filter(user=request.user).first()
-        return reaction.reaction if reaction else None
+        # Walk the prefetched rows — `.filter()` here would bypass the
+        # prefetch cache and issue one query per story in a list response.
+        for r in obj.reactions.all():
+            if r.user_id == request.user.pk:
+                return r.reaction
+        return None
 
     def get_is_saved(self, obj):
         request = self.context.get('request')
         if not request:
             return False
+        # List views hand in the whole set at once; the per-object query only
+        # remains for single-story responses.
+        saved_ids = self.context.get('saved_ids')
+        if saved_ids is not None:
+            return obj.pk in saved_ids
         return SavedStory.objects.filter(user=request.user, story=obj).exists()
 
     def get_reactions(self, obj):
         counts = {}
-        for r in StoryReaction.objects.filter(story=obj).values('reaction').annotate(count=Count('reaction')):
-            counts[r['reaction']] = r['count']
+        for r in obj.reactions.all():
+            counts[r.reaction] = counts.get(r.reaction, 0) + 1
         return counts
 
 
 class StoryCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Story
-        fields = ['content', 'image', 'latitude', 'longitude', 'place_name']
+        fields = ['content', 'image', 'image_url', 'latitude', 'longitude', 'place_name']
 
 
 class StoryReactionSerializer(serializers.Serializer):

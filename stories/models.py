@@ -8,6 +8,9 @@ class Story(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='stories')
     content = models.TextField(max_length=280)
     image = models.ImageField(upload_to='stories/', null=True, blank=True)
+    # Set when the client uploaded straight to Cloudinary and only the URL
+    # passed through here. Takes precedence over `image` when both exist.
+    image_url = models.URLField(max_length=500, blank=True, default='')
     latitude = models.DecimalField(max_digits=9, decimal_places=6)
     longitude = models.DecimalField(max_digits=9, decimal_places=6)
     place_name = models.CharField(max_length=200, blank=True)

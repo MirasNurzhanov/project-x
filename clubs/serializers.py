@@ -77,7 +77,15 @@ class ClubEventNearbySerializer(serializers.ModelSerializer):
 class ClubMessageSerializer(serializers.ModelSerializer):
     sender = BasicUserSerializer(read_only=True)
     event = ClubEventSerializer(read_only=True)
+    # Kept under the old key: clients read `image` whether the file went
+    # through Django or straight to Cloudinary.
+    image = serializers.SerializerMethodField()
 
     class Meta:
         model = ClubMessage
         fields = ('id', 'club', 'sender', 'content', 'image', 'message_type', 'event', 'created_at')
+
+    def get_image(self, obj):
+        if obj.image_url:
+            return obj.image_url
+        return obj.image.url if obj.image else None

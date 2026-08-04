@@ -99,6 +99,9 @@ class ClubMessage(models.Model):
     )
     content = models.TextField(blank=True)
     image = models.ImageField(upload_to='club_messages/', null=True, blank=True)
+    # Set when the client uploaded straight to Cloudinary and only the URL
+    # passed through here. Takes precedence over `image` when both exist.
+    image_url = models.URLField(max_length=500, blank=True, default='')
     message_type = models.CharField(max_length=20, choices=MessageType.choices, default=MessageType.TEXT)
     event = models.ForeignKey(
         ClubEvent,

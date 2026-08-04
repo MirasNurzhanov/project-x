@@ -1,7 +1,10 @@
 import math
+from concurrent.futures import ThreadPoolExecutor
+
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.db import close_old_connections
 from django.db.models import Q
 from django.utils import timezone
 from users import visibility
@@ -329,6 +332,22 @@ class NearbyUsersView(APIView):
         return Response(serializer.data)
 
 
+# Shared across requests on purpose: reused worker threads keep their DB
+# connections alive under CONN_MAX_AGE instead of opening fresh ones per poll,
+# and the worker count caps how many extra connections the map can ever hold.
+_MAP_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix='map-nearby')
+
+
+def _run_subview(view_get, request):
+    # These threads never see Django's request_started/finished signals, so
+    # stale-connection cleanup has to happen by hand on both sides of the call.
+    close_old_connections()
+    try:
+        return view_get(request)
+    finally:
+        close_old_connections()
+
+
 class NearbyMapView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -343,12 +362,15 @@ class NearbyMapView(APIView):
         from stories.views import NearbyStoriesView
         from clubs.views import ClubEventNearbyView
 
-        users_resp = NearbyUsersView().get(request)
-        stories_resp = NearbyStoriesView().get(request)
-        meetups_resp = ClubEventNearbyView().get(request)
+        # No shared transaction (ATOMIC_REQUESTS is off), so the three reads
+        # are independent and can overlap instead of paying their latencies
+        # back to back.
+        users_f = _MAP_POOL.submit(_run_subview, NearbyUsersView().get, request)
+        stories_f = _MAP_POOL.submit(_run_subview, NearbyStoriesView().get, request)
+        meetups_f = _MAP_POOL.submit(_run_subview, ClubEventNearbyView().get, request)
 
         return Response({
-            'users': users_resp.data,
-            'stories': stories_resp.data,
-            'meetups': meetups_resp.data,
+            'users': users_f.result().data,
+            'stories': stories_f.result().data,
+            'meetups': meetups_f.result().data,
         })
