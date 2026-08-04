@@ -114,9 +114,10 @@ def _trigger_nearby_notifications(user):
 def _trigger_zone_music_alerts(user):
     """`user` has just reported a position. Whose music are they now inside?
 
-    Friends only, in both roles. A stranger's zone music is not something they
-    asked to be told about, and a stranger walking past is not news to the
-    owner either — the map already shows both of them to each other.
+    Friends and connections only, in both roles. A stranger's zone music is
+    not something they asked to be told about, and a stranger walking past is
+    not news to the owner either — the map already shows both of them to
+    each other.
 
     Only the person who *moved* is evaluated, which is enough to cover both
     directions: when you walk into a stationary friend's zone this runs for
@@ -130,8 +131,12 @@ def _trigger_zone_music_alerts(user):
     lat = float(user.latitude)
     lon = float(user.longitude)
 
-    friend_ids, _ = _get_relationship_ids(user, visibility.blocked_ids_for(user) | {user.pk})
-    if not friend_ids:
+    # Friends and connections both qualify — `visibility.can_view('zone_audio')`
+    # allows the same two tiers, and `notify_zone_music_entry` re-checks it
+    # per owner anyway, so this only has to avoid querying strangers at all.
+    friend_ids, connected_ids = _get_relationship_ids(user, visibility.blocked_ids_for(user) | {user.pk})
+    approved_ids = friend_ids | connected_ids
+    if not approved_ids:
         return
 
     # Not filtered on `zone_active`. That flag is about the zone drawn on the
@@ -140,7 +145,7 @@ def _trigger_zone_music_alerts(user):
     # settled by `has_zone_track` in `notify_zone_music_entry`, which is a
     # property across three columns and so cannot be a filter here.
     owners = User.objects.filter(
-        pk__in=friend_ids,
+        pk__in=approved_ids,
         latitude__isnull=False,
         longitude__isnull=False,
     ).exclude(location_sharing=User.LocationSharing.PAUSED)

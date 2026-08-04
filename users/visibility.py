@@ -160,6 +160,13 @@ def can_view(viewer, target, field, rel=None):
     audience = getattr(target, FIELD_SETTINGS[field])
     if audience == User.Audience.NOBODY:
         return False
+    # A music zone is never for a stranger, whatever this is set to — "Friends"
+    # and "Everyone" collapse to the same audience here (see app/zone.tsx and
+    # app/privacy.tsx, which no longer offer "Everyone" as a distinct choice).
+    # Same shape as `motion_for`, which caps presence-derived motion the same
+    # way regardless of the presence audience setting.
+    if field == 'zone_audio':
+        return rel in (FRIEND, CONNECTED)
     if audience == User.Audience.FRIENDS:
         return rel == FRIEND
     return True
