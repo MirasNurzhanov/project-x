@@ -178,7 +178,30 @@ class ClubDetailSerializer(ClubSerializer):
         fields = ClubSerializer.Meta.fields + ('members',)
 
 
-class ClubEventSerializer(serializers.ModelSerializer):
+class NumericLatLngMixin(serializers.Serializer):
+    """Emits `latitude`/`longitude` as JSON numbers, not DRF's default
+    stringified Decimal (COERCE_DECIMAL_TO_STRING). Fabric's typed
+    view-manager props on Android refuse a string outright — AIRMapMarker
+    throws "cannot be cast from String to double" rather than coercing the
+    way the old bridge did — so this has to hold at the source rather than
+    rely on every client normalising it on the way in.
+
+    A club event's coordinates are optional (a proposal can be pinned to a
+    named place with no map point at all), so `None` passes through rather
+    than becoming `0.0` — a meetup at 0°,0° is a wrong answer, not a missing
+    one.
+    """
+    latitude = serializers.SerializerMethodField()
+    longitude = serializers.SerializerMethodField()
+
+    def get_latitude(self, obj):
+        return float(obj.latitude) if obj.latitude is not None else None
+
+    def get_longitude(self, obj):
+        return float(obj.longitude) if obj.longitude is not None else None
+
+
+class ClubEventSerializer(NumericLatLngMixin, serializers.ModelSerializer):
     created_by = BasicUserSerializer(read_only=True)
     approved_by = BasicUserSerializer(read_only=True)
 
@@ -191,7 +214,7 @@ class ClubEventSerializer(serializers.ModelSerializer):
         )
 
 
-class ClubEventNearbySerializer(serializers.ModelSerializer):
+class ClubEventNearbySerializer(NumericLatLngMixin, serializers.ModelSerializer):
     created_by = BasicUserSerializer(read_only=True)
     approved_by = BasicUserSerializer(read_only=True)
     club_name = serializers.CharField(source='club.name', read_only=True)

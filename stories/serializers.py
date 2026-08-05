@@ -8,6 +8,14 @@ class StorySerializer(serializers.ModelSerializer):
     # Kept under the old key: clients read `image` whether the file went
     # through Django or straight to Cloudinary.
     image = serializers.SerializerMethodField()
+    # DRF's DecimalField stringifies by default (COERCE_DECIMAL_TO_STRING),
+    # which Fabric's typed view-manager props on Android refuse outright —
+    # AIRMapMarker throws "cannot be cast from String to double" rather than
+    # coercing the way the old bridge did. Floats here so the fix holds
+    # however the client normalises coordinates, not just for the one
+    # currently in services/coords.ts.
+    latitude = serializers.SerializerMethodField()
+    longitude = serializers.SerializerMethodField()
     is_expired = serializers.SerializerMethodField()
     user_reaction = serializers.SerializerMethodField()
     reactions = serializers.SerializerMethodField()
@@ -26,6 +34,12 @@ class StorySerializer(serializers.ModelSerializer):
         if obj.image_url:
             return obj.image_url
         return obj.image.url if obj.image else None
+
+    def get_latitude(self, obj):
+        return float(obj.latitude)
+
+    def get_longitude(self, obj):
+        return float(obj.longitude)
 
     def get_author(self, obj):
         from django.utils import timezone

@@ -1220,3 +1220,68 @@ class BoundaryConditionTests(GeoFixture):
         club = self.make_club('Elbow Runners', 'region', inside)
         self.assertTrue(visibility.can_see(club, inside))
         self.assertFalse(visibility.can_see(club, notch))
+
+
+# ─── Coordinate typing ─────────────────────────────────────────────────────────
+class ClubEventCoordinateTypeTests(GeoFixture):
+    """latitude/longitude must serialize as JSON numbers, not strings.
+
+    DRF's DecimalField stringifies by default (COERCE_DECIMAL_TO_STRING), and
+    Fabric's typed view-manager props on Android refuse a string outright —
+    AIRMapMarker throws rather than coercing the way the old bridge did. Both
+    the detail endpoint (ClubEventSerializer) and the nearby feed
+    (ClubEventNearbySerializer) build this from the same model, so both get
+    pinned here.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.owner = self.make_user('owner', at=self.IN_ORBITA)
+        self.club = self.make_club('Orbita Runners', 'district', self.place_of(self.owner), creator=self.owner)
+
+    def test_event_detail_coordinates_are_numbers(self):
+        from datetime import timedelta
+
+        from .models import ClubEvent
+
+        event = ClubEvent.objects.create(
+            club=self.club, created_by=self.owner, title='Sunday run',
+            latitude='0.100500', longitude='0.100500',
+            event_datetime=timezone.now() + timedelta(days=1),
+        )
+        body = self.client_for(self.owner).get(f'/api/clubs/events/{event.pk}/').json()
+        self.assertIsInstance(body['latitude'], float)
+        self.assertIsInstance(body['longitude'], float)
+
+    def test_event_with_no_location_stays_null_not_zero(self):
+        """A meetup pinned to a named place with no map point at all must not
+        come back as (0, 0) — a wrong position, not a missing one."""
+        from datetime import timedelta
+
+        from .models import ClubEvent
+
+        event = ClubEvent.objects.create(
+            club=self.club, created_by=self.owner, title='Somewhere TBD',
+            event_datetime=timezone.now() + timedelta(days=1),
+        )
+        body = self.client_for(self.owner).get(f'/api/clubs/events/{event.pk}/').json()
+        self.assertIsNone(body['latitude'])
+        self.assertIsNone(body['longitude'])
+
+    def test_nearby_meetup_coordinates_are_numbers(self):
+        from datetime import timedelta
+
+        from .models import ClubEvent
+
+        ClubEvent.objects.create(
+            club=self.club, created_by=self.owner, title='Sunday run',
+            latitude='0.100500', longitude='0.100500',
+            event_datetime=timezone.now() + timedelta(hours=2),
+            status=ClubEvent.Status.APPROVED,
+            approved_at=timezone.now(),
+            expires_at=timezone.now() + timedelta(hours=24),
+        )
+        body = self.client_for(self.owner).get('/api/clubs/events/nearby/').json()
+        self.assertEqual(len(body), 1)
+        self.assertIsInstance(body[0]['latitude'], float)
+        self.assertIsInstance(body[0]['longitude'], float)
