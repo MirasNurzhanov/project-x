@@ -10,6 +10,19 @@ SECRET_KEY = config('SECRET_KEY')
 
 DEBUG = config('DEBUG', default=False, cast=bool)
 
+# ── Social sign-in ──────────────────────────────────────────────────────────
+# The audience a Google/Apple identity token must have been issued for — see
+# users/social_auth.py. Defaults match the values already wired into the
+# mobile app's config; env vars exist so either can be rotated without a
+# code change.
+GOOGLE_CLIENT_ID = config(
+    'GOOGLE_CLIENT_ID',
+    default='480602152070-pin0qqfnkkj7bstcjr0f7ntoqt5p3kei.apps.googleusercontent.com',
+)
+#: A native app's Apple identity token carries the app's bundle id as its
+#: audience — there is no separate "client id" the way Google has one.
+APPLE_BUNDLE_ID = config('APPLE_BUNDLE_ID', default='com.arcanix.aura')
+
 ALLOWED_HOSTS = ['*']
 
 INSTALLED_APPS = [

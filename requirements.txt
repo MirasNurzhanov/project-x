@@ -48,6 +48,9 @@ python-decouple==3.8
 redis[hiredis]==7.4.0
 requests==2.33.1
 requests-oauthlib==2.0.0
+# Verifies Google Sign-In identity tokens against Google's own published keys
+# (google.oauth2.id_token.verify_oauth2_token) -- see users/social_auth.py.
+google-auth==2.56.2
 service-identity==24.2.0
 six==1.17.0
 sqlparse==0.5.5

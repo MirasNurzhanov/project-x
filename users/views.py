@@ -10,6 +10,7 @@ from rest_framework_simplejwt.exceptions import TokenError
 from friends.models import FriendRequest
 from . import applemusic, visibility
 from .links import LinkError, MAX_LINKS_PER_USER, normalize_link
+from .social_auth import SocialAuthError, find_or_create_social_user, verify_apple_token, verify_google_token
 from .serializers import (
     RegisterSerializer, UserProfileSerializer, EditProfileSerializer,
     PublicProfileSerializer, PrivacySettingsSerializer, ProfileLinkSerializer,
@@ -34,6 +35,52 @@ class RegisterView(generics.CreateAPIView):
                 'refresh': str(refresh),
                 'access': str(refresh.access_token),
             }
+        })
+
+
+class SocialAuthView(APIView):
+    """One endpoint for both providers: `{"provider": "google"|"apple",
+    "id_token": "...", "full_name"?: "..."}` in, Aura's own JWT pair out.
+
+    There is no separate "sign up" version of this — see
+    services/socialAuth.ts on the client, which is the other half of this
+    contract. From here, a first-time identity and a returning one differ
+    only in `created` and `needs_date_of_birth` on the response; the client
+    decides where to route the person from those two flags.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        provider = request.data.get('provider')
+        id_token_str = request.data.get('id_token')
+        if provider not in ('google', 'apple'):
+            return Response(
+                {'detail': 'provider must be "google" or "apple".', 'code': 'unknown_provider'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not id_token_str:
+            return Response(
+                {'detail': 'id_token is required.', 'code': 'missing_token'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            if provider == 'google':
+                claims = verify_google_token(id_token_str)
+            else:
+                claims = verify_apple_token(id_token_str, request.data.get('full_name', ''))
+        except SocialAuthError as exc:
+            return Response({'detail': exc.message, 'code': exc.code}, status=exc.status)
+
+        user, created = find_or_create_social_user(claims)
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'tokens': {
+                'access': str(refresh.access_token),
+                'refresh': str(refresh),
+            },
+            'created': created,
+            'needs_date_of_birth': user.date_of_birth is None,
         })
 
 

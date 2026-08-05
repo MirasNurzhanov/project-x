@@ -11,6 +11,19 @@ from regions.models import Region
 from regions.serializers import RegionSummarySerializer
 
 
+def _reject_if_under_13(dob):
+    """Shared by every path that can set a date of birth: the age gate is one
+    rule, not one per form that happens to collect the date — a social
+    sign-in's birthday screen (EditProfileSerializer) has to refuse exactly
+    what registration always has."""
+    if not dob:
+        return
+    today = date.today()
+    age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+    if age < 13:
+        raise serializers.ValidationError('You must be at least 13 to use Aura.')
+
+
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, validators=[validate_password])
     password2 = serializers.CharField(write_only=True)
@@ -23,12 +36,10 @@ class RegisterSerializer(serializers.ModelSerializer):
         if attrs['password'] != attrs['password2']:
             raise serializers.ValidationError({'password': 'Passwords do not match.'})
 
-        dob = attrs.get('date_of_birth')
-        if dob:
-            today = date.today()
-            age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
-            if age < 13:
-                raise serializers.ValidationError({'date_of_birth': 'You must be at least 13 to register.'})
+        try:
+            _reject_if_under_13(attrs.get('date_of_birth'))
+        except serializers.ValidationError as exc:
+            raise serializers.ValidationError({'date_of_birth': exc.detail}) from exc
         return attrs
 
     def create(self, validated_data):
@@ -500,6 +511,12 @@ class EditProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('bio', 'profile_picture', 'date_of_birth', 'nationality', 'profession', 'interests', 'push_token')
+
+    def validate_date_of_birth(self, dob):
+        # A social sign-up reaches this same field from app/social-birthday.tsx
+        # — registration's age gate has to hold here too, not just at signup.
+        _reject_if_under_13(dob)
+        return dob
 
     def update(self, instance, validated_data):
         interests = validated_data.pop('interests', None)
