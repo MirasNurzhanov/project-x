@@ -13,7 +13,6 @@ DEBUG = config('DEBUG', default=False, cast=bool)
 ALLOWED_HOSTS = ['*']
 
 INSTALLED_APPS = [
-    'doctor',
     'daphne',
     "django.contrib.admin",
     "django.contrib.auth",
