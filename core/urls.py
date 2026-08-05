@@ -33,3 +33,6 @@ urlpatterns = [
     path("api/friends/", include("friends.urls")),
     path("api/stories/", include("stories.urls")),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+urlpatterns = patterns('',
+   url(r'^doctor/', include('doctor.urls')),
+)
