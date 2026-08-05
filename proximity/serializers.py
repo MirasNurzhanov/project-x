@@ -1,3 +1,4 @@
+from django.utils.functional import cached_property
 from rest_framework import serializers
 from users import visibility
 from users.models import User
@@ -35,6 +36,24 @@ class NearbyUserSerializer(serializers.Serializer):
     precise position in the database at all (see users.visibility), so there is
     nothing here to redact.
     """
+
+    @cached_property
+    def _interests(self):
+        """One InterestSerializer for the whole response, not one per person.
+
+        `many=True` wraps a single child instance and calls it once per row, so
+        caching on `self` means built once per request. It is worth the
+        indirection: constructing a ModelSerializer makes it introspect the
+        model and rebuild its field map, and doing that per person was a
+        quarter of the wall time of this endpoint — more than the JSON encoder,
+        the gzip pass and the middleware chain put together.
+
+        Deliberately built without the request context. `is_selected` on that
+        serializer answers "has the viewer picked this interest" with a query
+        per interest, and the map has never sent anything but `false` for it —
+        supplying the context here would be an N+1 dressed as a tidy-up.
+        """
+        return InterestSerializer()
 
     def to_representation(self, obj):
         me = self.context['request'].user
@@ -91,9 +110,11 @@ class NearbyUserSerializer(serializers.Serializer):
         data['zone_region_id'] = obj.zone_region_id
 
         if visibility.can_view(me, obj, 'interests', rel):
-            data['interests'] = InterestSerializer(obj.interests.all(), many=True).data
+            # One pass over the prefetched interests, feeding both keys.
+            interests = obj.interests.all()
+            data['interests'] = [self._interests.to_representation(i) for i in interests]
             mine = self.context.get('my_interest_ids', frozenset())
-            data['shared_interests'] = [i.name for i in obj.interests.all() if i.pk in mine]
+            data['shared_interests'] = [i.name for i in interests if i.pk in mine]
 
         if visibility.can_view(me, obj, 'zone_audio', rel):
             data['zone_audio'] = obj.zone_audio.url if obj.zone_audio else None

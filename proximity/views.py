@@ -357,9 +357,15 @@ class NearbyUsersView(APIView):
         return Response(serializer.data)
 
 
-# Shared across requests on purpose: reused worker threads keep their DB
-# connections alive under CONN_MAX_AGE instead of opening fresh ones per poll,
-# and the worker count caps how many extra connections the map can ever hold.
+# Shared across requests on purpose: eight threads is the ceiling on how much
+# of the map fan-out can be in flight at once, so the endpoint cannot open
+# work faster than the database can absorb it.
+#
+# It used to also be the thing keeping connections alive between polls, via
+# CONN_MAX_AGE on the reused threads. That job now belongs to the psycopg pool
+# in core.settings, which holds connections against the *process* rather than
+# against whichever thread happened to survive — and DB_POOL_MAX_SIZE, not this
+# number, is what bounds connections to the server.
 _MAP_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix='map-nearby')
 
 

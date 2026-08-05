@@ -26,9 +26,15 @@ idna==3.11
 Incremental==24.11.0
 msgpack==1.1.2
 oauthlib==3.3.1
+# JSON encoding for the API, via core/jsonio.py. Replaces ujson, which was
+# listed here but never imported by anything.
+orjson==3.11.9
 packaging==26.2
 pillow==12.2.0
-psycopg2-binary==2.9.11
+# psycopg 3, replacing psycopg2-binary. Same Django engine name; `binary` is
+# the prebuilt libpq so the dyno needs no compiler, `pool` is the connection
+# pool that core/settings.py turns on.
+psycopg[binary,pool]==3.3.4
 py-ubjson==0.16.1
 pyasn1==0.6.3
 pyasn1_modules==0.4.2
@@ -36,7 +42,10 @@ pycparser==3.0
 PyJWT==2.12.1
 pyOpenSSL==26.2.0
 python-decouple==3.8
-redis==7.4.0
+# The hiredis extra swaps redis-py's pure-Python protocol parser for the C one.
+# Both the channel layer and the cache go through it, so it is free speed on
+# every group_send and every Nominatim throttle check.
+redis[hiredis]==7.4.0
 requests==2.33.1
 requests-oauthlib==2.0.0
 service-identity==24.2.0
@@ -45,7 +54,10 @@ sqlparse==0.5.5
 Twisted==25.5.0
 txaio==25.12.2
 typing_extensions==4.15.0
-ujson==5.12.1
 urllib3==2.6.3
-uvicorn==0.46.0
+# The `standard` extra is what makes uvicorn worth switching to: uvloop for the
+# event loop and httptools for HTTP parsing, both C, plus the `websockets`
+# implementation the channels routes need. uvloop carries a marker excluding
+# Windows, so a Linux dyno gets it and local development quietly does not.
+uvicorn[standard]==0.46.0
 zope.interface==8.4

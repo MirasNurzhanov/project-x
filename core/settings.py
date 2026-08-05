@@ -85,20 +85,70 @@ WSGI_APPLICATION = 'core.wsgi.application'
 ASGI_APPLICATION = 'core.asgi.application'
 
 # ── Database ──────────────────────────────────────────────────────────────────
-# How long a worker keeps a connection open between requests. Every connection
-# is a real backend process on the server, so this trades server memory for not
-# paying TCP + TLS + authentication on every request — which matters here in
-# proportion to how far away the database is.
+# The driver is psycopg 3 (the package is `psycopg`, not `psycopg2`). Django
+# picks it up from the same `django.db.backends.postgresql` engine name with no
+# further configuration — installing it is the whole switch. It is faster than
+# psycopg2 on the two things this app does constantly, pipelining statements
+# and converting result rows, and unlike psycopg2 it can pool.
 #
-# The budget is: (processes × threads per process) ≤ the provider's connection
-# limit, with headroom for migrations and a psql session. A single Daphne
-# process running sync views hands them to a thread pool, so its thread count —
-# not its process count — is what multiplies. Raise the worker count and this
-# number has to be re-checked; see the deployment notes in the audit.
-CONN_MAX_AGE = config('CONN_MAX_AGE', default=600, cast=int)
+# ── Pooling ───────────────────────────────────────────────────────────────────
+# `CONN_MAX_AGE` keeps one connection per *thread*, which is the wrong unit
+# here. Django runs each sync view under asgiref's `ThreadSensitiveContext`,
+# whose executor is shut down when the request ends, so the thread — and its
+# persistent connection — is discarded with it. Add the eight-worker pool in
+# proximity.views and the count stops tracking anything real.
+#
+# A pool is per *process* and outlives every request in it, which is the unit
+# that matches. Connections are handed out and returned rather than opened, so
+# the TCP + TLS + authentication round trips disappear from the request path
+# instead of merely being amortised over a thread that may not survive.
+#
+# Django requires CONN_MAX_AGE to be 0 alongside a pool and raises at startup
+# otherwise: the two are different answers to the same question, and holding a
+# connection open per thread while also pooling would just leak the pool.
+DB_POOL = config('DB_POOL', default=True, cast=bool)
+
+# Only consulted when DB_POOL is off. Kept so that turning pooling off is one
+# environment variable rather than a revert.
+CONN_MAX_AGE = 0 if DB_POOL else config('CONN_MAX_AGE', default=600, cast=int)
+
+# The ceiling is what has to fit the provider's connection limit, and it is now
+# a per-process number that stays true regardless of how many threads are in
+# flight — which is the point. Budget: processes × DB_POOL_MAX_SIZE, plus
+# headroom for a migration and a psql session.
+DB_POOL_MIN_SIZE = config('DB_POOL_MIN_SIZE', default=2, cast=int)
+DB_POOL_MAX_SIZE = config('DB_POOL_MAX_SIZE', default=12, cast=int)
+# How long a request waits for a free connection before failing. Deliberately
+# shorter than the statement timeout below: waiting for a slot is queueing, and
+# a queue that outlasts the client's patience is worse than a clear error.
+DB_POOL_TIMEOUT_S = config('DB_POOL_TIMEOUT_S', default=10.0, cast=float)
+
+# ── Two psycopg 3 levers, both off, both real ─────────────────────────────────
+# Left off because neither can be verified without a Postgres to point at, and
+# both fail as errors rather than as slowness. Turn them on one at a time in
+# staging, exercise the map and the region lookups, and read the logs.
+#
+# Sending parameters separately from the SQL instead of interpolating them in.
+# Cheaper per query, and the precondition for the setting below. It changes how
+# Postgres infers parameter types, so a query that leant on the old behaviour
+# fails with a type error instead of just running slower.
+DB_SERVER_SIDE_BINDING = config('DB_SERVER_SIDE_BINDING', default=False, cast=bool)
+
+# How many times Postgres must see a statement before it prepares and reuses
+# the plan. Django pins this to None — no preparation, ever — because prepared
+# statements do not survive a transaction-mode connection pooler such as
+# PgBouncer, and it cannot know whether one is in front of you.
+#
+# The pool configured above is psycopg's own and is session-level, so it does
+# not have that problem; a managed Postgres with its own pooler in front might.
+# Worth trying precisely because the location report replays the same sixteen
+# statements from every phone every thirty seconds.
+DB_PREPARE_THRESHOLD = config('DB_PREPARE_THRESHOLD', default=0, cast=int)
 
 # A ceiling on any single statement, so one pathological query cannot hold a
-# connection — and, with CONN_MAX_AGE above, a pooled slot — indefinitely.
+# connection indefinitely. It matters more with the pool above than it did
+# without: a held connection is now a slot nobody else can have, and
+# DB_POOL_TIMEOUT_S turns one stuck query into errors for other requests.
 #
 # Deliberately not applied to `migrate`: building an index on a large table is
 # exactly the kind of long statement this is meant to kill, and killing it
@@ -131,9 +181,29 @@ else:
 
 # Applied after the fact so it reaches both branches, and only to PostgreSQL —
 # `options` is a libpq connection string and SQLite has no idea what to do with
-# it, which is what the test settings run on.
-if _DB_OPTIONS and 'postgresql' in DATABASES['default'].get('ENGINE', ''):
-    DATABASES['default'].setdefault('OPTIONS', {}).update(_DB_OPTIONS)
+# it, which is what the test settings run on. The same guard covers the pool:
+# it is a psycopg 3 feature and means nothing to any other backend.
+if 'postgresql' in DATABASES['default'].get('ENGINE', ''):
+    _pg_options = DATABASES['default'].setdefault('OPTIONS', {})
+    _pg_options.update(_DB_OPTIONS)
+    if DB_SERVER_SIDE_BINDING:
+        _pg_options['server_side_binding'] = True
+    if DB_PREPARE_THRESHOLD > 0:
+        # Only when asked. Django's own default is None, and passing 0 here
+        # would mean "prepare everything on first sight", which is not the same
+        # request as "leave it alone".
+        _pg_options['prepare_threshold'] = DB_PREPARE_THRESHOLD
+    if DB_POOL and not _RUNNING_MIGRATIONS:
+        # Not during migrations: a migration is one long-lived connection doing
+        # one thing, and starting a pool to serve it only adds a way to fail.
+        _pg_options['pool'] = {
+            'min_size': DB_POOL_MIN_SIZE,
+            'max_size': DB_POOL_MAX_SIZE,
+            'timeout': DB_POOL_TIMEOUT_S,
+        }
+    # dj_database_url writes CONN_MAX_AGE into the dict itself, so the value
+    # decided above has to be put back over it or Django sees the conflict.
+    DATABASES['default']['CONN_MAX_AGE'] = CONN_MAX_AGE
 
 CHANNEL_LAYERS = {
     'default': {
@@ -178,6 +248,19 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
+    ),
+    # orjson in place of the stdlib encoder. Same bytes on the wire — see
+    # core/jsonio.py for the compatibility argument and core/test_json.py for
+    # the proof. BrowsableAPIRenderer stays second, exactly as in DRF's own
+    # default, so opening an endpoint in a browser still works.
+    'DEFAULT_RENDERER_CLASSES': (
+        'core.jsonio.ORJSONRenderer',
+        'rest_framework.renderers.BrowsableAPIRenderer',
+    ),
+    'DEFAULT_PARSER_CLASSES': (
+        'core.jsonio.ORJSONParser',
+        'rest_framework.parsers.FormParser',
+        'rest_framework.parsers.MultiPartParser',
     ),
 }
 
