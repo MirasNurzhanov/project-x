@@ -158,3 +158,26 @@ class ReactToStoryTests(TestCase):
     def test_unknown_reaction_is_rejected(self):
         self.assertEqual(self.react('shrug').status_code, 400)
         self.assertEqual(self.likes(), 0)
+
+
+class StoryCoordinateTypeTests(TestCase):
+    """latitude/longitude must serialize as JSON numbers, not strings.
+
+    DRF's DecimalField stringifies by default (COERCE_DECIMAL_TO_STRING), and
+    Fabric's typed view-manager props on Android refuse a string outright —
+    AIRMapMarker throws rather than coercing the way the old bridge did. A
+    regression here is a redbox on the map screen, not a rendering glitch.
+    """
+
+    def test_nearby_story_coordinates_are_numbers(self):
+        author = make_user('author', **HERE, visibility_stories='everyone')
+        viewer = make_user('viewer', **HERE)
+        Story.objects.create(
+            user=author, content='hi', latitude='10.000500', longitude='10.000500',
+            expires_at=timezone.now() + timedelta(hours=5),
+        )
+        client = APIClient()
+        client.force_authenticate(viewer)
+        entry = client.get('/api/stories/nearby/').json()[0]
+        self.assertIsInstance(entry['latitude'], float)
+        self.assertIsInstance(entry['longitude'], float)
