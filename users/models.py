@@ -316,3 +316,47 @@ class ProfileLink(models.Model):
 
     def __str__(self):
         return f'{self.user_id}: {self.label}'
+
+
+class SocialAccount(models.Model):
+    """A Google or Apple identity attached to an Aura account.
+
+    Keyed on the provider's `sub`, not on the email. `sub` is the only value
+    either provider promises never changes: Apple's is per-app and permanent,
+    Google's survives the user renaming their Gmail. Email does not — people
+    change it, and Apple hands out a per-app relay address that has no relation
+    to the real one. An account matched by email would come apart the first
+    time either happened.
+
+    `email` here is a record of what the provider said at link time, kept for
+    support ("which Google account is this?"). Nothing authenticates off it,
+    and it is never written back onto the User.
+    """
+
+    class Provider(models.TextChoices):
+        GOOGLE = 'google', 'Google'
+        APPLE = 'apple', 'Apple'
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='social_accounts')
+    provider = models.CharField(max_length=10, choices=Provider.choices)
+    #: The provider's subject identifier. Apple's are ~44 chars, Google's ~21;
+    #: 255 is the width every other implementation uses and costs nothing.
+    subject = models.CharField(max_length=255)
+    email = models.EmailField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            # The load-bearing one. Without it, two rows could claim the same
+            # Google identity for two different accounts and which one you
+            # signed into would come down to row order.
+            models.UniqueConstraint(
+                fields=['provider', 'subject'], name='unique_social_identity'),
+            # One Google *and* one Apple per account is fine; two Googles is a
+            # bug — the second link would silently orphan the first.
+            models.UniqueConstraint(
+                fields=['user', 'provider'], name='unique_provider_per_user'),
+        ]
+
+    def __str__(self):
+        return f'{self.get_provider_display()} → {self.user_id}'

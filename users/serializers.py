@@ -11,6 +11,24 @@ from regions.models import Region
 from regions.serializers import RegionSummarySerializer
 
 
+#: The floor Aura's terms set. Lives up here rather than inline in one
+#: serializer because there are now two ways to first state a date of birth —
+#: registering, and filling it in after a Google/Apple sign-up, which arrives as
+#: an ordinary profile PATCH. A gate that only guards one of them is not a gate.
+MIN_AGE = 13
+
+
+def age_on(dob, today=None):
+    today = today or date.today()
+    return today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+
+
+def validate_min_age(dob):
+    if dob and age_on(dob) < MIN_AGE:
+        raise serializers.ValidationError(f'You must be at least {MIN_AGE} to use Aura.')
+    return dob
+
+
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, validators=[validate_password])
     password2 = serializers.CharField(write_only=True)
@@ -19,16 +37,12 @@ class RegisterSerializer(serializers.ModelSerializer):
         model = User
         fields = ('username', 'email', 'password', 'password2', 'date_of_birth')
 
+    def validate_date_of_birth(self, value):
+        return validate_min_age(value)
+
     def validate(self, attrs):
         if attrs['password'] != attrs['password2']:
             raise serializers.ValidationError({'password': 'Passwords do not match.'})
-
-        dob = attrs.get('date_of_birth')
-        if dob:
-            today = date.today()
-            age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
-            if age < 13:
-                raise serializers.ValidationError({'date_of_birth': 'You must be at least 13 to register.'})
         return attrs
 
     def create(self, validated_data):
@@ -500,6 +514,12 @@ class EditProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ('bio', 'profile_picture', 'date_of_birth', 'nationality', 'profession', 'interests', 'push_token')
+
+    # This is the route a Google/Apple sign-up takes to state its date of birth
+    # for the first time, so the age floor has to hold here and not only at
+    # registration — otherwise the social buttons are a way around it.
+    def validate_date_of_birth(self, value):
+        return validate_min_age(value)
 
     def update(self, instance, validated_data):
         interests = validated_data.pop('interests', None)

@@ -441,4 +441,27 @@ APPLE_MUSIC_PRIVATE_KEY = config('APPLE_MUSIC_PRIVATE_KEY', default='')
 #: and preview URLs genuinely differ by storefront.
 APPLE_MUSIC_STOREFRONT = config('APPLE_MUSIC_STOREFRONT', default='us')
 
+# ── Sign in with Google / Sign in with Apple ──────────────────────────────────
+# The OAuth client ids whose identity tokens /api/users/social/ will accept, as
+# the `aud` claim. Comma-separated, because each platform is a separate client
+# and all of them sign in to the same accounts.
+#
+# Google: list **all three** ids — Web, iOS and Android. The native SDKs are
+# configured with the *web* client id in order to be handed an `idToken` at
+# all, so that is the audience Google usually stamps; the native ids are here
+# because which one appears has moved between SDK versions, and a token minted
+# for a client this list does not know answers 400 `audience_mismatch`.
+#
+# Apple: the app's bundle identifier (com.arcanix.aura). A Services ID belongs
+# here too if the web flow is ever added.
+#
+# Left empty, that provider's half of the endpoint answers 503 `not_configured`
+# and the app hides the button rather than offering one that cannot work.
+def _csv_setting(name):
+    return tuple(p.strip() for p in config(name, default='').split(',') if p.strip())
+
+
+GOOGLE_OAUTH_CLIENT_IDS = _csv_setting('GOOGLE_OAUTH_CLIENT_IDS')
+APPLE_SIGN_IN_CLIENT_IDS = _csv_setting('APPLE_SIGN_IN_CLIENT_IDS')
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

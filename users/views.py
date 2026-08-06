@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from friends.models import FriendRequest
-from . import applemusic, visibility
+from . import applemusic, socialauth, visibility
 from .links import LinkError, MAX_LINKS_PER_USER, normalize_link
 from .serializers import (
     RegisterSerializer, UserProfileSerializer, EditProfileSerializer,
@@ -55,6 +55,51 @@ class ProfileView(generics.RetrieveUpdateAPIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         return Response(UserProfileSerializer(user).data)
+
+
+class SocialLoginView(APIView):
+    """Sign in — or sign up — with Google or Apple.
+
+    One endpoint for both, and for both halves of the flow, because from here
+    they are the same request: a provider identity token comes in, an Aura
+    session goes out. Whether that meant creating a row or finding one is an
+    outcome, not a different call — the app cannot know in advance which it
+    will be, and a client that had to guess would get it wrong for exactly the
+    people who already had an account.
+
+    Rate limiting is deliberately absent: every path through here is gated on a
+    signature from Google or Apple, so there is nothing to guess at and nothing
+    to enumerate.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        provider = str(request.data.get('provider', '')).lower().strip()
+        token = request.data.get('id_token') or request.data.get('identity_token')
+        full_name = str(request.data.get('full_name', ''))[:100]
+
+        try:
+            claims = socialauth.verify_identity_token(provider, token)
+            user, created = socialauth.resolve_user(provider, claims, full_name)
+        except socialauth.SocialAuthError as exc:
+            return Response(
+                {'detail': str(exc), 'code': exc.code}, status=exc.status
+            )
+
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'user': UserProfileSerializer(user).data,
+            'tokens': {
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+            },
+            'created': created,
+            # Not `created`, though it usually agrees with it. The age gate is
+            # about whether we know how old this person is, and someone whose
+            # first sign-in was interrupted before they answered comes back as
+            # an existing account that still owes us the answer.
+            'needs_date_of_birth': user.date_of_birth is None,
+        })
 
 
 class LogoutView(APIView):
