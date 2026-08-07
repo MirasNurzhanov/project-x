@@ -6,7 +6,9 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.views import TokenRefreshView
 from friends.models import FriendRequest
 from . import applemusic, socialauth, visibility
 from .links import LinkError, MAX_LINKS_PER_USER, normalize_link
@@ -16,6 +18,27 @@ from .serializers import (
     UserSearchSerializer, ZoneUpdateSerializer, serialize_links,
 )
 from .models import ProfileLink, User
+
+
+class SafeTokenRefreshSerializer(TokenRefreshSerializer):
+    """`TokenRefreshSerializer.validate()` (simplejwt 5.5.1) calls
+    `User.objects.get()` on the refresh token's user id with no try/except —
+    a token that has outlived its account (deleted after the token was
+    issued, which a test/reset cycle does routinely) crashes with an
+    uncaught 500 instead of the clean 401 the code clearly means to produce
+    right below that line. Same client-facing outcome as an expired token
+    either way: sign in again.
+    """
+
+    def validate(self, attrs):
+        try:
+            return super().validate(attrs)
+        except User.DoesNotExist as exc:
+            raise InvalidToken('No account matches this token anymore.') from exc
+
+
+class SafeTokenRefreshView(TokenRefreshView):
+    serializer_class = SafeTokenRefreshSerializer
 
 
 class RegisterView(generics.CreateAPIView):
