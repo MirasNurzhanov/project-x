@@ -3,7 +3,7 @@ from django.db.models import Q
 from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
 from friends.models import FriendRequest, HiRequest
-from . import visibility
+from . import visibility, zones
 from .models import ProfileLink, User
 from interests.models import Interest
 from interests.serializers import InterestSerializer
@@ -70,7 +70,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'visibility_zone_audio', 'visibility_connections', 'visibility_presence',
             'discoverable_by_username', 'discoverable_by_interest',
             'zone_audio', 'zone_audio_url', 'zone_active',
-            'zone_mode', 'zone_radius', 'zone_region', 'zone_region_detail',
+            'zone_type', 'zone_radius', 'zone_region', 'zone_region_detail',
             'push_token',
         )
         # `privacy_mode` is the legacy active/ghost/invisible view of
@@ -145,7 +145,11 @@ class PublicProfileSerializer(serializers.Serializer):
         if visibility.can_view(me, obj, 'stories', rel):
             data['stories'] = _live_story_summaries(obj)
 
-        if visibility.can_view(me, obj, 'zone_audio', rel):
+        # A removed music zone is absent here too, not just on the map. A
+        # profile that still offered a play button for a zone its owner had
+        # switched off would be a second, quieter way to hear someone who has
+        # gone quiet.
+        if visibility.can_view(me, obj, 'zone_audio', rel) and obj.music_zone_active:
             data['zone_audio_url'] = _zone_audio_url(obj)
 
         # Absent, not empty: an empty list would still confirm the setting
@@ -371,8 +375,9 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
     )
 
     # Same treatment as `zone_radius` above, with its own copy: the ceiling on
-    # earshot is not the ceiling on a zone, and telling someone to "switch to a
-    # region" would be nonsense advice about a circle that has no region mode.
+    # a music zone is not the ceiling on a zone, and telling someone to "switch
+    # to a region" would be nonsense advice about a circle that has no region
+    # mode.
     music_zone_radius = serializers.IntegerField(
         required=False,
         min_value=User.ZONE_RADIUS_MIN_M,
@@ -382,18 +387,17 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
             'max_value': f'A music zone tops out at {User.ZONE_RADIUS_MAX_M // 1000}km.',
         },
     )
-    #: What earshot actually is right now, separate or inherited. Read-only, so
-    #: the client never has to reimplement the fallback.
-    music_radius_m = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = User
         fields = (
             'zone_audio', 'zone_audio_url', 'zone_active',
-            'zone_mode', 'zone_radius', 'zone_region', 'zone_region_detail',
+            'zone_type', 'zone_radius', 'zone_region', 'zone_region_detail',
             'effective_zone_mode',
-            'music_zone_separate', 'music_zone_radius', 'music_zone_alerts',
-            'music_radius_m',
+            # One switch and one radius. `music_radius_m` used to sit here
+            # resolving "separate or inherited" for the client; there is no
+            # question left to resolve.
+            'music_zone_active', 'music_zone_radius', 'music_zone_alerts',
             # Written through ZoneAppleMusicView, which resolves an id against
             # Apple rather than trusting a phone with a URL the map will play.
             'zone_apple_id', 'zone_apple_title', 'zone_apple_artist',
@@ -414,17 +418,58 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
         return self._validate_loop(self._validate_zone(attrs))
 
     def _validate_zone(self, attrs):
-        # Region mode needs a region: either arriving in this request or
-        # already stored. Without one the zone would have no shape at all.
-        mode = attrs.get('zone_mode') or (self.instance and self.instance.zone_mode)
-        if mode == User.ZoneMode.REGION:
-            region = attrs['zone_region'] if 'zone_region' in attrs else (
-                self.instance and self.instance.zone_region
-            )
+        # A polygon type needs a boundary: either arriving in this request or
+        # already stored. Without one the zone would have no shape at all, and
+        # the containment service raises rather than inventing a circle — so
+        # this has to be refused at the door instead of stored and discovered
+        # later by whichever feature asked first.
+        zone_type = attrs.get('zone_type') or (self.instance and self.instance.zone_type)
+        region = attrs['zone_region'] if 'zone_region' in attrs else (
+            self.instance and self.instance.zone_region
+        )
+
+        if zone_type in User.POLYGON_ZONE_TYPES:
             if not region:
-                raise serializers.ValidationError(
-                    {'zone_region': 'Pick a city or district before switching to region mode.'}
-                )
+                raise serializers.ValidationError({
+                    'zone_region': f'Pick a place before switching to a {zone_type} zone.',
+                    'code': zones.BOUNDARY_NOT_AVAILABLE,
+                })
+            # The type the client asked for has to match the place the server
+            # resolved. Otherwise "district" is just a word the phone sent: a
+            # user could label a whole-city boundary a district zone, and every
+            # containment check would honour the city polygon while the API and
+            # the UI both said district.
+            #
+            # `other` is refused for both, which is stricter than it may look.
+            # It is not "a coarse city" — regions.nominatim classifies a place
+            # `other` precisely when it is *neither* of the two sizes the
+            # product offers, and its own docstring names provinces and
+            # countries as the cases. Accepting one as a city zone would let
+            # somebody cover an entire province, and the containment service
+            # would honour it to the letter.
+            #
+            # A place that genuinely is a city but resolved as `other` is
+            # refused rather than approximated. That is the specified
+            # degradation: an explicit error the user can see beats a zone
+            # silently three orders of magnitude larger than the one they asked
+            # for. The resolver can promote an `other` to a real size when the
+            # address hierarchy corroborates it, which is where that case is
+            # meant to be fixed.
+            if region.kind != zone_type:
+                raise serializers.ValidationError({'zone_region': (
+                    f'{region.name} is a {region.get_kind_display().lower()}, '
+                    f'which cannot be used as a {zone_type} zone.'
+                )})
+
+        # A circle is deliberately *not* checked for a centre here, though the
+        # equivalent rule for a polygon is enforced above. The asymmetry is
+        # real: a polygon zone's boundary is chosen and permanent, so a missing
+        # one is a broken zone, whereas a circle is centred on the user's live
+        # position and a missing one only means GPS has not reported yet.
+        # Refusing the save would block someone dialling a radius on a cold
+        # start, and it would fix itself a second later. `zone_contains` raises
+        # for that state instead, which is the honest place for a condition
+        # that is temporary rather than invalid.
 
         # Your zone covers where you are. Enforced here rather than left to the
         # UI, because "only the place you are standing in" is the rule itself,

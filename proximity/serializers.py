@@ -100,9 +100,15 @@ class NearbyUserSerializer(serializers.Serializer):
         # the shape; only the audio itself is gated.
         data['zone_radius'] = obj.zone_radius
         data['zone_active'] = obj.zone_active
-        # `effective_` rather than the raw mode: a region that has been evicted
-        # from the cache would otherwise tell the map to draw a polygon it can
-        # never fetch, and it would silently render no zone at all.
+        # What the zone *is*. Authoritative, and the same value the containment
+        # service branches on, so a client can never be told one shape while the
+        # backend tests another.
+        data['zone_type'] = obj.zone_type
+        # What to *draw*, which is a coarser question — both polygon types draw
+        # identically, and a region evicted from the cache has to fall back to
+        # something renderable or the map shows nothing at all. Deliberately not
+        # the same value as `zone_type`: this one is allowed a fallback because
+        # it only decides pixels. See User.effective_zone_mode.
         data['zone_mode'] = obj.effective_zone_mode
         # The id only. This payload is polled every 10 seconds by every client,
         # and a city outline is ~1500 points — the map resolves the id against
@@ -116,15 +122,21 @@ class NearbyUserSerializer(serializers.Serializer):
             mine = self.context.get('my_interest_ids', frozenset())
             data['shared_interests'] = [i.name for i in interests if i.pk in mine]
 
-        if visibility.can_view(me, obj, 'zone_audio', rel):
+        # `music_zone_active` on top of the visibility check, and the whole
+        # block behind it. A switched-off music zone withholds the track rather
+        # than nulling it, for the same reason the rest of this serializer
+        # omits: a listener sent a radius and no URL is a client deciding
+        # whether to draw a ring around silence, which is the client's
+        # judgement to get wrong. Nothing here is sent while the music zone is
+        # off, and that absence is what takes the circle off every viewer's map.
+        if visibility.can_view(me, obj, 'zone_audio', rel) and obj.music_zone_active:
             data['zone_audio'] = obj.zone_audio.url if obj.zone_audio else None
             data['zone_audio_url'] = _zone_track_url(obj)
-            # How close you have to be to hear it, which is no longer the same
-            # as how big their zone is. Sent inside this gate rather than with
+            # How close you have to be to hear it, which is not the same as how
+            # big their zone is. Sent inside this gate rather than with
             # `zone_radius` above: to someone who may not hear the track, the
-            # earshot circle is a shape with no meaning.
-            data['music_zone_radius'] = obj.music_radius_m
-            data['music_zone_separate'] = obj.music_zone_separate
+            # music zone is a shape with no meaning.
+            data['music_zone_radius'] = obj.music_zone_radius
             # Apple tracks have a real name and cover art. Without these the
             # map would fall back to parsing a title out of the preview URL's
             # filename, which for Apple's CDN is a hash.

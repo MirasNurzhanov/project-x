@@ -37,23 +37,48 @@ class User(AbstractUser):
     interests = models.ManyToManyField('interests.Interest', blank=True, related_name='users')
 
     # ── Zone ──────────────────────────────────────────────────────────────────
-    # A zone has two shapes, and `zone_mode` says which one is live. They are
-    # stored side by side rather than in one polymorphic field so switching
-    # back and forth never loses the radius you had set, or the city you picked.
+    # A zone has three shapes and `zone_type` says which one is live. The
+    # supporting fields are stored side by side rather than in one polymorphic
+    # column so switching back and forth never loses the radius you had set, or
+    # the city you picked.
+    #
+    # Which means the type is the *only* thing that decides how a zone is
+    # tested. Never infer it from which fields happen to be populated — a city
+    # zone keeps its old radius sitting right there, and reading that as "this
+    # is a circle" is the bug this field exists to make impossible. See
+    # users/zones.py, which is the one place containment is decided.
 
-    class ZoneMode(models.TextChoices):
-        RADIUS = 'radius', 'Radius'
-        REGION = 'region', 'Region'
+    class ZoneType(models.TextChoices):
+        """The three shapes, stored explicitly.
+
+        CITY and DISTRICT were one value (`region`) until the difference
+        started to matter: both draw a polygon, but they are different offers —
+        a district zone covers a neighbourhood and a city zone covers everyone
+        in town. Collapsing them meant the only record of which one a user had
+        chosen was the `kind` of the Region they happened to point at, which is
+        upstream classification rather than the user's intent.
+        """
+        CIRCLE = 'circle', 'Circle around you'
+        DISTRICT = 'district', 'District boundary'
+        CITY = 'city', 'City boundary'
+
+    #: The two types whose shape is a polygon rather than a distance.
+    POLYGON_ZONE_TYPES = ('district', 'city')
 
     # Metres. Was a three-value choice field (100/500/1000); now a free dial.
     # The floor keeps a zone from being smaller than GPS error can resolve, and
     # the ceiling is where a circle stops being the right tool — past ~5km you
-    # want a city, which is what REGION mode is for.
+    # want a city, which is what the CITY type is for.
     ZONE_RADIUS_MIN_M = 50
     ZONE_RADIUS_MAX_M = 5000
 
     zone_audio = models.FileField(upload_to='zones/', null=True, blank=True, storage=RawMediaCloudinaryStorage())
-    zone_mode = models.CharField(max_length=8, choices=ZoneMode.choices, default=ZoneMode.RADIUS)
+    zone_type = models.CharField(
+        max_length=8, choices=ZoneType.choices, default=ZoneType.CIRCLE, db_index=True,
+    )
+    #: Metres, and meaningful only while `zone_type` is CIRCLE. Kept rather than
+    #: nulled on a switch to a polygon type so coming back restores the dial the
+    #: user had set; containment ignores it outright for the other two types.
     zone_radius = models.IntegerField(
         default=500,
         validators=[
@@ -62,8 +87,10 @@ class User(AbstractUser):
         ],
     )
     # SET_NULL, not CASCADE: regions are a shared cache, and evicting one must
-    # never delete the people whose zone pointed at it. A null region with
-    # mode=region falls back to the radius — see `effective_zone_mode`.
+    # never delete the people whose zone pointed at it. Which leaves a real
+    # state where a district or city zone has no boundary — `zone_contains`
+    # raises there rather than falling back to the circle, because silently
+    # shrinking somebody's city to a 500m ring is worse than an error.
     zone_region = models.ForeignKey(
         'regions.Region',
         null=True, blank=True,
@@ -73,16 +100,31 @@ class User(AbstractUser):
     zone_active = models.BooleanField(default=False)
 
     # ── Music zone ────────────────────────────────────────────────────────────
-    # How far the *sound* carries, which is not the same question as how far you
-    # carry. The zone is a radar: it says who counts as near you, and people
-    # widen it to be found. Earshot is the opposite instinct — a track you want
-    # a friend at the next table to catch is not one you want playing for
-    # everyone in a 5km circle. They were one number, so tuning either ruined
-    # the other.
+    # The circle the *sound* carries to, which is not the same question as how
+    # far you carry. The zone is a radar: it says who counts as near you, and
+    # people widen it to be found. A music zone is the opposite instinct — a
+    # track you want a friend at the next table to catch is not one you want
+    # playing for everyone in a 5km circle. They were one number, so tuning
+    # either ruined the other; they are two now, and this is the second.
     #
-    # Off by default, and inheriting `zone_radius` while off, so nothing changes
-    # for anyone who never opens this. See `music_radius_m`.
-    music_zone_separate = models.BooleanField(default=False)
+    #: On/off for the whole thing. Off means there is no music zone: nobody is
+    #: sent the track, nobody is alerted, and no circle is drawn on anyone's
+    #: map — the owner's included. The track and the radius stay where they
+    #: are, so switching back on restores what was there.
+    #:
+    #: This used to be a mute that left a circle behind, sitting next to a
+    #: second switch (`music_zone_separate`) that chose whether the music
+    #: borrowed `zone_radius` instead of using its own. Two switches for one
+    #: feature, and neither of them was "is there a music zone". Now there is
+    #: one, `music_zone_radius` is always the radius in force, and turning it
+    #: off removes the zone rather than quietly parking it.
+    #:
+    #: Default True so every zone that predates the field keeps broadcasting.
+    #: See `broadcasts_zone_track`.
+    music_zone_active = models.BooleanField(default=True)
+    #: Always the music zone's own radius. It never inherits `zone_radius` —
+    #: a music zone that followed the map zone was indistinguishable from not
+    #: having one, which is what the removed `music_zone_separate` flag meant.
     music_zone_radius = models.IntegerField(
         default=200,
         validators=[
@@ -129,17 +171,6 @@ class User(AbstractUser):
         return self.zone_track_start_ms > 0 or self.zone_track_end_ms is not None
 
     @property
-    def music_radius_m(self):
-        """Metres someone must be within to hear this zone's track.
-
-        Falls back to the zone's own radius, so a user who never separates the
-        two keeps the single circle they already had.
-        """
-        if self.music_zone_separate:
-            return self.music_zone_radius
-        return self.zone_radius
-
-    @property
     def zone_track_title(self):
         """What is playing, by name — empty when there is no name to give.
 
@@ -156,16 +187,59 @@ class User(AbstractUser):
         return bool(self.zone_apple_preview_url or self.zone_audio)
 
     @property
-    def effective_zone_mode(self):
-        """The mode actually in force.
+    def broadcasts_zone_track(self):
+        """Whether anyone can currently hear this zone.
 
-        `zone_mode` is what the user asked for; this is what can be drawn. They
-        differ only when a region was picked and has since been evicted from
-        the cache, and falling back to the circle beats showing no zone at all.
+        Both halves have to hold: something loaded, and a music zone to play it
+        through. Every viewer-facing gate asks this rather than `has_zone_track`,
+        so switching the zone off is one condition in one place instead of a
+        flag each caller has to remember. The owner's own screens keep reading
+        the track directly — removing the zone hides you from other people, not
+        your song from you.
         """
-        if self.zone_mode == self.ZoneMode.REGION and self.zone_region_id:
-            return self.ZoneMode.REGION
-        return self.ZoneMode.RADIUS
+        return self.music_zone_active and self.has_zone_track
+
+    @property
+    def zone_boundary_available(self):
+        """Whether this zone currently has a shape that can be tested at all.
+
+        False for a district or city whose Region has been evicted, and for a
+        circle on a user with no stored position. Lets a caller sweeping many
+        rows skip the unanswerable ones instead of catching per row.
+        """
+        from . import zones
+        return zones.zone_boundary_available(self)
+
+    def zone_contains(self, lat, lon, *, tolerance_m=0.0) -> bool:
+        """Whether a location falls inside this user's zone.
+
+        The single entry point — every consumer goes through here rather than
+        reimplementing "distance or polygon" per feature. Raises
+        `zones.ZoneBoundaryUnavailable` when the zone has no usable shape; see
+        users/zones.py for why that is an exception and not a False.
+        """
+        from . import zones
+        return zones.is_location_inside_zone(self, lat, lon, tolerance_m=tolerance_m)
+
+    @property
+    def effective_zone_mode(self):
+        """What the client should *draw*: 'radius' or 'region'.
+
+        A rendering hint, deliberately coarser than `zone_type` — the map only
+        needs to know circle-or-polygon, and both polygon types draw
+        identically. Kept as its own value rather than derived on the client so
+        an evicted Region resolves to something drawable in one place: a city
+        zone with no boundary left has nothing to trace, and a circle is the
+        only honest thing to put on screen.
+
+        This is a *drawing* fallback and nothing else. Containment does not have
+        an equivalent — see `zone_contains`, which raises instead, because a
+        zone that draws as a circle while covering a city would be a lie the map
+        tells quietly.
+        """
+        if self.zone_type in self.POLYGON_ZONE_TYPES and self.zone_region_id:
+            return 'region'
+        return 'radius'
 
     # ── Privacy ───────────────────────────────────────────────────────────────
     # Two independent axes, deliberately kept apart:

@@ -355,13 +355,13 @@ class ZoneShapeTests(TestCase):
         self.assertIn('region', str(response.json()).lower())
 
     def test_region_mode_needs_a_region(self):
-        response = self.patch_zone(zone_mode='region')
+        response = self.patch_zone(zone_type='city')
         self.assertEqual(response.status_code, 400)
         self.assertIn('zone_region', response.json())
 
     def test_region_mode_with_a_region_sticks(self):
         region = make_region(osm_id=600)
-        response = self.patch_zone(zone_mode='region', zone_region=region.pk)
+        response = self.patch_zone(zone_type='city', zone_region=region.pk)
         self.assertEqual(response.status_code, 200)
         self.user.refresh_from_db()
         self.assertEqual(self.user.zone_region_id, region.pk)
@@ -371,8 +371,8 @@ class ZoneShapeTests(TestCase):
         """Going back to a circle must not forget the city, and vice versa."""
         region = make_region(osm_id=601)
         self.patch_zone(zone_radius=2500)
-        self.patch_zone(zone_mode='region', zone_region=region.pk)
-        self.patch_zone(zone_mode='radius')
+        self.patch_zone(zone_type='city', zone_region=region.pk)
+        self.patch_zone(zone_type='circle')
         self.user.refresh_from_db()
         self.assertEqual(self.user.zone_radius, 2500)
         self.assertEqual(self.user.zone_region_id, region.pk)
@@ -381,7 +381,7 @@ class ZoneShapeTests(TestCase):
         """Regions are a shared cache. Deleting one must not delete the user,
         nor leave the map trying to draw a polygon it can never fetch."""
         region = make_region(osm_id=602)
-        self.patch_zone(zone_mode='region', zone_region=region.pk)
+        self.patch_zone(zone_type='city', zone_region=region.pk)
         region.delete()
         self.user.refresh_from_db()
         self.assertIsNone(self.user.zone_region_id)
@@ -390,7 +390,7 @@ class ZoneShapeTests(TestCase):
     def test_nearby_advertises_the_mode_and_region_id_only(self):
         """The map polls this every 10s — the outline must not ride along."""
         region = make_region(osm_id=603)
-        self.patch_zone(zone_mode='region', zone_region=region.pk, zone_active=True)
+        self.patch_zone(zone_type='city', zone_region=region.pk, zone_active=True)
 
         other = make_user('other')
         other.latitude, other.longitude = 0.5, 0.5
@@ -631,12 +631,12 @@ class ZoneMustContainYouTests(TestCase):
     def test_a_region_containing_you_is_accepted(self):
         self.stand_at(0.5, 0.5)
         self.assertEqual(
-            self.patch_zone(zone_mode='region', zone_region=self.here.pk).status_code, 200,
+            self.patch_zone(zone_type='city', zone_region=self.here.pk).status_code, 200,
         )
 
     def test_a_region_you_are_not_in_is_rejected(self):
         self.stand_at(0.5, 0.5)
-        response = self.patch_zone(zone_mode='region', zone_region=self.far.pk)
+        response = self.patch_zone(zone_type='city', zone_region=self.far.pk)
         self.assertEqual(response.status_code, 400)
         self.assertIn('Far Away', str(response.json()))
         self.user.refresh_from_db()
@@ -645,7 +645,7 @@ class ZoneMustContainYouTests(TestCase):
     def test_without_a_known_position_nothing_can_be_set(self):
         """No coordinates means no way to check, and an unchecked region is
         exactly the hole this rule exists to close."""
-        response = self.patch_zone(zone_mode='region', zone_region=self.here.pk)
+        response = self.patch_zone(zone_type='city', zone_region=self.here.pk)
         self.assertEqual(response.status_code, 400)
         self.assertIn('location', str(response.json()).lower())
 
@@ -654,7 +654,7 @@ class ZoneMustContainYouTests(TestCase):
         at home and then travelled must still be able to change their music or
         turn the zone off."""
         self.stand_at(0.5, 0.5)
-        self.patch_zone(zone_mode='region', zone_region=self.here.pk)
+        self.patch_zone(zone_type='city', zone_region=self.here.pk)
         self.stand_at(50.5, 50.5)  # now inside `far`, not `here`
         self.assertEqual(self.patch_zone(zone_active=False).status_code, 200)
         self.assertEqual(self.patch_zone(zone_radius=800).status_code, 200)

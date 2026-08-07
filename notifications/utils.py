@@ -175,10 +175,12 @@ def notify_zone_music_entry(visitor, owner, distance_m: float):
 
     if visitor.pk == owner.pk:
         return
-    # The track is the switch. `zone_active` governs whether a zone is drawn on
-    # the map, and reading it here meant removing that circle also stopped the
-    # alerts for music the owner was still broadcasting.
-    if not owner.has_zone_track:
+    # A track, and a music zone switched on to play it through. Still not
+    # `zone_active`: that governs whether the *map* zone is drawn around
+    # someone, and reading it here meant removing that circle also stopped the
+    # alerts for music the owner was still broadcasting. Switching the music
+    # zone off silences both halves — there is no zone left to walk into.
+    if not owner.broadcasts_zone_track:
         return
     if visitor.pk in blocked_ids_for(owner):
         return

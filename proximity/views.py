@@ -150,21 +150,25 @@ def _trigger_zone_music_alerts(user):
     # circle around themselves. Whether there is a track to be in earshot of is
     # settled by `has_zone_track` in `notify_zone_music_entry`, which is a
     # property across three columns and so cannot be a filter here.
+    #
+    # `music_zone_active` can be, and is: a switched-off music zone is not there
+    # to be walked into, so those rows are dropped before the distance maths
+    # rather than walked and discarded. `notify_zone_music_entry` re-checks it
+    # via `broadcasts_zone_track` for the callers that do not come through here.
     owners = User.objects.filter(
         pk__in=approved_ids,
+        music_zone_active=True,
         latitude__isnull=False,
         longitude__isnull=False,
     ).exclude(location_sharing=User.LocationSharing.PAUSED)
 
+    # `zone_mode` is not consulted. A music zone is always its own circle of
+    # `music_zone_radius` now — it never inherits a region border, which is what
+    # the removed `music_zone_separate` flag used to allow and what made this
+    # loop skip region-mode owners to avoid alerting on everyone in town.
     for owner in owners:
-        # A region zone is a city border, not a distance, and its owner did not
-        # choose it as a listening range — inheriting it here would alert on
-        # every friend anywhere in town. Separating the music zone is exactly
-        # how someone in region mode opts into these.
-        if owner.effective_zone_mode == User.ZoneMode.REGION and not owner.music_zone_separate:
-            continue
         metres = haversine(lat, lon, float(owner.latitude), float(owner.longitude)) * 1000
-        if metres <= owner.music_radius_m:
+        if metres <= owner.music_zone_radius:
             notify_zone_music_entry(user, owner, metres)
 
 

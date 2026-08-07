@@ -149,8 +149,8 @@ class NearbySharedInterestsTests(TestCase):
 class ZoneSwitchScopeTests(TestCase):
     """`zone_active` turns off the zone *drawn on the map*, and nothing else.
 
-    It used to gate the music too — the earshot circles, a friend's ability to
-    play the track, and these alerts — so removing the circle from the map
+    It used to gate the music too — the music-zone circles, a friend's ability
+    to play the track, and these alerts — so removing the circle from the map
     silently muted a song its owner had never touched. The switch is labelled
     "Zone on the map"; these pin the behaviour to the label.
     """
@@ -194,9 +194,9 @@ class ZoneSwitchScopeTests(TestCase):
         _trigger_zone_music_alerts(self.visitor)
         self.assertTrue(self.alerts_for(self.owner).exists())
 
-    def test_a_friend_out_of_earshot_is_still_not_alerted(self):
-        """Decoupling the switch must not widen who counts as being in
-        earshot — that is still the radius, and only the radius."""
+    def test_a_friend_outside_the_music_zone_is_still_not_alerted(self):
+        """Decoupling the switch must not widen who counts as being inside the
+        music zone — that is still its radius, and only its radius."""
         self.visitor.latitude, self.visitor.longitude = 20.0, 20.0
         self.visitor.save()
         _trigger_zone_music_alerts(self.visitor)
@@ -220,3 +220,117 @@ class ZoneSwitchScopeTests(TestCase):
         )
         self.assertFalse(entry['zone_active'])
         self.assertTrue(entry.get('zone_audio_url'))
+
+
+class MusicZoneSwitchTests(TestCase):
+    """`music_zone_active` is the one switch the music zone has.
+
+    The counterpart to ZoneSwitchScopeTests above: that one pins that removing
+    the map circle leaves the music alone, this one pins that removing the music
+    zone leaves the map circle alone. Off means gone — no track sent, no alert,
+    and no radius for anyone to draw a circle from, which is how the zone comes
+    off every viewer's map.
+    """
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username='mute-owner', email='mute-owner@example.com', password='testpass-123',
+            latitude='10.0', longitude='10.0',
+            zone_apple_preview_url=TEST_TRACK_URL,
+            zone_active=True,           # circle very much on the map
+            zone_radius=500,
+            music_zone_alerts=True,
+            music_zone_active=False,    # …and no music zone at all
+        )
+        self.visitor = User.objects.create_user(
+            username='mute-visitor', email='mute-visitor@example.com', password='testpass-123',
+            latitude='10.001', longitude='10.001',
+        )
+        FriendRequest.objects.create(
+            sender=self.visitor, receiver=self.owner,
+            status=FriendRequest.Status.ACCEPTED,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.visitor)
+
+    def _nearby_entry(self):
+        return next(
+            row for row in self.client.get('/api/proximity/nearby/').json()
+            if row['id'] == self.owner.pk
+        )
+
+    def test_defaults_to_on(self):
+        """Every zone that existed before this field keeps broadcasting."""
+        fresh = User.objects.create_user(
+            username='fresh', email='fresh@example.com', password='testpass-123',
+        )
+        self.assertTrue(fresh.music_zone_active)
+
+    def test_a_friend_is_not_sent_the_track(self):
+        entry = self._nearby_entry()
+        self.assertNotIn('zone_audio_url', entry)
+        self.assertNotIn('zone_audio', entry)
+
+    def test_the_radius_goes_with_it(self):
+        """Withheld, not nulled — and this absence is the whole feature. The
+        map draws a friend's music zone from this radius, so a viewer who is
+        sent one has a circle to draw and a viewer who is not has nothing."""
+        entry = self._nearby_entry()
+        self.assertNotIn('music_zone_radius', entry)
+
+    def test_the_map_zone_is_untouched(self):
+        """Removing the music zone must not take the map circle with it."""
+        entry = self._nearby_entry()
+        self.assertTrue(entry['zone_active'])
+        self.assertEqual(entry['zone_radius'], 500)
+
+    def test_no_alert_in_either_direction(self):
+        notify_zone_music_entry(self.visitor, self.owner, 120)
+        self.assertFalse(Notification.objects.filter(recipient=self.owner).exists())
+        self.assertFalse(Notification.objects.filter(recipient=self.visitor).exists())
+
+    def test_the_sweep_skips_an_owner_with_no_music_zone(self):
+        _trigger_zone_music_alerts(self.visitor)
+        self.assertFalse(Notification.objects.filter(recipient=self.owner).exists())
+
+    def test_switching_it_back_on_restores_all_of_it(self):
+        """Off parks the zone rather than dismantling it — the track, the
+        radius and the alerts all come back with one switch."""
+        self.owner.music_zone_active = True
+        self.owner.save()
+        entry = self._nearby_entry()
+        self.assertEqual(entry['zone_audio_url'], TEST_TRACK_URL)
+        # The music zone's own radius, never the map zone's 500.
+        self.assertEqual(entry['music_zone_radius'], 200)
+        notify_zone_music_entry(self.visitor, self.owner, 120)
+        self.assertTrue(Notification.objects.filter(recipient=self.owner).exists())
+
+    def test_the_radius_is_its_own_in_region_mode_too(self):
+        """A music zone is always a circle. It used to inherit a region border
+        when it was not 'separate', which meant alerting on everyone in town —
+        so the sweep skipped region-mode owners entirely. There is nothing to
+        inherit now, so they are swept like anyone else."""
+        from regions.models import Region
+
+        self.owner.music_zone_active = True
+        self.owner.zone_type = User.ZoneType.CITY
+        self.owner.zone_region = Region.objects.create(
+            name='Testville', display_name='Testville, Testland',
+            min_lat=9.0, min_lon=9.0, max_lat=11.0, max_lon=11.0,
+            centroid_lat=10.0, centroid_lon=10.0,
+        )
+        self.owner.save()
+        self.assertEqual(self.owner.effective_zone_mode, 'region')
+        entry = self._nearby_entry()
+        self.assertEqual(entry['music_zone_radius'], 200)
+        _trigger_zone_music_alerts(self.visitor)   # ~157m away, inside 200m
+        self.assertTrue(Notification.objects.filter(recipient=self.owner).exists())
+
+    def test_the_owner_still_sees_their_own_track(self):
+        """Switching the zone off hides you from other people, not your song
+        from you — the Zone Music screen has to keep showing what is loaded."""
+        client = APIClient()
+        client.force_authenticate(self.owner)
+        data = client.get('/api/users/zone/').json()
+        self.assertEqual(data['zone_audio_url'], TEST_TRACK_URL)
+        self.assertFalse(data['music_zone_active'])

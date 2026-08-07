@@ -178,12 +178,76 @@ def ring_contains(ring, lat, lon):
     return inside
 
 
+#: How close to an edge counts as *on* it, in degrees. ~1.1cm of latitude — far
+#: below any accuracy a phone can offer, so it only ever catches points that are
+#: genuinely on the line, and absorbs the float error in the cross product below
+#: rather than widening the boundary by anything that matters.
+EDGE_EPSILON_DEG = 1e-7
+
+
+def point_on_ring(ring, lat, lon, epsilon=EDGE_EPSILON_DEG):
+    """Whether a point lies on one of this ring's edges.
+
+    Point-to-segment distance: a dot product locates the foot of the
+    perpendicular and rejects points past either end, a cross product gives the
+    offset. Degrees are treated as a flat plane, which over one simplified
+    boundary segment is far more precision than the epsilon asks for.
+    """
+    count = len(ring)
+    # The same floor `ring_contains` uses, and for the same reason: fewer than
+    # three points is not a polygon ring. A two-point ring is a line segment,
+    # which encloses nothing and therefore has no boundary to be *on* — without
+    # this, a point lying on that line would be reported inside a region of zero
+    # area.
+    if count < 3:
+        return False
+
+    j = count - 1
+    for i in range(count):
+        x1, y1 = ring[i][0], ring[i][1]
+        x2, y2 = ring[j][0], ring[j][1]
+        j = i
+
+        dx, dy = x2 - x1, y2 - y1
+        seg_len_sq = dx * dx + dy * dy
+        if seg_len_sq == 0:
+            # Degenerate segment — a repeated vertex. Compare against the point.
+            if abs(lon - x1) <= epsilon and abs(lat - y1) <= epsilon:
+                return True
+            continue
+
+        # Where the perpendicular meets the segment, as a fraction of its
+        # length. Outside [0, 1] the nearest point is an endpoint, which the
+        # adjoining segment tests anyway.
+        t = ((lon - x1) * dx + (lat - y1) * dy) / seg_len_sq
+        if t < 0 or t > 1:
+            continue
+        if abs(dx * (lat - y1) - dy * (lon - x1)) / (seg_len_sq ** 0.5) <= epsilon:
+            return True
+    return False
+
+
 def rings_contain(rings, lat, lon):
     """Whether a point falls inside a ring set.
 
-    A point inside an odd number of rings is inside the region, which makes
-    holes fall out for free rather than needing a second pass.
+    Boundary-inclusive, matching PostGIS `ST_Covers` rather than `ST_Contains`.
+    Without the edge test the answer for a point exactly on the border is
+    whatever the ray cast happens to do at that vertex — a convention rather
+    than a decision, and one that lets the two sides of a shared border disagree
+    about who is standing on it. Somebody on the line is in the region being
+    asked about.
+
+    Holes are part of a polygon's boundary, so a point on a hole's edge is
+    covered too. That falls out of testing every ring alike, which is why this
+    runs as its own pass instead of being folded into the parity count below.
+
+    Otherwise: a point inside an odd number of rings is inside the region, which
+    makes holes fall out for free rather than needing a second pass.
     """
+    for ring in rings:
+        if point_on_ring(ring, lat, lon):
+            return True
+
     inside = False
     for ring in rings:
         if ring_contains(ring, lat, lon):
