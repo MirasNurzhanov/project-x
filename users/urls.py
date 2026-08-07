@@ -1,9 +1,9 @@
 from django.urls import path
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.views import TokenObtainPairView
 from .views import (
     RegisterView, LogoutView, ProfileView, PrivacySettingsView, PublicProfileView,
     ProfileLinksView, ProfileLinkDetailView, UserSearchView, ZoneView,
-    DeleteAccountView, MeView, SocialLoginView,
+    DeleteAccountView, MeView, SocialLoginView, SafeTokenRefreshView,
     AppleMusicSearchView, AppleMusicStatusView, ZoneAppleMusicView,
 )
 
@@ -12,7 +12,7 @@ urlpatterns = [
     path('login/', TokenObtainPairView.as_view(), name='login'),
     path('social/', SocialLoginView.as_view(), name='social-login'),
     path('logout/', LogoutView.as_view(), name='logout'),
-    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('token/refresh/', SafeTokenRefreshView.as_view(), name='token_refresh'),
     path('me/', MeView.as_view(), name='me'),
     path('profile/', ProfileView.as_view(), name='profile'),
     path('privacy/', PrivacySettingsView.as_view(), name='privacy'),
