@@ -8,7 +8,7 @@ from django.db import close_old_connections
 from django.db.models import Q
 from django.utils import timezone
 from regions import places
-from users import visibility
+from users import visibility, zones
 from users.models import User
 from friends.models import FriendRequest, HiRequest
 from .serializers import LocationUpdateSerializer, NearbyUserSerializer
@@ -50,6 +50,87 @@ def _build_relationships(user, nearby_ids):
 
 DEFAULT_RADIUS_KM = 0.5
 CONNECTED_RADIUS_KM = 1.0
+
+
+#: Ceiling on how many people one request will return.
+#:
+#: A 500m circle is self-limiting; a city zone is not. Without a cap, a viewer
+#: who picks a dense city asks this endpoint — polled every ten seconds by every
+#: client — to serialise every account in that city, and hands the map more
+#: markers than it can draw. The nearest N is the useful part of that answer
+#: anyway. Raise it when the payload and the map can carry more, not before.
+MAX_NEARBY_MATCHES = 200
+
+#: Rows fetched before containment is tested, per tier. Bounds the Python
+#: ray-casting pass as well as the query: a city bounding box can hold far more
+#: people than are actually inside the boundary, and every one of them would
+#: otherwise be walked. This is the number that would stop mattering with a
+#: PostGIS GIST index doing containment in the database.
+MAX_ZONE_CANDIDATES = 1000
+
+
+def _viewer_zone_box(user, lat, lon):
+    """A database prefilter for people who might be inside `user`'s zone.
+
+    Over-selects on purpose. `zone_contains` runs in Python, so the job here is
+    to get the candidate set down to a bounding box before any ray casting
+    happens — being exact is the next step's problem.
+
+    Circles bound themselves. Polygons use the region's own stored box, on
+    latitude always and on longitude only when the region does not cross the
+    antimeridian: those bounds are stored *unwrapped* and can legitimately run
+    past ±180, so comparing an ordinary ±180 longitude against them would
+    exclude exactly the regions that are hardest to get right. Latitude never
+    wraps. For a dateline-crossing region the latitude band alone is a looser
+    filter and `Region.contains` — which aligns longitude itself — settles it.
+    """
+    if user.zone_type in User.POLYGON_ZONE_TYPES and user.zone_region_id:
+        region = user.zone_region
+        box = Q(latitude__range=(region.min_lat, region.max_lat))
+        if not region.crosses_antimeridian:
+            box &= Q(longitude__range=(region.min_lon, region.max_lon))
+        return box
+
+    # Circle, or a polygon type whose boundary has been evicted — see
+    # `_viewer_zone_contains` for why that degrades to the circle here.
+    km = user.zone_radius / 1000
+    lat_delta = km / 111.0
+    lon_delta = km / (111.0 * math.cos(math.radians(lat)))
+    return Q(
+        latitude__range=(lat - lat_delta, lat + lat_delta),
+        longitude__range=(lon - lon_delta, lon + lon_delta),
+    )
+
+
+def _viewer_zone_contains(user, lat, lon, candidate_tolerance_m):
+    """Whether `user`'s own zone covers a candidate at (`lat`, `lon`).
+
+    The viewer's zone governs, and the direction is the whole design: this asks
+    "is *they* inside *my* zone", never the reverse. Visibility is deliberately
+    not mutual. Someone who picks their whole city sees everybody in it; the
+    people they see keep whatever range they chose for themselves, and mostly
+    cannot see back.
+
+    Tolerance belongs to the *candidate*, not the viewer — it is their position
+    being tested against the boundary, and an Approximate sharer's stored point
+    is a ~500m grid centre. Without it a fuzzed position lands over a district
+    line and somebody standing in the district is not shown as being in it.
+
+    A zone whose boundary has been evicted falls back to the radius. That is a
+    silent degradation and it is the right one here: the alternative is an empty
+    map for the viewer with nothing to explain it, and `zone_region` is
+    SET_NULL, so the state arrives without anyone doing anything wrong. It is
+    the same fallback `effective_zone_mode` makes for drawing. Refusing to
+    approximate applies to *storing* a zone, where the user is present to be
+    told — see the serializer.
+    """
+    try:
+        return user.zone_contains(lat, lon, tolerance_m=candidate_tolerance_m)
+    except zones.ZoneBoundaryUnavailable:
+        metres = haversine(
+            float(user.latitude), float(user.longitude), lat, lon,
+        ) * 1000
+        return metres <= user.zone_radius + candidate_tolerance_m
 
 
 def _get_relationship_ids(user, excluded_ids):
@@ -279,29 +360,48 @@ class NearbyUsersView(APIView):
         # Friends: always visible, no distance limit
         friend_candidates = base_qs.filter(pk__in=friend_ids) if friend_ids else User.objects.none()
 
-        # Connected: visible within CONNECTED_RADIUS_KM
+        # How far this viewer sees, which is now something they chose rather
+        # than a constant. `zone_box` is the bounding box of their zone —
+        # their circle, or their district's or city's outline — and every
+        # non-friend tier below is gated on it. Nothing about the people being
+        # looked at enters into it: visibility is not mutual, so somebody found
+        # this way generally cannot see back.
+        #
+        # Deliberately independent of `zone_active`, which has one documented
+        # job — whether the circle is *drawn* on the map — and has never gated
+        # anything else. See ZoneSwitchScopeTests.
+        zone_box = _viewer_zone_box(user, lat, lon)
+
+        # Connected: inside the zone, or within CONNECTED_RADIUS_KM.
+        #
+        # The 1km stays as a floor rather than being replaced. Somebody you have
+        # exchanged a Hi with is a weaker tie than a friend but not a stranger,
+        # and shrinking your own zone to 50m is a statement about *discovery* —
+        # it should not quietly drop the people you have already met. The zone
+        # only ever widens this tier.
         if connected_ids:
             conn_lat_delta = CONNECTED_RADIUS_KM / 111.0
             conn_lon_delta = CONNECTED_RADIUS_KM / (111.0 * math.cos(math.radians(lat)))
             connected_candidates = base_qs.filter(
+                Q(
+                    latitude__range=(lat - conn_lat_delta, lat + conn_lat_delta),
+                    longitude__range=(lon - conn_lon_delta, lon + conn_lon_delta),
+                ) | zone_box,
                 pk__in=connected_ids,
-                latitude__range=(lat - conn_lat_delta, lat + conn_lat_delta),
-                longitude__range=(lon - conn_lon_delta, lon + conn_lon_delta),
-            )
+            )[:MAX_ZONE_CANDIDATES]
         else:
             connected_candidates = User.objects.none()
 
-        # Strangers: visible within DEFAULT_RADIUS_KM, filtered by age_tier and interests
-        str_lat_delta = DEFAULT_RADIUS_KM / 111.0
-        str_lon_delta = DEFAULT_RADIUS_KM / (111.0 * math.cos(math.radians(lat)))
+        # Strangers: inside the viewer's zone, filtered by age_tier and
+        # interests. This is where the fixed 500m used to be, and it is gone —
+        # a viewer's reach is their zone and nothing else. For anyone who has
+        # never touched the setting that is a 500m circle, which is the same
+        # number by a different route.
         stranger_candidates = (
             base_qs
             .exclude(pk__in=friend_ids)
             .exclude(pk__in=connected_ids)
-            .filter(
-                latitude__range=(lat - str_lat_delta, lat + str_lat_delta),
-                longitude__range=(lon - str_lon_delta, lon + str_lon_delta),
-            )
+            .filter(zone_box)
         )
         if user.age_tier:
             stranger_candidates = stranger_candidates.filter(age_tier=user.age_tier)
@@ -326,25 +426,53 @@ class NearbyUsersView(APIView):
             nearby.append(candidate)
             seen.add(candidate.pk)
 
+        # The exact test, for both gated tiers. The box above was a bounding
+        # box; this is the boundary itself — a circle measured properly, or the
+        # ray cast against the real outline. Tolerance is the *candidate's*,
+        # because it is their stored position being tested and theirs that may
+        # have been snapped to a grid cell.
+        def in_zone(candidate):
+            return _viewer_zone_contains(
+                user,
+                float(candidate.latitude), float(candidate.longitude),
+                visibility.position_tolerance_m(candidate),
+            )
+
         for candidate in connected_candidates:
             if candidate.pk in seen:
                 continue
             dist = round(haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
-            if dist <= CONNECTED_RADIUS_KM:
+            # The 1km floor, or the zone if it reaches further. Either qualifies.
+            if dist <= CONNECTED_RADIUS_KM or in_zone(candidate):
                 distances[candidate.pk] = dist
                 nearby.append(candidate)
                 seen.add(candidate.pk)
 
-        for candidate in stranger_candidates:
+        for candidate in stranger_candidates[:MAX_ZONE_CANDIDATES]:
             if candidate.pk in seen:
                 continue
-            dist = round(haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
-            if dist <= DEFAULT_RADIUS_KM:
-                distances[candidate.pk] = dist
-                nearby.append(candidate)
-                seen.add(candidate.pk)
+            if not in_zone(candidate):
+                continue
+            distances[candidate.pk] = round(
+                haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
+            nearby.append(candidate)
+            seen.add(candidate.pk)
 
+        # Nearest first, then capped. The order matters more than it used to:
+        # inside a city zone this is the difference between the 200 people
+        # closest to you and 200 arbitrary rows from the same city.
+        #
+        # Friends are exempt. They are visible at any distance by design, and a
+        # cap that quietly dropped the friend across town the moment a city zone
+        # filled the list would be the zone setting silently changing something
+        # that has nothing to do with discovery.
         nearby.sort(key=lambda u: distances.get(u.pk, float('inf')))
+        if len(nearby) > MAX_NEARBY_MATCHES:
+            friends = [u for u in nearby if u.pk in friend_ids]
+            others = [u for u in nearby if u.pk not in friend_ids]
+            room = max(0, MAX_NEARBY_MATCHES - len(friends))
+            nearby = friends + others[:room]
+            nearby.sort(key=lambda u: distances.get(u.pk, float('inf')))
 
         nearby_ids = [u.pk for u in nearby]
         relationships = _build_relationships(user, nearby_ids)
