@@ -3,7 +3,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from .views import (
     RegisterView, LogoutView, ProfileView, PrivacySettingsView, PublicProfileView,
     ProfileLinksView, ProfileLinkDetailView, UserSearchView, ZoneView,
-    DeleteAccountView, MeView, SocialLoginView, SafeTokenRefreshView,
+    DeleteAccountView, MeView, SocialLoginView, SocialLinkView, SafeTokenRefreshView,
     AppleMusicSearchView, AppleMusicStatusView, ZoneAppleMusicView,
 )
 
@@ -11,6 +11,7 @@ urlpatterns = [
     path('register/', RegisterView.as_view(), name='register'),
     path('login/', TokenObtainPairView.as_view(), name='login'),
     path('social/', SocialLoginView.as_view(), name='social-login'),
+    path('social/link/', SocialLinkView.as_view(), name='social-link'),
     path('logout/', LogoutView.as_view(), name='logout'),
     path('token/refresh/', SafeTokenRefreshView.as_view(), name='token_refresh'),
     path('me/', MeView.as_view(), name='me'),

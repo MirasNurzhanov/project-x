@@ -125,6 +125,32 @@ class SocialLoginView(APIView):
         })
 
 
+class SocialLinkView(APIView):
+    """Attach a Google or Apple identity to the *signed-in* account.
+
+    A different question to SocialLoginView's, even though both start from the
+    same provider token: that one has no account yet and has to find or make
+    one, which is the one place email-matching belongs. Here the account is
+    already known — `request.user` — so linking never touches email at all;
+    see socialauth.link_identity for why that distinction matters.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        provider = str(request.data.get('provider', '')).lower().strip()
+        token = request.data.get('id_token') or request.data.get('identity_token')
+
+        try:
+            claims = socialauth.verify_identity_token(provider, token)
+            socialauth.link_identity(request.user, provider, claims)
+        except socialauth.SocialAuthError as exc:
+            return Response(
+                {'detail': str(exc), 'code': exc.code}, status=exc.status
+            )
+
+        return Response(UserProfileSerializer(request.user).data)
+
+
 class LogoutView(APIView):
     """Revoke the session and stop the device being addressable.
 

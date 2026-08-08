@@ -276,6 +276,111 @@ class SocialLoginEndpointTests(SocialAuthTestCase):
         self.assertEqual(res.data['code'], 'missing_token')
 
 
+class LinkIdentityTests(SocialAuthTestCase):
+    def setUp(self):
+        super().setUp()
+        self.user = User.objects.create_user(
+            username='linker', email='linker@example.com', password='pw-123456')
+
+    def link(self, provider='google', **kwargs):
+        claims = socialauth.verify_identity_token(provider, make_token(**kwargs))
+        return socialauth.link_identity(self.user, provider, claims)
+
+    def test_attaches_a_fresh_identity(self):
+        self.link(sub='fresh-sub')
+        self.assertTrue(
+            SocialAccount.objects.filter(
+                user=self.user, provider='google', subject='fresh-sub').exists())
+
+    def test_never_touches_email_unlike_resolve_user(self):
+        # A different address on the token must not overwrite the account's —
+        # this is not the email-matching path, it is already `self.user`.
+        self.link(sub='fresh-sub', email='someone-elses-address@example.com')
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, 'linker@example.com')
+
+    def test_relinking_the_same_identity_is_a_no_op_success(self):
+        self.link(sub='stable-sub')
+        self.link(sub='stable-sub')  # second tap of "Connect", or a second device
+        self.assertEqual(
+            SocialAccount.objects.filter(
+                user=self.user, provider='google', subject='stable-sub').count(),
+            1,
+        )
+
+    def test_refuses_an_identity_already_linked_elsewhere(self):
+        other = User.objects.create_user(
+            username='other', email='other@example.com', password='pw-123456')
+        SocialAccount.objects.create(
+            provider='google', subject='taken-sub', user=other)
+        with self.assertRaises(socialauth.SocialAuthError) as ctx:
+            self.link(sub='taken-sub')
+        self.assertEqual(ctx.exception.code, 'identity_already_linked')
+        self.assertEqual(ctx.exception.status, 409)
+        self.assertEqual(other.social_accounts.count(), 1)
+        self.assertEqual(self.user.social_accounts.count(), 0)
+
+    def test_refuses_a_second_identity_of_the_same_provider(self):
+        self.link(sub='first-sub')
+        with self.assertRaises(socialauth.SocialAuthError) as ctx:
+            self.link(sub='second-sub')
+        self.assertEqual(ctx.exception.code, 'provider_already_connected')
+        self.assertEqual(self.user.social_accounts.count(), 1)
+
+    def test_google_and_apple_can_both_be_linked_to_one_account(self):
+        self.link(provider='google', sub='g-sub')
+        self.link(provider='apple', iss='https://appleid.apple.com', aud=APPLE_AUD,
+                   sub='a-sub')
+        self.assertEqual(self.user.social_accounts.count(), 2)
+
+
+class SocialLinkEndpointTests(SocialAuthTestCase):
+    def setUp(self):
+        super().setUp()
+        self.user = User.objects.create_user(
+            username='linker', email='linker@example.com', password='pw-123456')
+        self.client = APIClient()
+
+    def test_requires_authentication(self):
+        res = self.client.post(
+            '/api/users/social/link/',
+            {'provider': 'google', 'id_token': make_token()}, format='json')
+        self.assertEqual(res.status_code, 401)
+
+    def test_links_and_reports_connected_providers(self):
+        self.client.force_authenticate(self.user)
+        res = self.client.post(
+            '/api/users/social/link/',
+            {'provider': 'google', 'id_token': make_token(sub='linked-sub')},
+            format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['connected_providers'], ['google'])
+        self.assertTrue(
+            SocialAccount.objects.filter(
+                user=self.user, provider='google', subject='linked-sub').exists())
+
+    def test_conflict_with_another_account_is_a_409(self):
+        other = User.objects.create_user(
+            username='other', email='other@example.com', password='pw-123456')
+        SocialAccount.objects.create(
+            provider='google', subject='taken-sub', user=other)
+        self.client.force_authenticate(self.user)
+        res = self.client.post(
+            '/api/users/social/link/',
+            {'provider': 'google', 'id_token': make_token(sub='taken-sub')},
+            format='json')
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(res.data['code'], 'identity_already_linked')
+
+    def test_bad_token_is_a_400_with_a_code(self):
+        self.client.force_authenticate(self.user)
+        res = self.client.post(
+            '/api/users/social/link/',
+            {'provider': 'google', 'id_token': 'nonsense'}, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data['code'], 'invalid_token')
+
+
 class AgeGateTests(TestCase):
     """The date of birth a social sign-up owes us arrives as a profile PATCH,
     so the 13+ floor has to hold on that route and not only at registration."""

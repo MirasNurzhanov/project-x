@@ -339,3 +339,60 @@ def resolve_user(provider_name, claims, full_name=''):
             code='race',
         ) from exc
     return user, True
+
+
+@transaction.atomic
+def link_identity(user, provider_name, claims):
+    """Attach a verified provider identity to `user`, who is already signed in.
+
+    The counterpart to `resolve_user` for someone who does not need a session
+    minted — they have one — only an identity attached to the account they are
+    already using. That is also why this never touches email: `resolve_user`
+    matches on it because it has nothing else to go on for a stranger's token;
+    here the account is not a guess, it is `request.user`, so email-matching
+    would only be a way to attach the wrong identity if the addresses ever
+    disagreed.
+
+    Idempotent for the account's own identity — tapping "Connect" twice, or
+    once per device, is success both times, not an error the app has to hide
+    from the user. Everything else this can refuse is already enforced at the
+    database level by SocialAccount's two constraints; the checks below exist
+    to answer with a clear `code` instead of a raw IntegrityError.
+    """
+    subject = claims.get('sub')
+    if not subject:
+        raise SocialAuthError('That sign-in identified nobody.')
+
+    existing_link = SocialAccount.objects.filter(
+        provider=provider_name, subject=subject
+    ).first()
+    if existing_link:
+        if existing_link.user_id == user.id:
+            return existing_link
+        raise SocialAuthError(
+            f'That {provider_name.title()} account is already connected to a '
+            f'different Aura account.',
+            status=409,
+            code='identity_already_linked',
+        )
+
+    if user.social_accounts.filter(provider=provider_name).exists():
+        raise SocialAuthError(
+            f'Your account already has a {provider_name.title()} account '
+            f'connected.',
+            status=409,
+            code='provider_already_connected',
+        )
+
+    email = _email_from_claims(provider_name, claims) or ''
+    try:
+        return SocialAccount.objects.create(
+            provider=provider_name, subject=subject, user=user, email=email
+        )
+    except IntegrityError as exc:
+        # Two taps landing at once, same as resolve_user's race.
+        raise SocialAuthError(
+            'That connection was already being made. Please try again.',
+            status=409,
+            code='race',
+        ) from exc

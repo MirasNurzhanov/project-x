@@ -57,6 +57,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
     # The id is what a client writes back; the expansion saves it a lookup just
     # to show the name of the city it already chose.
     zone_region_detail = RegionSummarySerializer(source='zone_region', read_only=True)
+    connected_providers = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -71,7 +72,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'discoverable_by_username', 'discoverable_by_interest',
             'zone_audio', 'zone_audio_url', 'zone_active',
             'zone_type', 'zone_radius', 'zone_region', 'zone_region_detail',
-            'push_token',
+            'push_token', 'connected_providers',
         )
         # `privacy_mode` is the legacy active/ghost/invisible view of
         # `location_sharing`, kept so app builds predating the split keep working.
@@ -85,6 +86,12 @@ class UserProfileSerializer(serializers.ModelSerializer):
         # Shared with the zone and public-profile serializers, so an Apple track
         # cannot be the answer on one endpoint and invisible on another.
         return _zone_audio_url(obj)
+
+    def get_connected_providers(self, obj):
+        # What Settings' "Connected accounts" row needs to show Connect vs
+        # Connected — a list rather than two booleans so a third provider
+        # never needs a new field, just a new entry.
+        return list(obj.social_accounts.values_list('provider', flat=True))
 
 
 def _pending_relationship(me, obj):
