@@ -14,7 +14,9 @@ class NotificationListView(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        qs = Notification.objects.filter(recipient=user).select_related('sender', 'story')
+        qs = Notification.objects.filter(recipient=user).select_related(
+            'sender', 'story', 'club', 'event',
+        )
 
         # Filtered on read, not only on write: a notification names its sender,
         # so blocking someone has to clear the ones already sitting in the list.

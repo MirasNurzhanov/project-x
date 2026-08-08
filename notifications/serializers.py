@@ -10,12 +10,19 @@ class NotificationSerializer(serializers.ModelSerializer):
     story_id = serializers.IntegerField(source='story.id', read_only=True, allow_null=True)
     story_image = serializers.SerializerMethodField()
     story_excerpt = serializers.SerializerMethodField()
+    # What a club alert needs to be tappable. Same job the story fields do
+    # above: the message can say a meetup was proposed, but only these say
+    # which club to open and which meetup to scroll to.
+    club_id = serializers.IntegerField(source='club.id', read_only=True, allow_null=True)
+    club_name = serializers.CharField(source='club.name', read_only=True, allow_null=True)
+    event_id = serializers.IntegerField(source='event.id', read_only=True, allow_null=True)
 
     class Meta:
         model = Notification
         fields = (
             'id', 'sender_id', 'sender_username', 'sender_avatar',
             'story_id', 'story_image', 'story_excerpt',
+            'club_id', 'club_name', 'event_id',
             'notification_type', 'message', 'is_read', 'created_at',
         )
         read_only_fields = fields

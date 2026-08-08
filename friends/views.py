@@ -14,7 +14,9 @@ from users import visibility
 from users.models import User
 from .models import BlockedUser, FriendRequest, HiRequest, Message
 from .serializers import BasicUserSerializer, FriendRequestSerializer, HiRequestSerializer, MessageSerializer
-from notifications.utils import notify_story_reply, send_push_notification
+from notifications.utils import (
+    notify_direct_message, notify_story_reply, send_push_notification,
+)
 from stories.models import Story
 
 # Story replies arrive as ordinary messages whose body is an encoded payload the
@@ -98,7 +100,12 @@ class SendHiView(APIView):
         HiRequest.objects.filter(sender=request.user, receiver=receiver).delete()
 
         hi = HiRequest.objects.create(sender=request.user, receiver=receiver)
-        send_push_notification(receiver, 'New Hi! 👋', f'@{request.user.username} wants to connect')
+        send_push_notification(
+            receiver, 'New Hi! 👋', f'@{request.user.username} wants to connect',
+            data={'type': 'request', 'user_id': request.user.pk,
+                  'username': request.user.username},
+            category='social',
+        )
         return Response(HiRequestSerializer(hi).data, status=status.HTTP_201_CREATED)
 
 
@@ -111,7 +118,12 @@ class AcceptHiView(APIView):
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
         hi.status = HiRequest.Status.ACCEPTED
         hi.save(update_fields=['status'])
-        send_push_notification(hi.sender, '🎉 Connected!', f'@{request.user.username} accepted your Hi')
+        send_push_notification(
+            hi.sender, '🎉 Connected!', f'@{request.user.username} accepted your Hi',
+            data={'type': 'message', 'user_id': request.user.pk,
+                  'username': request.user.username},
+            category='social',
+        )
         return Response(HiRequestSerializer(hi).data)
 
 
@@ -276,8 +288,9 @@ class MessagesView(APIView):
         if story is not None:
             notify_story_reply(story, request.user, _story_reply_comment(content))
         else:
-            preview = (_story_reply_comment(content) or '[image]') if content else '[image]'
-            send_push_notification(other, '💬 New message', f'@{request.user.username}: {preview[:100]}')
+            notify_direct_message(
+                request.user, other, _story_reply_comment(content), image=image or image_url,
+            )
 
         room_group = f"chat_{min(request.user.pk, other.pk)}_{max(request.user.pk, other.pk)}"
         async_to_sync(get_channel_layer().group_send)(
@@ -439,12 +452,22 @@ class SendFriendRequestView(APIView):
                 f"user_{receiver.pk}",
                 {'type': 'new_friend', 'username': request.user.username},
             )
-            send_push_notification(receiver, '🎉 New friend!', f'@{request.user.username} is now your friend')
+            send_push_notification(
+                receiver, '🎉 New friend!', f'@{request.user.username} is now your friend',
+                data={'type': 'profile', 'user_id': request.user.pk,
+                      'username': request.user.username},
+                category='social',
+            )
             return Response(FriendRequestSerializer(mutual).data, status=status.HTTP_201_CREATED)
 
         FriendRequest.objects.filter(sender=request.user, receiver=receiver).delete()
         fr = FriendRequest.objects.create(sender=request.user, receiver=receiver)
-        send_push_notification(receiver, '👥 Friend request', f'@{request.user.username} wants to be friends')
+        send_push_notification(
+            receiver, '👥 Friend request', f'@{request.user.username} wants to be friends',
+            data={'type': 'request', 'user_id': request.user.pk,
+                  'username': request.user.username},
+            category='social',
+        )
         return Response(FriendRequestSerializer(fr).data, status=status.HTTP_201_CREATED)
 
 
@@ -466,7 +489,12 @@ class AcceptFriendRequestView(APIView):
             f"user_{request.user.pk}",
             {'type': 'new_friend', 'username': fr.sender.username},
         )
-        send_push_notification(fr.sender, '🎉 New friend!', f'@{request.user.username} is now your friend')
+        send_push_notification(
+            fr.sender, '🎉 New friend!', f'@{request.user.username} is now your friend',
+            data={'type': 'profile', 'user_id': request.user.pk,
+                  'username': request.user.username},
+            category='social',
+        )
         return Response(FriendRequestSerializer(fr).data)
 
 

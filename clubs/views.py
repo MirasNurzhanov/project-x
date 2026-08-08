@@ -9,6 +9,10 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from notifications.utils import (
+    notify_club_event_created, notify_club_event_decided, notify_club_invite,
+    notify_club_message,
+)
 from regions import upstream
 from users.models import User
 from . import visibility
@@ -322,6 +326,7 @@ class ClubInviteView(APIView):
             return Response({'detail': 'User is already a member.'}, status=status.HTTP_400_BAD_REQUEST)
 
         member = ClubMember.objects.create(user=target, club=club)
+        notify_club_invite(club, request.user, target)
         return Response(ClubMemberSerializer(member).data, status=status.HTTP_201_CREATED)
 
 
@@ -434,6 +439,11 @@ class ClubEventListCreateView(APIView):
                 event=event,
             )
 
+        # Outside the atomic block above: a failed push must not roll back
+        # the meetup it is announcing, and the alert rows are written against
+        # an event that is already committed.
+        notify_club_event_created(event)
+
         msg = ClubMessage.objects.select_related(
             'sender', 'event__created_by', 'event__approved_by',
         ).get(pk=message.pk)
@@ -464,6 +474,8 @@ class ClubEventApproveView(APIView):
         event.expires_at = now + timedelta(hours=24)
         event.save(update_fields=['status', 'approved_by', 'approved_at', 'expires_at'])
 
+        notify_club_event_decided(event, request.user, approved=True)
+
         async_to_sync(get_channel_layer().group_send)(
             f'club_{event.club_id}',
             {
@@ -490,6 +502,8 @@ class ClubEventRejectView(APIView):
 
         event.status = ClubEvent.Status.REJECTED
         event.save(update_fields=['status'])
+
+        notify_club_event_decided(event, request.user, approved=False)
 
         async_to_sync(get_channel_layer().group_send)(
             f'club_{event.club_id}',
@@ -571,6 +585,12 @@ class ClubMessageListView(APIView):
             image_url=image_url,
             message_type=message_type,
         )
+
+        # The consumer pushes for socket-sent messages; this is the same
+        # announcement for the ones that come this way. `notify_club_message`
+        # holds one cooldown per member per club, so a photo posted straight
+        # after a line of text does not arrive as a second buzz.
+        notify_club_message(club, request.user, content, image=image or image_url)
 
         # Socket-sent messages are broadcast by the consumer; REST-sent ones
         # (photos) previously reached other members only on their next fetch.

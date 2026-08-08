@@ -46,3 +46,9 @@ PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 # Keep uploaded test files (e.g. story photos) out of the repo.
 import tempfile  # noqa: E402
 MEDIA_ROOT = tempfile.mkdtemp(prefix='aura-test-media-')
+
+# No push to Expo from a test run. notifications.push honours this by building
+# the message list, returning its length, and stopping short of the thread that
+# would send it — so what gets decided is still fully asserted, and nothing
+# leaves the machine.
+PUSH_DISABLED = True

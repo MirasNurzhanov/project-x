@@ -354,6 +354,28 @@ class PrivacySettingsSerializer(serializers.ModelSerializer):
         )
 
 
+class NotificationSettingsSerializer(serializers.ModelSerializer):
+    """The Notifications screen, read and written as one object.
+
+    Same shape and the same reasoning as PrivacySettingsSerializer: one
+    endpoint owns the whole screen, so a client never has to know which switch
+    lives where. `music_zone_alerts` is included even though it also appears on
+    the zone endpoint — it is a notification switch, and a user looking for
+    "stop telling me about music" looks here first.
+    """
+
+    class Meta:
+        model = User
+        fields = (
+            'notify_messages',
+            'notify_club_messages',
+            'notify_club_events',
+            'notify_social',
+            'notify_story_activity',
+            'music_zone_alerts',
+        )
+
+
 class ZoneUpdateSerializer(serializers.ModelSerializer):
     zone_audio_url = serializers.SerializerMethodField()
     # Written by id, read back in full, so the client that just set a region

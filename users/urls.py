@@ -1,7 +1,8 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .views import (
-    RegisterView, LogoutView, ProfileView, PrivacySettingsView, PublicProfileView,
+    RegisterView, LogoutView, ProfileView, NotificationSettingsView,
+    PrivacySettingsView, PublicProfileView,
     ProfileLinksView, ProfileLinkDetailView, UserSearchView, ZoneView,
     DeleteAccountView, MeView, SocialLoginView, SocialLinkView, SafeTokenRefreshView,
     AppleMusicSearchView, AppleMusicStatusView, ZoneAppleMusicView,
@@ -17,6 +18,8 @@ urlpatterns = [
     path('me/', MeView.as_view(), name='me'),
     path('profile/', ProfileView.as_view(), name='profile'),
     path('privacy/', PrivacySettingsView.as_view(), name='privacy'),
+    path('notification-settings/', NotificationSettingsView.as_view(),
+         name='notification-settings'),
     path('links/', ProfileLinksView.as_view(), name='profile-links'),
     path('links/<int:link_id>/', ProfileLinkDetailView.as_view(), name='profile-link-detail'),
     path('zone/apple-music/status/', AppleMusicStatusView.as_view(), name='apple-music-status'),

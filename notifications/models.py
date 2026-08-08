@@ -12,6 +12,15 @@ class Notification(models.Model):
         # not news and the client drops those on arrival, but a track you can
         # only hear while you are standing here expires when you walk away.
         ZONE_MUSIC = 'zone_music', 'Zone Music'
+        # Club activity. Chat itself is deliberately absent: a club message
+        # pushes to the phone but writes no row, because the club's own chat is
+        # already the list of club messages and a second copy in the alerts
+        # feed would bury everything else in it. The three below have no other
+        # home — a meetup proposed while you were away, the verdict on one you
+        # proposed, and being added to a club you never asked to join.
+        CLUB_EVENT = 'club_event', 'Club Event'
+        CLUB_EVENT_STATUS = 'club_event_status', 'Club Event Decision'
+        CLUB_INVITE = 'club_invite', 'Club Invite'
 
     recipient = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -32,6 +41,23 @@ class Notification(models.Model):
     # pointing at nothing.
     story = models.ForeignKey(
         'stories.Story',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='notifications',
+    )
+    # What the notification is about, when that is a club or a meetup. Same job
+    # `story` does above and the same cascade: deleting a club or an event
+    # takes its alerts with it rather than leaving rows that open nothing.
+    club = models.ForeignKey(
+        'clubs.Club',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='notifications',
+    )
+    event = models.ForeignKey(
+        'clubs.ClubEvent',
         on_delete=models.CASCADE,
         null=True,
         blank=True,

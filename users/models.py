@@ -299,6 +299,26 @@ class User(AbstractUser):
 
     push_token = models.CharField(max_length=200, blank=True, null=True)
 
+    # ── What is worth a buzz ──────────────────────────────────────────────
+    # One switch per kind of news, all defaulting True: these were added after
+    # the app already pushed for messages and Hi requests, and a default of
+    # False would have silently turned that off for everyone who upgraded.
+    #
+    # These are *not* a substitute for the OS permission. Notifications can be
+    # switched off at the system level, in which case none of this is
+    # reachable — see Settings → Permissions. These decide what to send to
+    # someone who has already agreed to be reachable at all.
+    #
+    # notifications.push.CATEGORIES maps each category to the field that gates
+    # it; a field added here and not there gates nothing.
+    notify_messages = models.BooleanField(default=True)
+    notify_club_messages = models.BooleanField(default=True)
+    notify_club_events = models.BooleanField(default=True)
+    #: Hi requests, friend requests, and the acceptances of both.
+    notify_social = models.BooleanField(default=True)
+    #: Reactions and replies to your own stories.
+    notify_story_activity = models.BooleanField(default=True)
+
     # ── Presence ──────────────────────────────────────────────────────────────
     # Deliberately *not* `updated_at`. That field is auto_now, so it moves on
     # any save at all — a profile edit, a privacy change — and it never moves

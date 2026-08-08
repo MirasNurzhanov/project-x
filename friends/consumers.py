@@ -125,10 +125,21 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _save_message(self, content):
+        from notifications.utils import notify_direct_message
         from .models import Message
         message = Message.objects.create(
             sender=self.user,
             receiver=self.other,
             content=content,
         )
+        # The socket is the path the app actually sends on — the REST endpoint
+        # is only a fallback and the route photos take. Pushing from there
+        # alone meant a typed message reached nobody who did not already have
+        # the conversation open. Runs here, inside the same thread-pool hop
+        # that saved the row, because the Expo call is off-thread regardless
+        # and the block lookup it does needs the database.
+        try:
+            notify_direct_message(self.user, self.other, content)
+        except Exception as exc:  # noqa: BLE001 — never drop a delivered message
+            print(f'[Push] dm alert failed: {exc}')
         return message

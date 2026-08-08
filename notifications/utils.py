@@ -1,36 +1,22 @@
-import threading
-
-import requests
+from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
 from datetime import timedelta
+
 from .models import Notification
+from .push import EXPO_PUSH_URL, push_to_user, push_to_users  # noqa: F401
 
 NEARBY_COOLDOWN_MINUTES = 60
-EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send'
 
 
-def send_push_notification(user, title, message):
-    """Fire-and-forget push. The Expo call runs in a daemon thread: it is a
-    network round trip with a 5s timeout, and several request cycles (DM
-    send, every location report via nearby-match alerts) were paying for it
-    synchronously before responding."""
-    token = user.push_token
-    if not token:
-        return
+def send_push_notification(user, title, message, *, data=None, category='default'):
+    """Fire-and-forget push to one person.
 
-    def _send():
-        try:
-            requests.post(
-                EXPO_PUSH_URL,
-                json={'to': token, 'title': title, 'body': message},
-                headers={'Content-Type': 'application/json'},
-                timeout=5,
-            )
-        except requests.RequestException:
-            pass
-
-    threading.Thread(target=_send, daemon=True).start()
+    The transport moved to `notifications.push`; this stays because three
+    call sites import it by this name, and because "push one person" is
+    still the common case. `data` is the deep link — see push.push_to_users.
+    """
+    push_to_user(user, title, message, data=data, category=category)
 
 
 REACTION_VERB = {
@@ -63,7 +49,16 @@ def _story_alert(recipient, sender, story, notification_type, message, push_titl
         message=message,
     )
     try:
-        send_push_notification(recipient, push_title, message)
+        send_push_notification(
+            recipient, push_title, message,
+            data={
+                'type': 'story',
+                'story_id': story.pk if story else None,
+                'user_id': sender.pk,
+                'username': sender.username,
+            },
+            category='story',
+        )
     except Exception as exc:  # noqa: BLE001 — push is never worth a 500
         print(f'[Push] story alert failed: {exc}')
     return notification
@@ -150,7 +145,11 @@ def _zone_music_alert(recipient, sender, message, push_title):
         message=message,
     )
     try:
-        send_push_notification(recipient, push_title, message)
+        send_push_notification(
+            recipient, push_title, message,
+            data={'type': 'profile', 'user_id': sender.pk, 'username': sender.username},
+            category='zone_music',
+        )
     except Exception as exc:  # noqa: BLE001 — push is never worth a 500
         print(f'[Push] zone music alert failed: {exc}')
     return notification
@@ -281,3 +280,255 @@ def notify_nearby_match(user, nearby_user, distance_km: float):
     list, and because it is the shape the tests describe the rule in.
     """
     notify_nearby_matches(user, [(nearby_user, distance_km)])
+
+
+# ── Conversations ─────────────────────────────────────────────────────────────
+# Messages push but write no Notification row. The inbox and the club's own
+# chat are already the durable list of who said what; a row per message would
+# make the alerts feed a worse copy of both and drown the story and meetup
+# alerts that have nowhere else to appear.
+#
+# What a row *would* have given for free is a cooldown, since it can be asked
+# "have these two had one of these lately". Without rows that question goes to
+# the cache, which is the better place for it anyway: an answer that expires on
+# its own and never grows the table.
+
+#: A conversation is one piece of news, not one per line typed. Somebody typing
+#: five short messages in a row is the normal way people write, and it has to
+#: arrive as one buzz rather than five.
+DM_COOLDOWN_SECONDS = 60
+
+#: Longer for clubs, because a club is many people talking at once and each of
+#: them would otherwise be a separate reason to buzz every other member.
+CLUB_COOLDOWN_SECONDS = 5 * 60
+
+
+def _cooldown_passed(key: str, seconds: int) -> bool:
+    """True the first time this key is seen in `seconds`, False after.
+
+    `cache.add` only sets when the key is absent and reports whether it did, so
+    the check and the claim are one atomic operation — two web workers handling
+    two messages in the same instant cannot both decide they are first.
+
+    Fails *open*: if the cache is unreachable, `add` raises and the caller
+    should still push. A missed notification is the worse failure here.
+    """
+    try:
+        return bool(cache.add(key, 1, timeout=seconds))
+    except Exception as exc:  # noqa: BLE001 — a dead cache must not mute the app
+        print(f'[Push] cooldown check failed, sending anyway: {exc}')
+        return True
+
+
+def _preview(text: str, image=None, limit: int = 120) -> str:
+    """What a message looks like on a lock screen."""
+    body = (text or '').strip()
+    if body:
+        return body if len(body) <= limit else body[:limit].rstrip() + '…'
+    return '📷 Photo' if image else 'Sent a message'
+
+
+def notify_direct_message(sender, recipient, content='', *, image=None):
+    """`sender` sent `recipient` a DM.
+
+    Called from both paths a message can arrive on — the socket, which is what
+    the app actually uses, and the REST endpoint it falls back to and sends
+    photos through. It was wired to the REST path alone, which is why a typed
+    message notified nobody: the consumer saved it and broadcast it to whoever
+    already had the conversation open, and a phone in a pocket learned nothing.
+
+    Silent when the recipient is the sender, has blocked them, or has already
+    been told about this conversation in the last minute.
+    """
+    from users.visibility import blocked_ids_for
+
+    if recipient.pk == sender.pk:
+        return False
+    if sender.pk in blocked_ids_for(recipient):
+        return False
+    if not _cooldown_passed(f'push:dm:{recipient.pk}:{sender.pk}', DM_COOLDOWN_SECONDS):
+        return False
+
+    send_push_notification(
+        recipient,
+        f'💬 {sender.username}',
+        _preview(content, image),
+        data={'type': 'message', 'user_id': sender.pk, 'username': sender.username},
+        category='message',
+    )
+    return True
+
+
+def notify_club_message(club, sender, content='', *, image=None):
+    """Someone posted in `club`. Everyone else in it hears about it once.
+
+    One Expo request for the whole club rather than one per member, and one
+    cooldown per *recipient* per club — so a member being caught up on by six
+    people gets one notification, and a member who muted club chat gets none.
+    The sender is never a recipient of their own message.
+    """
+    from users.models import User
+
+    # Only members who could actually receive one: no token, no message, and
+    # the query need not walk the rest of the club to find that out.
+    # `notify_club_messages` is re-checked inside push_to_users, but filtering
+    # here also keeps cooldown keys from being claimed by people who are opted
+    # out — otherwise turning the setting back on would be silent for a while.
+    recipients = list(
+        User.objects
+        .filter(club_memberships__club=club, notify_club_messages=True)
+        .exclude(pk=sender.pk)
+        .exclude(push_token__isnull=True)
+        .exclude(push_token='')
+        # Someone who blocked the sender does not want their club chatter
+        # either. Symmetric, like every other block check in the app.
+        .exclude(blocked_by__blocker=sender)
+        .exclude(blocking__blocked=sender)
+        .only('pk', 'push_token', 'notify_club_messages')
+    )
+    fresh = [
+        user for user in recipients
+        if _cooldown_passed(f'push:club:{user.pk}:{club.pk}', CLUB_COOLDOWN_SECONDS)
+    ]
+    if not fresh:
+        return 0
+
+    return push_to_users(
+        fresh,
+        f'💬 {club.name}',
+        f'{sender.username}: {_preview(content, image)}',
+        data={'type': 'club_message', 'club_id': club.pk, 'club_name': club.name},
+        category='club_message',
+    )
+
+
+# ── Meetups ───────────────────────────────────────────────────────────────────
+# These do write rows. A meetup proposed on Tuesday for Saturday is exactly the
+# thing someone needs to find again after the push has been swiped away, and
+# unlike a message it appears nowhere else in the app.
+
+def _club_alert(recipients, notification_type, message, *, sender, club,
+                event=None, push_title, category, data):
+    """Write one alert each, then push them all in a single Expo request."""
+    sender_pk = sender.pk if sender else None
+    recipients = [user for user in recipients if user.pk != sender_pk]
+    if not recipients:
+        return []
+
+    created = Notification.objects.bulk_create([
+        Notification(
+            recipient=user,
+            sender=sender,
+            club=club,
+            event=event,
+            notification_type=notification_type,
+            message=message,
+        )
+        for user in recipients
+    ])
+    try:
+        push_to_users(recipients, push_title, message, data=data, category=category)
+    except Exception as exc:  # noqa: BLE001 — push is never worth a 500
+        print(f'[Push] club alert failed: {exc}')
+    return created
+
+
+def notify_club_event_created(event):
+    """A meetup was proposed in a club. Every other member is told.
+
+    Told at proposal rather than only at approval on purpose: a proposal nobody
+    sees is one nobody turns up to, and the owner who has to approve it is the
+    person most in need of knowing it exists.
+    """
+    from users.models import User
+
+    club = event.club
+    members = list(
+        User.objects
+        .filter(club_memberships__club=club)
+        .exclude(pk=event.created_by_id)
+        .exclude(blocked_by__blocker=event.created_by)
+        .exclude(blocking__blocked=event.created_by)
+        .only('pk', 'push_token', 'notify_club_events')
+    )
+    return _club_alert(
+        members,
+        Notification.Type.CLUB_EVENT,
+        f'@{event.created_by.username} proposed "{event.title}" in {club.name}',
+        sender=event.created_by,
+        club=club,
+        event=event,
+        push_title=f'📅 New meetup in {club.name}',
+        category='club_event',
+        data={
+            'type': 'club_event',
+            'club_id': club.pk,
+            'event_id': event.pk,
+            'club_name': club.name,
+        },
+    )
+
+
+def notify_club_event_decided(event, decided_by, approved: bool):
+    """An owner approved or rejected a meetup.
+
+    On approval the whole club hears — the event is real now and on the map,
+    which is news to everyone who might go. On rejection only the person who
+    proposed it does; a meetup that will not happen is not news to the club,
+    and announcing every refusal to everybody would make proposing one costly.
+    """
+    from users.models import User
+
+    club = event.club
+    if approved:
+        recipients = list(
+            User.objects
+            .filter(club_memberships__club=club)
+            .exclude(pk=decided_by.pk)
+            .only('pk', 'push_token', 'notify_club_events')
+        )
+        message = f'"{event.title}" is happening in {club.name}'
+        push_title = f'✅ Meetup confirmed — {club.name}'
+    else:
+        # An owner rejecting their own proposal already knows the outcome.
+        if event.created_by_id == decided_by.pk:
+            return []
+        recipients = [event.created_by]
+        message = f'Your meetup "{event.title}" was not approved in {club.name}'
+        push_title = f'Meetup declined — {club.name}'
+
+    return _club_alert(
+        recipients,
+        Notification.Type.CLUB_EVENT_STATUS,
+        message,
+        sender=decided_by,
+        club=club,
+        event=event,
+        push_title=push_title,
+        category='club_event',
+        data={
+            'type': 'club_event',
+            'club_id': club.pk,
+            'event_id': event.pk,
+            'club_name': club.name,
+        },
+    )
+
+
+def notify_club_invite(club, invited_by, member):
+    """`member` was added to `club` by an owner.
+
+    An invitation here is not a request — the owner adds people directly, so
+    this is the first the invitee hears of it. Without it they are a member of
+    something they have never heard of.
+    """
+    return _club_alert(
+        [member],
+        Notification.Type.CLUB_INVITE,
+        f'@{invited_by.username} added you to {club.name}',
+        sender=invited_by,
+        club=club,
+        push_title='👥 Added to a club',
+        category='club_event',
+        data={'type': 'club', 'club_id': club.pk, 'club_name': club.name},
+    )

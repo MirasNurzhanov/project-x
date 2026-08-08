@@ -84,13 +84,24 @@ class ClubChatConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _save_message(self, content, message_type):
+        from notifications.utils import notify_club_message
         from .models import ClubMessage
-        return ClubMessage.objects.create(
+        message = ClubMessage.objects.create(
             club_id=self.club_id,
             sender=self.user,
             content=content,
             message_type=message_type,
         )
+        # Same reason as the DM socket: this is the path the app sends on, so
+        # without this a club could hold an entire conversation that no member
+        # with the app closed ever heard about. `notify_club_message` owns the
+        # per-member cooldown that stops a busy club buzzing everyone's phone
+        # on every line.
+        try:
+            notify_club_message(message.club, self.user, content)
+        except Exception as exc:  # noqa: BLE001 — never drop a delivered message
+            print(f'[Push] club message alert failed: {exc}')
+        return message
 
     @database_sync_to_async
     def _serialize_message(self, message_pk):

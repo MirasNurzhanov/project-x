@@ -14,7 +14,8 @@ from . import applemusic, socialauth, visibility
 from .links import LinkError, MAX_LINKS_PER_USER, normalize_link
 from .serializers import (
     RegisterSerializer, UserProfileSerializer, EditProfileSerializer,
-    PublicProfileSerializer, PrivacySettingsSerializer, ProfileLinkSerializer,
+    NotificationSettingsSerializer, PublicProfileSerializer,
+    PrivacySettingsSerializer, ProfileLinkSerializer,
     UserSearchSerializer, ZoneUpdateSerializer, serialize_links,
 )
 from .models import ProfileLink, User
@@ -198,6 +199,30 @@ class PublicProfileView(APIView):
         return Response(
             PublicProfileSerializer(target, context={'request': request}).data
         )
+
+
+class NotificationSettingsView(APIView):
+    """Read and write which kinds of notification this user wants.
+
+    Deliberately separate from the OS permission, which the app manages
+    through Settings → Permissions. This says what to send to someone who has
+    already agreed to be reachable; that says whether anything may reach them
+    at all. Turning everything off here is not the same as revoking the
+    permission, and a user who does the latter still keeps these choices for
+    when they change their mind.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response(NotificationSettingsSerializer(request.user).data)
+
+    def patch(self, request):
+        serializer = NotificationSettingsSerializer(
+            request.user, data=request.data, partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
 
 class PrivacySettingsView(APIView):
