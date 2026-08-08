@@ -565,13 +565,28 @@ class EditProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('bio', 'profile_picture', 'date_of_birth', 'nationality', 'profession', 'interests', 'push_token')
+        fields = (
+            'username', 'bio', 'profile_picture', 'date_of_birth',
+            'nationality', 'profession', 'interests', 'push_token',
+        )
 
     # This is the route a Google/Apple sign-up takes to state its date of birth
     # for the first time, so the age floor has to hold here and not only at
     # registration — otherwise the social buttons are a way around it.
     def validate_date_of_birth(self, value):
         return validate_min_age(value)
+
+    def validate_username(self, value):
+        # The model's own uniqueness (via ModelSerializer's auto UniqueValidator)
+        # is case-sensitive; everywhere a username is actually matched —
+        # socialauth's _unique_username, sign-in by handle — it is not. Without
+        # this, renaming to a handle that differs from someone else's only by
+        # case would pass here and then collide there: two accounts nobody
+        # could tell apart by name.
+        taken = User.objects.filter(username__iexact=value).exclude(pk=self.instance.pk)
+        if taken.exists():
+            raise serializers.ValidationError('That username is already taken.')
+        return value
 
     def update(self, instance, validated_data):
         interests = validated_data.pop('interests', None)
