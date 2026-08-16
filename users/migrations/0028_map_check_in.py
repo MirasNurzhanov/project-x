@@ -14,17 +14,11 @@ class Migration(migrations.Migration):
     recreate the automatic check-in this whole change exists to remove.
     """
 
-
     dependencies = [
         ('users', '0027_user_notify_club_events_user_notify_club_messages_and_more'),
     ]
 
     operations = [
-        migrations.AddField(
-            model_name='user',
-            name='check_in_expires_at',
-            field=models.DateTimeField(blank=True, db_index=True, null=True),
-        ),
         migrations.AddField(
             model_name='user',
             name='checked_in_at',

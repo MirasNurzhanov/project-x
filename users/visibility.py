@@ -110,30 +110,26 @@ def is_approved_viewer(rel):
 
 
 # ─── Map check-in ─────────────────────────────────────────────────────────────
-# Being on the map is an act, not a setting. `User.is_checked_in` says whether
-# somebody performed it and `check_in_expires_at` says until when; nothing else
-# — not an OS permission, not a location report, not having the app open — puts
-# a person on another user's screen.
+# Being on the map is an act, not a setting. `User.is_checked_in` records that
+# somebody performed it; nothing else — not an OS permission, not a location
+# report, not having the app open — puts a person on another user's screen.
+#
+# It stays on until they turn it off, across app launches and reboots. The
+# consent screen that precedes it says so; see users/models.py.
 #
 # Two shapes of the same rule, because list endpoints have to filter in the
 # database and per-row callers cannot. `User.is_on_map` is the Python half.
 
 
 def checked_in_q(prefix=None, now=None):
-    """Q selecting rows whose owner is checked in and not yet lapsed.
+    """Q selecting rows whose owner is on the map.
 
     `prefix` is the path from the row to the user, for tables that point at one
-    (`'user'`, `'author'`); None when filtering users directly.
-
-    Expiry is compared here rather than swept by a job on purpose: a check-in
-    that has run out stops publishing at the moment it runs out, on every
-    endpoint at once, with nothing to fall over.
+    (`'user'`, `'author'`); None when filtering users directly. `now` is
+    accepted and unused, matching `User.is_on_map` — see the note there.
     """
     base = '' if prefix is None else f'{prefix}__'
-    return Q(**{
-        f'{base}is_checked_in': True,
-        f'{base}check_in_expires_at__gt': now or timezone.now(),
-    })
+    return Q(**{f'{base}is_checked_in': True})
 
 
 # ─── Queryset filter ──────────────────────────────────────────────────────────

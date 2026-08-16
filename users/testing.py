@@ -12,16 +12,13 @@ make the one property App Review cares about invisible to the suite. The tests
 that assert the default is off build their users without this — see
 proximity/test_check_in.py.
 """
-from users.models import User
 
 
-def check_in(user, minutes=None):
+def check_in(user):
     """Put `user` on the map, exactly as the endpoint would.
 
     Goes through `User.apply_check_in` rather than setting the columns, so a
     change to what a check-in means reaches every fixture that uses this.
     """
-    user.save(update_fields=user.apply_check_in(
-        minutes if minutes is not None else User.CHECK_IN_DEFAULT_MINUTES,
-    ))
+    user.save(update_fields=user.apply_check_in())
     return user

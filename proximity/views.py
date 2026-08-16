@@ -303,9 +303,8 @@ class UpdateLocationView(APIView):
     """Where the phone says it is.
 
     Reporting a position is not checking in and never becomes one: this view
-    does not touch `is_checked_in`, `checked_in_at` or `check_in_expires_at`,
-    so no amount of a phone sitting there reporting can put its owner on the
-    map or keep them there. That separation is the whole of the fix for
+    does not touch `is_checked_in` or `checked_in_at`, so no amount of a phone
+    sitting there reporting can put its owner on the map. That separation is the whole of the fix for
     5.1.2(i) — the position is stored as the anchor for the owner's *own*
     queries ("who is near me", which district am I in), and `visible_users`
     decides whether anybody else ever sees it.
@@ -363,19 +362,17 @@ class UpdateLocationView(APIView):
 class MapCheckInView(APIView):
     """The one way onto other people's maps, and the one way off.
 
-    GET    — the current state, effective rather than stored: a check-in that
-             has lapsed reads as checked out, so the client never has to
-             compare timestamps itself.
-    POST   — check in for a bounded time, from a position supplied in the same
-             request.
-    DELETE — check out now.
+    GET    — whether you are on the map, and since when.
+    POST   — go on the map, from a position supplied in the same request.
+    DELETE — come off it now.
 
-    Nothing else in the codebase sets `is_checked_in`. That is the point: there
-    is exactly one entry point, it is reached only by an authenticated request
-    the user's own tap produced, and it takes a duration with an end on it.
-    There is no renewal endpoint, no "keep me visible" preference, and the
-    location reporter below deliberately does not touch these fields — so a
-    phone left running cannot extend a check-in, and neither can we.
+    Nothing else in the codebase sets `is_checked_in`. That is the point, and
+    it carries more weight now that a check-in does not expire: the flag can
+    only move because somebody pressed something, so the consent screen in
+    front of the POST is the whole of what the user agreed to and the DELETE is
+    the whole of how they take it back. The location reporter below
+    deliberately does not touch these fields — a phone left running cannot put
+    its owner on the map.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -387,10 +384,6 @@ class MapCheckInView(APIView):
         serializer = CheckInSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = request.user
-
-        minutes = serializer.validated_data.get(
-            'duration_minutes', User.CHECK_IN_DEFAULT_MINUTES,
-        )
 
         # Paused is a standing "do not put me on the map"; checking in over the
         # top of it would be the app overruling a setting the user last touched
@@ -420,7 +413,7 @@ class MapCheckInView(APIView):
             float(accuracy) if accuracy is not None and accuracy >= 0 else None
         )
 
-        fields = user.apply_check_in(minutes) + [
+        fields = user.apply_check_in() + [
             'latitude', 'longitude', 'location_updated_at', 'location_accuracy_m',
             'updated_at',
         ]
@@ -432,8 +425,9 @@ class MapCheckInView(APIView):
         """Leave the map immediately.
 
         Idempotent, and never an error: someone tapping "check out" twice, or
-        tapping it after their time ran out, wants the same outcome both times
-        and should not be shown a failure for asking.
+        from two screens at once, wants the same outcome both times and should
+        not be shown a failure for asking. This is the only way off the map, so
+        it has to succeed whatever state it finds.
         """
         user = request.user
         user.save(update_fields=user.apply_check_out() + ['updated_at'])

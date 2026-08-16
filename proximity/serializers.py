@@ -36,7 +36,7 @@ class LocationUpdateSerializer(serializers.Serializer):
 
 
 class CheckInSerializer(serializers.Serializer):
-    """A manual check-in: a position, and how long it stands for.
+    """A manual check-in: where the user is standing when they press it.
 
     The coordinates are required and are not optional sugar. A check-in is an
     act performed *somewhere*, and demanding the fix in the same request means
@@ -44,9 +44,9 @@ class CheckInSerializer(serializers.Serializer):
     just agreed to publish — including no path a future caller could reach by
     accident.
 
-    `duration_minutes` is validated against a closed set rather than a range,
-    so the longest a client can ask to be visible for is a value that appears
-    in `User.CHECK_IN_DURATION_CHOICES_M` and nowhere else.
+    There is no duration field. A check-in runs until the user checks out, and
+    a client able to ask for something else would be able to make a promise the
+    consent screen in front of it did not make.
     """
 
     latitude = serializers.DecimalField(
@@ -56,13 +56,6 @@ class CheckInSerializer(serializers.Serializer):
         max_digits=11, decimal_places=8, min_value=-180, max_value=180
     )
     accuracy = serializers.FloatField(required=False, allow_null=True, min_value=-1)
-    duration_minutes = serializers.IntegerField(required=False)
-
-    def validate_duration_minutes(self, value):
-        if value not in User.CHECK_IN_DURATION_CHOICES_M:
-            allowed = ', '.join(str(m) for m in User.CHECK_IN_DURATION_CHOICES_M)
-            raise serializers.ValidationError(f'Must be one of: {allowed}.')
-        return value
 
 
 class _NearbyUserListSerializer(serializers.ListSerializer):

@@ -6,10 +6,7 @@ The cases below are the ways that could go wrong — a permission mistaken for
 consent, a default that leaks, a phone that renews itself, a side channel that
 publishes a position the map does not.
 """
-from datetime import timedelta
-
 from django.test import TestCase, TransactionTestCase
-from django.utils import timezone
 from rest_framework.test import APIClient
 
 from encounters.models import Encounter
@@ -25,11 +22,9 @@ def make_user(name, **extra):
     )
 
 
-def check_in(user, minutes=None):
+def check_in(user):
     """Put `user` on the map the way the endpoint would, for other tests."""
-    user.save(update_fields=user.apply_check_in(
-        minutes or User.CHECK_IN_DEFAULT_MINUTES,
-    ))
+    user.save(update_fields=user.apply_check_in())
     return user
 
 
@@ -39,7 +34,7 @@ class CheckInDefaultTests(TestCase):
     def test_new_account_is_not_checked_in(self):
         user = make_user('fresh')
         self.assertFalse(user.is_checked_in)
-        self.assertIsNone(user.check_in_expires_at)
+        self.assertIsNone(user.checked_in_at)
         self.assertFalse(user.is_on_map())
 
     def test_live_location_sharing_is_not_a_check_in(self):
@@ -93,12 +88,22 @@ class CheckInVisibilityTests(TestCase):
         check_in(self.other)
         self.assertIn(self.other.pk, self.ids())
 
-    def test_expired_check_in_is_absent_without_any_sweep(self):
-        """Nothing runs to expire a check-in; the read does it."""
+    def test_check_in_survives_until_it_is_taken_back(self):
+        """A check-in has no clock on it — only a check-out ends it.
+
+        The property the whole design now rests on, and the one most likely to
+        be broken by someone reintroducing an expiry: closing the app, locking
+        the phone and coming back days later must all leave you exactly as
+        visible as you were, because the flag lives on the row and not in a
+        session.
+        """
         check_in(self.other)
-        User.objects.filter(pk=self.other.pk).update(
-            check_in_expires_at=timezone.now() - timedelta(seconds=1),
-        )
+        self.assertIn(self.other.pk, self.ids())
+
+        # Nothing in between — no refresh, no report, no touch of any kind.
+        self.assertIn(self.other.pk, self.ids())
+
+        self.other.save(update_fields=self.other.apply_check_out())
         self.assertNotIn(self.other.pk, self.ids())
 
     def test_friendship_does_not_override_a_check_out(self):
@@ -170,7 +175,7 @@ class CheckInEndpointTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()['is_checked_in'])
-        self.assertGreater(response.json()['seconds_remaining'], 0)
+        self.assertIsNotNone(response.json()['checked_in_at'])
 
         self.me.refresh_from_db()
         self.assertTrue(self.me.is_on_map())
@@ -182,26 +187,22 @@ class CheckInEndpointTests(TestCase):
         self.me.refresh_from_db()
         self.assertFalse(self.me.is_checked_in)
 
-    def test_duration_is_a_closed_set(self):
-        response = self.client.post(
-            '/api/proximity/check-in/',
-            {'latitude': '1.0', 'longitude': '1.0', 'duration_minutes': 60 * 24 * 7},
-            format='json',
-        )
-        self.assertEqual(response.status_code, 400)
-        self.me.refresh_from_db()
-        self.assertFalse(self.me.is_checked_in)
+    def test_a_duration_cannot_be_asked_for(self):
+        """There is one kind of check-in, and the consent screen describes it.
 
-    def test_duration_is_honoured(self):
-        self.client.post(
+        A client sending `duration_minutes` is either an old build or a
+        modified one. Either way it gets the only check-in there is — an
+        indefinite one — rather than a quietly shorter promise the user was
+        never shown.
+        """
+        response = self.client.post(
             '/api/proximity/check-in/',
             {'latitude': '1.0', 'longitude': '1.0', 'duration_minutes': 15},
             format='json',
         )
+        self.assertEqual(response.status_code, 200)
         self.me.refresh_from_db()
-        remaining = self.me.check_in_expires_at - timezone.now()
-        self.assertLessEqual(remaining, timedelta(minutes=15))
-        self.assertGreater(remaining, timedelta(minutes=14))
+        self.assertTrue(self.me.is_on_map())
 
     def test_check_out_is_immediate_and_idempotent(self):
         self.client.post(
@@ -215,18 +216,35 @@ class CheckInEndpointTests(TestCase):
             self.assertFalse(response.json()['is_checked_in'])
         self.me.refresh_from_db()
         self.assertFalse(self.me.is_on_map())
-        self.assertIsNone(self.me.check_in_expires_at)
+        self.assertIsNone(self.me.checked_in_at)
 
-    def test_get_reports_the_effective_state(self):
-        check_in(self.me)
-        self.me.check_in_expires_at = timezone.now() - timedelta(seconds=1)
-        self.me.save(update_fields=['check_in_expires_at'])
+    def test_get_reports_the_state(self):
         response = self.client.get('/api/proximity/check-in/')
         self.assertEqual(response.status_code, 200)
-        # Stored True, lapsed, and therefore reported False — the client is
-        # never asked to do the timestamp comparison itself.
         self.assertFalse(response.json()['is_checked_in'])
-        self.assertEqual(response.json()['seconds_remaining'], 0)
+
+        check_in(self.me)
+        response = self.client.get('/api/proximity/check-in/')
+        self.assertTrue(response.json()['is_checked_in'])
+        self.assertIsNotNone(response.json()['checked_in_at'])
+
+    def test_checking_in_twice_does_not_stack_anything(self):
+        """Pressing it again is a no-op, not a second something.
+
+        Worth pinning now that there is no expiry: a second check-in has
+        nothing to extend, so the only thing it can do is move `checked_in_at`,
+        and it must not leave the user in a state a single check-out cannot
+        undo.
+        """
+        for _ in range(2):
+            self.client.post(
+                '/api/proximity/check-in/',
+                {'latitude': '1.0', 'longitude': '1.0'},
+                format='json',
+            )
+        self.client.delete('/api/proximity/check-in/')
+        self.me.refresh_from_db()
+        self.assertFalse(self.me.is_on_map())
 
     def test_paused_sharing_refuses_a_check_in(self):
         self.me.location_sharing = User.LocationSharing.PAUSED
@@ -241,7 +259,12 @@ class CheckInEndpointTests(TestCase):
         self.assertFalse(self.me.is_checked_in)
 
     def test_check_in_cannot_be_set_through_the_privacy_endpoint(self):
-        """No settings screen may switch this on — only the map does."""
+        """No settings screen may switch this on — only the map does.
+
+        The one that matters most under an indefinite check-in: a writable flag
+        on a settings payload is a standing "always share" preference, which is
+        the thing the guideline names outright.
+        """
         response = self.client.patch(
             '/api/users/privacy/', {'is_checked_in': True}, format='json',
         )
@@ -265,6 +288,7 @@ class PauseEndsVisibilityTests(TestCase):
 
         me.refresh_from_db()
         self.assertFalse(me.is_checked_in)
+        self.assertIsNone(me.checked_in_at)
         self.assertIsNone(me.latitude)
         self.assertIsNone(me.longitude)
 

@@ -68,7 +68,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'location_sharing', 'privacy_mode', 'date_joined', 'links',
             # Read-only here for the same reason as on the privacy payload:
             # /me reports whether you are on the map, it does not put you there.
-            'is_checked_in', 'check_in_expires_at',
+            'is_checked_in', 'checked_in_at',
             'is_private',
             'visibility_interests', 'visibility_stories', 'visibility_stats',
             'visibility_zone_audio', 'visibility_connections', 'visibility_presence',
@@ -81,7 +81,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
         # `location_sharing`, kept so app builds predating the split keep working.
         read_only_fields = (
             'id', 'email', 'age_tier', 'date_joined', 'privacy_mode',
-            'is_checked_in', 'check_in_expires_at',
+            'is_checked_in', 'checked_in_at',
         )
 
     def get_links(self, obj):
@@ -352,21 +352,11 @@ class PrivacySettingsSerializer(serializers.ModelSerializer):
     so there is one path off as well as one path on.
     """
 
-    #: Effective, not stored: a lapsed check-in reads False here.
-    is_checked_in = serializers.SerializerMethodField()
-    check_in_expires_at = serializers.SerializerMethodField()
-
-    def get_is_checked_in(self, obj):
-        return obj.is_on_map()
-
-    def get_check_in_expires_at(self, obj):
-        return obj.check_in_state()['check_in_expires_at']
-
     class Meta:
         model = User
         fields = (
             'is_checked_in',
-            'check_in_expires_at',
+            'checked_in_at',
             'location_sharing',
             'is_private',
             'visibility_interests',
@@ -379,6 +369,11 @@ class PrivacySettingsSerializer(serializers.ModelSerializer):
             'discoverable_by_username',
             'discoverable_by_interest',
         )
+        # Read-only, and that is enforcement rather than convention: this is
+        # the endpoint the settings screens PATCH, and a writable
+        # `is_checked_in` here would be precisely the standing "always share"
+        # switch that the check-in exists instead of.
+        read_only_fields = ('is_checked_in', 'checked_in_at')
 
 
 class NotificationSettingsSerializer(serializers.ModelSerializer):
