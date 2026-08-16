@@ -14,14 +14,19 @@ from rest_framework.test import APIClient
 
 from . import geometry, nominatim, resolver
 from .models import Region
+from users.testing import check_in
 
 User = get_user_model()
 
 
 def make_user(username='u'):
-    return User.objects.create_user(
+    # On the map by default. Users are checked *out* on creation now (see
+    # users.visibility), so a fixture for a test about anything else has to
+    # opt in or it measures the check-in gate instead of its own subject.
+    # proximity/test_check_in.py owns the assertions about the default.
+    return check_in(User.objects.create_user(
         username=username, email=f'{username}@e.com', password='pw',
-    )
+    ))
 
 
 @contextmanager

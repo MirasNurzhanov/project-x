@@ -29,13 +29,18 @@ from notifications.utils import (
     notify_club_message, notify_direct_message,
 )
 from users.models import User
+from users.testing import check_in
 
 
 def make_user(name, *, token='tok', **kwargs):
-    return User.objects.create_user(
+    # On the map by default. Users are checked *out* on creation now (see
+    # users.visibility), so a fixture for a test about anything else has to
+    # opt in or it measures the check-in gate instead of its own subject.
+    # proximity/test_check_in.py owns the assertions about the default.
+    return check_in(User.objects.create_user(
         username=name, email=f'{name}@example.com', password='pw',
         date_of_birth=date(1995, 1, 1), push_token=token, **kwargs
-    )
+    ))
 
 
 class PushTargetTestCase(TestCase):

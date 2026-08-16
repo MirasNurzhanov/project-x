@@ -264,6 +264,26 @@ class PrivacySettingsView(APIView):
             )
             user.save(update_fields=['latitude', 'longitude'])
 
+        # Pausing is the strongest statement on this screen — "I am not out
+        # there at all" — so it does three things rather than one. It ends any
+        # standing check-in, because a paused user must not still be counting
+        # down towards visible. It forgets the position already on file, which
+        # is the half that was missing: pausing used to stop new reports while
+        # leaving the last one sitting in the row. And it does both here, on
+        # the server, so a client that never gets the memo changes nothing.
+        if (
+            user.location_sharing != previous_sharing
+            and user.location_sharing == User.LocationSharing.PAUSED
+        ):
+            fields = user.apply_check_out()
+            user.latitude = None
+            user.longitude = None
+            user.location_updated_at = None
+            user.location_accuracy_m = None
+            user.save(update_fields=fields + [
+                'latitude', 'longitude', 'location_updated_at', 'location_accuracy_m',
+            ])
+
         payload = PrivacySettingsSerializer(user).data
         payload['privacy_mode'] = user.privacy_mode
         return Response(payload)

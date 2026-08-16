@@ -17,6 +17,7 @@ from friends.models import BlockedUser, FriendRequest, HiRequest
 from interests.models import Interest
 from regions.models import Region
 from users.models import User
+from users.testing import check_in
 
 
 VIEWER_LAT, VIEWER_LON = 0.1, 0.1
@@ -57,7 +58,10 @@ class ViewerZoneDiscoveryTests(TestCase):
             latitude=str(lat), longitude=str(lon), **extra,
         )
         u.interests.set([self.interest])
-        return u
+        # Checked in, because this file is about how far a *zone* reaches. The
+        # check-in gate is a separate question with its own suite; leaving it
+        # off here would make every case below pass for the wrong reason.
+        return check_in(u)
 
     def sees(self, viewer):
         """The ids `viewer` gets back from the discovery endpoint."""

@@ -109,6 +109,33 @@ def is_approved_viewer(rel):
     return rel in (SELF, FRIEND, CONNECTED)
 
 
+# ─── Map check-in ─────────────────────────────────────────────────────────────
+# Being on the map is an act, not a setting. `User.is_checked_in` says whether
+# somebody performed it and `check_in_expires_at` says until when; nothing else
+# — not an OS permission, not a location report, not having the app open — puts
+# a person on another user's screen.
+#
+# Two shapes of the same rule, because list endpoints have to filter in the
+# database and per-row callers cannot. `User.is_on_map` is the Python half.
+
+
+def checked_in_q(prefix=None, now=None):
+    """Q selecting rows whose owner is checked in and not yet lapsed.
+
+    `prefix` is the path from the row to the user, for tables that point at one
+    (`'user'`, `'author'`); None when filtering users directly.
+
+    Expiry is compared here rather than swept by a job on purpose: a check-in
+    that has run out stops publishing at the moment it runs out, on every
+    endpoint at once, with nothing to fall over.
+    """
+    base = '' if prefix is None else f'{prefix}__'
+    return Q(**{
+        f'{base}is_checked_in': True,
+        f'{base}check_in_expires_at__gt': now or timezone.now(),
+    })
+
+
 # ─── Queryset filter ──────────────────────────────────────────────────────────
 def visible_users(viewer, queryset=None, *, exclude_self=True,
                   on_map=False, discoverable_by=None):
@@ -117,9 +144,16 @@ def visible_users(viewer, queryset=None, *, exclude_self=True,
     Always drops both directions of a block. The keyword flags add the
     surface-specific rules:
 
-    on_map          — drop anyone who paused location sharing (proximity only)
+    on_map          — drop anyone not currently checked in, and anyone who
+                      paused location sharing (proximity surfaces only)
     discoverable_by — 'username' or 'interest'; drop anyone opted out of that
                       search surface
+
+    `on_map` is the gate App Review asked for, and it is deliberately the same
+    keyword the map endpoints already passed: every surface that publishes a
+    position was routed through here before the check-in existed, so adding the
+    condition in one place covered all of them at once and no new endpoint can
+    reach a position without opting into the rule.
     """
     from .models import User
 
@@ -128,6 +162,9 @@ def visible_users(viewer, queryset=None, *, exclude_self=True,
     if exclude_self:
         qs = qs.exclude(pk=viewer.pk)
     if on_map:
+        # Check-in first: it is the consent, and it is not implied by anything
+        # else here. Someone sharing Live who never checked in is off the map.
+        qs = qs.filter(checked_in_q())
         qs = qs.exclude(location_sharing=User.LocationSharing.PAUSED)
     if discoverable_by == 'username':
         qs = qs.filter(discoverable_by_username=True)
@@ -241,6 +278,11 @@ def can_surface_in_proximity(viewer, target, rel=None):
         rel = relationship(viewer, target)
     if rel == BLOCKED:
         return False
+    # "Someone is near you" is a publication of where `target` is standing, so
+    # it needs the same consent the map dot does. Applied per direction by the
+    # callers, which ask this twice with the pair swapped.
+    if not target.is_on_map():
+        return False
     if target.location_sharing == User.LocationSharing.PAUSED:
         return False
     if rel in (SELF, FRIEND, CONNECTED):
@@ -269,6 +311,16 @@ def proximity_visible_ids(viewer, candidate_ids):
         if rel in (FRIEND, CONNECTED) or discoverable:
             allowed.add(pk)
     return allowed
+
+
+# Deliberately *not* gated on the live check-in, unlike everything above it.
+# These lists are history — the encounter log, and who sent you an alert — and
+# the rows in them were only ever written while the other person was checked in
+# (see proximity.views, which will not record an encounter otherwise). Retracting
+# a past, consented publication because someone has since checked out would empty
+# both screens every time a friend closed the app, which is a different promise
+# from the one the check-in makes. Blocking and opting out still apply on read,
+# because those *are* directed retractions.
 
 
 def minimal_only(viewer, target, rel=None):

@@ -66,6 +66,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'date_of_birth', 'age_tier', 'nationality', 'profession', 'interests',
             'latitude', 'longitude',
             'location_sharing', 'privacy_mode', 'date_joined', 'links',
+            # Read-only here for the same reason as on the privacy payload:
+            # /me reports whether you are on the map, it does not put you there.
+            'is_checked_in', 'check_in_expires_at',
             'is_private',
             'visibility_interests', 'visibility_stories', 'visibility_stats',
             'visibility_zone_audio', 'visibility_connections', 'visibility_presence',
@@ -76,7 +79,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
         )
         # `privacy_mode` is the legacy active/ghost/invisible view of
         # `location_sharing`, kept so app builds predating the split keep working.
-        read_only_fields = ('id', 'email', 'age_tier', 'date_joined', 'privacy_mode')
+        read_only_fields = (
+            'id', 'email', 'age_tier', 'date_joined', 'privacy_mode',
+            'is_checked_in', 'check_in_expires_at',
+        )
 
     def get_links(self, obj):
         # Your own profile always shows your own links.
@@ -335,11 +341,32 @@ def serialize_links(user):
 
 class PrivacySettingsSerializer(serializers.ModelSerializer):
     """Everything on the Privacy & safety screen, read and written as one
-    object so the client never has to guess which endpoint owns a setting."""
+    object so the client never has to guess which endpoint owns a setting.
+
+    `is_checked_in` appears here and is *read-only*, which is the whole reason
+    it appears at all: the Privacy screen has to be able to say whether you are
+    currently on the map, and it must not be a switch you can flip from a
+    settings list. Going on the map is a deliberate act performed on the map —
+    see proximity.views.MapCheckInView, the only writer. Checking *out* is
+    always allowed from anywhere, but it goes through that view's DELETE too,
+    so there is one path off as well as one path on.
+    """
+
+    #: Effective, not stored: a lapsed check-in reads False here.
+    is_checked_in = serializers.SerializerMethodField()
+    check_in_expires_at = serializers.SerializerMethodField()
+
+    def get_is_checked_in(self, obj):
+        return obj.is_on_map()
+
+    def get_check_in_expires_at(self, obj):
+        return obj.check_in_state()['check_in_expires_at']
 
     class Meta:
         model = User
         fields = (
+            'is_checked_in',
+            'check_in_expires_at',
             'location_sharing',
             'is_private',
             'visibility_interests',

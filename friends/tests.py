@@ -10,6 +10,7 @@ from rest_framework.test import APITestCase
 
 from stories.models import Story
 from users.models import User
+from users.testing import check_in
 from .models import BlockedUser, FriendRequest, HiRequest, Message
 
 # ~100m apart — inside every visibility radius.
@@ -24,7 +25,11 @@ def make_user(name, lat, lon):
     user.latitude = lat
     user.longitude = lon
     user.save(update_fields=['latitude', 'longitude'])
-    return user
+    # On the map by default. Users are checked *out* on creation now (see
+    # users.visibility), so a fixture for a test about anything else has to
+    # opt in or it measures the check-in gate instead of its own subject.
+    # proximity/test_check_in.py owns the assertions about the default.
+    return check_in(user)
 
 
 class BlockTestCase(APITestCase):

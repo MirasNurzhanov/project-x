@@ -167,8 +167,14 @@ class LocationConsumer(AsyncWebsocketConsumer):
                 nearby.append(entry_for(candidate, dist))
                 seen.add(candidate.pk)
 
+        # Same two rules as UpdateLocationView, and here for the same reason
+        # the fuzzing is: the socket is not a side door. `notify_nearby_matches`
+        # gates each direction on the sender's own check-in; the encounter row
+        # is symmetric, so it additionally needs this user to be on the map —
+        # the candidates already are, by `visible_users(on_map=True)` above.
         notify_nearby_matches(user, matches)
-        record_encounters(user, matches)
+        if user.is_on_map():
+            record_encounters(user, matches)
 
         nearby.sort(key=lambda u: (u['distance_km'] is None, u['distance_km'] or 0))
         return nearby

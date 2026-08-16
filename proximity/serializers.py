@@ -5,6 +5,16 @@ from users.models import User
 from interests.serializers import InterestSerializer
 
 
+class CheckedOutUser(Exception):
+    """Raised when a row reaches NearbyUserSerializer without a live check-in.
+
+    Never expected — the querysets filter on it — so it is a bug signal rather
+    than control flow. It is caught one level up and the row is dropped, which
+    fails closed: the person stays off the map, and the rest of the map still
+    draws.
+    """
+
+
 class LocationUpdateSerializer(serializers.Serializer):
     latitude = serializers.DecimalField(
         max_digits=11, decimal_places=8, min_value=-90, max_value=90
@@ -23,6 +33,53 @@ class LocationUpdateSerializer(serializers.Serializer):
     #: with a two-kilometre radius cannot place anyone in a district.
     #: expo-location reports -1 when it has no estimate.
     accuracy = serializers.FloatField(required=False, allow_null=True, min_value=-1)
+
+
+class CheckInSerializer(serializers.Serializer):
+    """A manual check-in: a position, and how long it stands for.
+
+    The coordinates are required and are not optional sugar. A check-in is an
+    act performed *somewhere*, and demanding the fix in the same request means
+    there is no code path that can flip the flag without a position the user
+    just agreed to publish — including no path a future caller could reach by
+    accident.
+
+    `duration_minutes` is validated against a closed set rather than a range,
+    so the longest a client can ask to be visible for is a value that appears
+    in `User.CHECK_IN_DURATION_CHOICES_M` and nowhere else.
+    """
+
+    latitude = serializers.DecimalField(
+        max_digits=11, decimal_places=8, min_value=-90, max_value=90
+    )
+    longitude = serializers.DecimalField(
+        max_digits=11, decimal_places=8, min_value=-180, max_value=180
+    )
+    accuracy = serializers.FloatField(required=False, allow_null=True, min_value=-1)
+    duration_minutes = serializers.IntegerField(required=False)
+
+    def validate_duration_minutes(self, value):
+        if value not in User.CHECK_IN_DURATION_CHOICES_M:
+            allowed = ', '.join(str(m) for m in User.CHECK_IN_DURATION_CHOICES_M)
+            raise serializers.ValidationError(f'Must be one of: {allowed}.')
+        return value
+
+
+class _NearbyUserListSerializer(serializers.ListSerializer):
+    """Drops rows the child refuses, instead of failing the whole response.
+
+    One person who slipped past a queryset filter must not blank the map for
+    the viewer, and must not be drawn either. Dropping does both.
+    """
+
+    def to_representation(self, data):
+        out = []
+        for item in data:
+            try:
+                out.append(self.child.to_representation(item))
+            except CheckedOutUser as exc:
+                print(f'[Map] dropped checked-out user {exc.args[0]} from a nearby payload')
+        return out
 
 
 class NearbyUserSerializer(serializers.Serializer):
@@ -55,9 +112,23 @@ class NearbyUserSerializer(serializers.Serializer):
         """
         return InterestSerializer()
 
+    class Meta:
+        list_serializer_class = _NearbyUserListSerializer
+
     def to_representation(self, obj):
         me = self.context['request'].user
         rel = self.context.get('relationships', {}).get(obj.pk, visibility.STRANGER)
+
+        # The querysets feeding this serializer all go through
+        # `visible_users(on_map=True)`, so nobody checked out should ever reach
+        # here. Asserted rather than assumed: this is the last line before
+        # coordinates leave the process, and a future caller that assembles its
+        # own list is exactly the mistake that would put someone back on the map
+        # without their say-so. Raising would take the whole map down for one
+        # bad row, so the row is dropped instead — see `to_representation` on
+        # ListSerializer, which is why the caller filters rather than us.
+        if not obj.is_on_map():
+            raise CheckedOutUser(obj.pk)
 
         data = {
             'id': obj.id,

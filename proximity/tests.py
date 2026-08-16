@@ -7,6 +7,7 @@ from notifications.models import Notification
 from notifications.utils import notify_zone_music_entry
 from proximity.views import _trigger_zone_music_alerts
 from users.models import User
+from users.testing import check_in
 
 #: Stands in for "this user has a zone track" in tests that only care about
 #: visibility gating, not about what the track actually is.
@@ -32,9 +33,13 @@ class NearbyZoneAudioTests(TestCase):
 
     @staticmethod
     def _make_user(name, **extra):
-        return User.objects.create_user(
+        # On the map by default. Users are checked *out* on creation now (see
+        # users.visibility), so a fixture for a test about anything else has to
+        # opt in or it measures the check-in gate instead of its own subject.
+        # proximity/test_check_in.py owns the assertions about the default.
+        return check_in(User.objects.create_user(
             username=name, email=f'{name}@example.com', password='testpass-123', **extra
-        )
+        ))
 
     def _nearby_by_id(self):
         response = self.client.get('/api/proximity/nearby/')
@@ -94,13 +99,13 @@ class NearbySharedInterestsTests(TestCase):
 
     @staticmethod
     def _make_user(name):
-        return User.objects.create_user(
+        return check_in(User.objects.create_user(
             username=name,
             email=f'{name}@example.com',
             password='testpass-123',
             latitude='10.0',
             longitude='10.0',
-        )
+        ))
 
     def _nearby_by_id(self):
         response = self.client.get('/api/proximity/nearby/')
@@ -172,6 +177,12 @@ class ZoneSwitchScopeTests(TestCase):
             sender=self.visitor, receiver=self.owner,
             status=FriendRequest.Status.ACCEPTED,
         )
+        # Both, and for two different reasons: the sweep will not run for a
+        # visitor who is not publishing where they are, and it does not look at
+        # owners who are off the map. Neither has anything to do with
+        # `zone_active`, which is what this class is actually about.
+        check_in(self.owner)
+        check_in(self.visitor)
 
     def alerts_for(self, user):
         return Notification.objects.filter(recipient=user)
@@ -250,6 +261,10 @@ class MusicZoneSwitchTests(TestCase):
             sender=self.visitor, receiver=self.owner,
             status=FriendRequest.Status.ACCEPTED,
         )
+        # On the map, so that what these tests measure is the music switch and
+        # not the check-in gate that now sits in front of it.
+        check_in(self.owner)
+        check_in(self.visitor)
         self.client = APIClient()
         self.client.force_authenticate(self.visitor)
 

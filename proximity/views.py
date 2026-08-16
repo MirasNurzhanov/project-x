@@ -11,7 +11,7 @@ from regions import places
 from users import visibility, zones
 from users.models import User
 from friends.models import FriendRequest, HiRequest
-from .serializers import LocationUpdateSerializer, NearbyUserSerializer
+from .serializers import CheckInSerializer, LocationUpdateSerializer, NearbyUserSerializer
 from .utils import haversine
 from notifications.utils import notify_nearby_matches, notify_zone_music_entry
 from encounters.utils import delete_old_encounters_throttled, record_encounters
@@ -194,8 +194,18 @@ def _trigger_nearby_notifications(user):
         if dist <= DEFAULT_RADIUS_KM:
             matches.append((candidate, dist))
 
+    # Each direction is gated on the *sender's* own check-in inside
+    # `can_surface_in_proximity`, so this stays a single call: a checked-out
+    # user is neither announced to anyone nor told about anyone, and no
+    # third state has to be maintained here.
     notify_nearby_matches(user, matches)
-    record_encounters(user, matches)
+    # An encounter is a symmetric record of two people having been in the same
+    # place, so it takes consent from both. The candidate's is already settled
+    # — `visible_users(on_map=True)` filtered on it — which leaves the reporter.
+    # Nothing is written while they are checked out, which is what keeps the
+    # encounter log free of positions nobody agreed to publish.
+    if user.is_on_map():
+        record_encounters(user, matches)
 
 
 def _trigger_zone_music_alerts(user):
@@ -213,6 +223,12 @@ def _trigger_zone_music_alerts(user):
     if user.latitude is None or user.longitude is None:
         return
     if user.location_sharing == User.LocationSharing.PAUSED:
+        return
+    # Both halves of this alert say where somebody is standing — one tells the
+    # owner a friend just walked into earshot, the other tells the visitor
+    # whose earshot they are in. Neither is sendable without a check-in from
+    # the person it discloses, and the mover is the one being disclosed here.
+    if not user.is_on_map():
         return
 
     lat = float(user.latitude)
@@ -236,7 +252,10 @@ def _trigger_zone_music_alerts(user):
     # to be walked into, so those rows are dropped before the distance maths
     # rather than walked and discarded. `notify_zone_music_entry` re-checks it
     # via `broadcasts_zone_track` for the callers that do not come through here.
+    # `checked_in_q` for the owner side: a zone belongs to a person, and a
+    # person who is off the map has no zone on it to be walked into.
     owners = User.objects.filter(
+        visibility.checked_in_q(),
         pk__in=approved_ids,
         music_zone_active=True,
         latitude__isnull=False,
@@ -281,6 +300,17 @@ def classify_speed(speed):
 
 
 class UpdateLocationView(APIView):
+    """Where the phone says it is.
+
+    Reporting a position is not checking in and never becomes one: this view
+    does not touch `is_checked_in`, `checked_in_at` or `check_in_expires_at`,
+    so no amount of a phone sitting there reporting can put its owner on the
+    map or keep them there. That separation is the whole of the fix for
+    5.1.2(i) — the position is stored as the anchor for the owner's *own*
+    queries ("who is near me", which district am I in), and `visible_users`
+    decides whether anybody else ever sees it.
+    """
+
     permission_classes = [permissions.IsAuthenticated]
 
     def patch(self, request):
@@ -305,8 +335,12 @@ class UpdateLocationView(APIView):
             'updated_at',
         ]
 
+        # Motion only ever exists to be drawn on somebody else's map, so it is
+        # not recorded for a user who is not on one. Without this a checked-out
+        # user would still be accumulating a movement classification, which is
+        # state about them that has no reader and no consent behind it.
         motion = classify_speed(serializer.validated_data.get('speed'))
-        if motion is not None:
+        if motion is not None and user.is_on_map():
             user.motion_class = motion
             user.motion_updated_at = timezone.now()
             fields += ['motion_class', 'motion_updated_at']
@@ -324,6 +358,86 @@ class UpdateLocationView(APIView):
         except Exception as exc:  # noqa: BLE001
             print(f'[Zone] music alert sweep failed: {exc}')
         return Response({'latitude': str(user.latitude), 'longitude': str(user.longitude)})
+
+
+class MapCheckInView(APIView):
+    """The one way onto other people's maps, and the one way off.
+
+    GET    — the current state, effective rather than stored: a check-in that
+             has lapsed reads as checked out, so the client never has to
+             compare timestamps itself.
+    POST   — check in for a bounded time, from a position supplied in the same
+             request.
+    DELETE — check out now.
+
+    Nothing else in the codebase sets `is_checked_in`. That is the point: there
+    is exactly one entry point, it is reached only by an authenticated request
+    the user's own tap produced, and it takes a duration with an end on it.
+    There is no renewal endpoint, no "keep me visible" preference, and the
+    location reporter below deliberately does not touch these fields — so a
+    phone left running cannot extend a check-in, and neither can we.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response(request.user.check_in_state())
+
+    def post(self, request):
+        serializer = CheckInSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+
+        minutes = serializer.validated_data.get(
+            'duration_minutes', User.CHECK_IN_DEFAULT_MINUTES,
+        )
+
+        # Paused is a standing "do not put me on the map"; checking in over the
+        # top of it would be the app overruling a setting the user last touched
+        # on purpose. Refused with something the client can act on rather than
+        # silently flipping it back to Live.
+        if user.location_sharing == User.LocationSharing.PAUSED:
+            return Response(
+                {
+                    'detail': 'Location sharing is paused. Resume it in Privacy '
+                              'to check in.',
+                    'code': 'location_sharing_paused',
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # The position rides the check-in and is stored through the same
+        # fuzzing path as any other report, so an Approximate sharer's precise
+        # point is discarded here too rather than being written just this once.
+        user.latitude, user.longitude = visibility.store_coordinates(
+            user,
+            serializer.validated_data['latitude'],
+            serializer.validated_data['longitude'],
+        )
+        user.location_updated_at = timezone.now()
+        accuracy = serializer.validated_data.get('accuracy')
+        user.location_accuracy_m = (
+            float(accuracy) if accuracy is not None and accuracy >= 0 else None
+        )
+
+        fields = user.apply_check_in(minutes) + [
+            'latitude', 'longitude', 'location_updated_at', 'location_accuracy_m',
+            'updated_at',
+        ]
+        user.save(update_fields=fields)
+        places.refresh_quietly(user)
+        return Response(user.check_in_state(), status=status.HTTP_200_OK)
+
+    def delete(self, request):
+        """Leave the map immediately.
+
+        Idempotent, and never an error: someone tapping "check out" twice, or
+        tapping it after their time ran out, wants the same outcome both times
+        and should not be shown a failure for asking.
+        """
+        user = request.user
+        user.save(update_fields=user.apply_check_out() + ['updated_at'])
+        return Response(user.check_in_state(), status=status.HTTP_200_OK)
 
 
 class NearbyUsersView(APIView):

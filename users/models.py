@@ -1,7 +1,8 @@
 from django.contrib.auth.models import AbstractUser
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
-from datetime import date
+from django.utils import timezone
+from datetime import date, timedelta
 from cloudinary_storage.storage import RawMediaCloudinaryStorage
 
 
@@ -240,6 +241,100 @@ class User(AbstractUser):
         if self.zone_type in self.POLYGON_ZONE_TYPES and self.zone_region_id:
             return 'region'
         return 'radius'
+
+    # ── Map check-in ──────────────────────────────────────────────────────────
+    # Whether this user is published to other people's maps *right now*, which
+    # is a different question from whether the OS lets Aura read their position.
+    # Granting "Allow While Using" says where the phone is; it says nothing
+    # about wanting to be a dot on a stranger's screen. Treating the first as
+    # consent for the second is what App Review rejected under 5.1.2(i), and
+    # the three concepts live apart now:
+    #
+    #   OS permission    — may we read a position at all
+    #   is_checked_in    — may anyone else be shown it
+    #   location_sharing — how precisely it is stated to those who may see it
+    #
+    # Default False, and False for every account that predates the column: a
+    # user is off the map until they say otherwise, by hand, this session.
+    #
+    # There is deliberately no "stay checked in" preference and no server-side
+    # renewal. A check-in is one explicit act with an end to it, and coming
+    # back means performing it again — anything that extended this without a
+    # tap would be the automatic check-in the guideline forbids.
+
+    #: The durations offered, in minutes. A closed set rather than a free
+    #: number, so no client can ask to be published for a week.
+    CHECK_IN_DURATION_CHOICES_M = (15, 60, 240)
+    CHECK_IN_DEFAULT_MINUTES = 60
+
+    is_checked_in = models.BooleanField(default=False, db_index=True)
+    #: When the tap happened. Separate from the expiry so "how long have they
+    #: been visible" stays answerable, and so a re-check-in is distinguishable
+    #: from an extension in the record.
+    checked_in_at = models.DateTimeField(null=True, blank=True)
+    #: When it lapses. Enforced on *read* — see users.visibility.checked_in_q —
+    #: rather than by a sweep, so an expired check-in stops publishing the
+    #: instant it passes even if no worker ever runs.
+    check_in_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    def is_on_map(self, now=None):
+        """Whether this user may currently be drawn on anybody else's map.
+
+        The Python counterpart of `visibility.checked_in_q`, which is the same
+        rule in SQL. Both exist because list endpoints have to filter in the
+        database and per-row checks cannot; they must never drift apart, so
+        neither grows a condition the other lacks.
+        """
+        if not self.is_checked_in or self.check_in_expires_at is None:
+            return False
+        return self.check_in_expires_at > (now or timezone.now())
+
+    def check_in_state(self, now=None):
+        """What the client renders: the flag, the clock, and the seconds left.
+
+        `is_checked_in` is reported as the *effective* value rather than the
+        stored one, so a lapsed check-in reads as checked out everywhere
+        without the client having to compare timestamps and get the timezone
+        wrong.
+        """
+        now = now or timezone.now()
+        live = self.is_on_map(now)
+        return {
+            'is_checked_in': live,
+            'checked_in_at': self.checked_in_at.isoformat() if live and self.checked_in_at else None,
+            'check_in_expires_at': (
+                self.check_in_expires_at.isoformat() if live and self.check_in_expires_at else None
+            ),
+            'seconds_remaining': (
+                max(0, int((self.check_in_expires_at - now).total_seconds())) if live else 0
+            ),
+            'duration_choices_minutes': list(self.CHECK_IN_DURATION_CHOICES_M),
+            'default_duration_minutes': self.CHECK_IN_DEFAULT_MINUTES,
+        }
+
+    def apply_check_in(self, minutes):
+        """Set the check-in fields for `minutes` from now. Does not save."""
+        now = timezone.now()
+        self.is_checked_in = True
+        self.checked_in_at = now
+        self.check_in_expires_at = now + timedelta(minutes=minutes)
+        return ['is_checked_in', 'checked_in_at', 'check_in_expires_at']
+
+    def apply_check_out(self):
+        """Take this user off every map. Does not save.
+
+        Motion goes with it: a speed trail is drawn from a published position,
+        so leaving one behind would outlive the position it belongs to.
+        """
+        self.is_checked_in = False
+        self.checked_in_at = None
+        self.check_in_expires_at = None
+        self.motion_class = self.MotionClass.STATIONARY
+        self.motion_updated_at = None
+        return [
+            'is_checked_in', 'checked_in_at', 'check_in_expires_at',
+            'motion_class', 'motion_updated_at',
+        ]
 
     # ── Privacy ───────────────────────────────────────────────────────────────
     # Two independent axes, deliberately kept apart:
