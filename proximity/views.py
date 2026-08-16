@@ -12,6 +12,7 @@ from users import visibility, zones
 from users.models import User
 from friends.models import FriendRequest, HiRequest
 from .serializers import (
+    EndSharingSessionSerializer,
     LocationUpdateSerializer,
     NearbyQuerySerializer,
     NearbyUserSerializer,
@@ -599,6 +600,71 @@ class NearbyUsersView(APIView):
         return Response(nearby_users(
             user, float(user.latitude), float(user.longitude), request,
         ))
+
+
+class EndSharingSessionView(APIView):
+    """"This app just started, and I did not bring a sharing session with me."
+
+    The half of the manual check-in rule that no event handler can enforce,
+    because the event is the *absence* of one: the app starting up with nothing
+    in memory. App Review's list ends with "any previous preference says they
+    were visible", and a `location_sharing` that outlived the run it was chosen
+    in is precisely that preference. This is what stops it outliving.
+
+    Called once per launch by the UI, never by the background location task —
+    that task exists to keep a *current* session's position fresh, and having
+    it end the session would make backgrounding a check-out, which is the thing
+    we were told not to build.
+
+    Idempotent and safe to call at any moment, which is the whole reason it
+    takes a token rather than being a bare "pause me":
+
+        no session on the row       nothing to end, already paused
+        token matches               this run owns the visibility — left alone
+        token missing or stale      a different run chose it — paused
+
+    That last line is the one doing the work, and the middle line is what makes
+    it safe to fire on startup at all: a user who opens the app and immediately
+    taps Live has a token by the time this lands, so their tap survives a
+    startup effect that was already in flight.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = EndSharingSessionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        presented = serializer.validated_data.get('session')
+
+        if user.sharing_session is not None and presented == user.sharing_session:
+            # This process owns the current visibility. Nothing to do — and
+            # nothing said, so a client cannot tell a live session from a
+            # missing one by the shape of the answer.
+            return Response({'location_sharing': user.location_sharing})
+
+        if user.is_on_map():
+            # Same teardown as choosing Paused by hand, and deliberately the
+            # same code path: a session ending must not leave a weaker trace
+            # than the button does.
+            user.location_sharing = User.LocationSharing.PAUSED
+            user.latitude = None
+            user.longitude = None
+            user.location_updated_at = None
+            user.location_accuracy_m = None
+            user.motion_class = User.MotionClass.STATIONARY
+            user.motion_updated_at = None
+            user.save(update_fields=[
+                'location_sharing', 'latitude', 'longitude',
+                'location_updated_at', 'location_accuracy_m',
+                'motion_class', 'motion_updated_at',
+            ] + user.end_sharing_session())
+        elif user.sharing_session is not None:
+            # Already paused but holding a stale token. Tidy rather than leave
+            # something a later request could match.
+            user.save(update_fields=user.end_sharing_session())
+
+        return Response({'location_sharing': user.location_sharing})
 
 
 class NearbyQueryView(APIView):

@@ -288,7 +288,18 @@ class PrivacySettingsView(APIView):
             user.save(update_fields=[
                 'latitude', 'longitude', 'location_updated_at', 'location_accuracy_m',
                 'motion_class', 'motion_updated_at',
-            ])
+            ] + user.end_sharing_session())
+
+        # Going visible ties this run of the app to the choice that was just
+        # made. Minted on every transition off Paused rather than only the
+        # first, so a user who pauses and resumes gets a new token and the old
+        # one can never be replayed to keep them visible. See
+        # `User.sharing_session`.
+        if (
+            user.location_sharing != previous_sharing
+            and user.location_sharing != User.LocationSharing.PAUSED
+        ):
+            user.save(update_fields=user.begin_sharing_session())
 
         payload = PrivacySettingsSerializer(user).data
         payload['privacy_mode'] = user.privacy_mode

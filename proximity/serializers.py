@@ -35,6 +35,16 @@ class LocationUpdateSerializer(serializers.Serializer):
     accuracy = serializers.FloatField(required=False, allow_null=True, min_value=-1)
 
 
+class EndSharingSessionSerializer(serializers.Serializer):
+    """The token a starting app claims to be carrying, if any.
+
+    Optional and nullable on purpose: a cold launch has nothing to present, and
+    that absence is the signal rather than an error. See EndSharingSessionView.
+    """
+
+    session = serializers.UUIDField(required=False, allow_null=True)
+
+
 class NearbyQuerySerializer(serializers.Serializer):
     """The anchor for one private discovery request, and nothing else.
 

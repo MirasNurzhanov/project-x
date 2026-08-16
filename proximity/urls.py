@@ -1,5 +1,6 @@
 from django.urls import path
 from .views import (
+    EndSharingSessionView,
     MapQueryView,
     NearbyMapView,
     NearbyQueryView,
@@ -13,6 +14,10 @@ urlpatterns = [
     # The private browsing anchor: a coordinate used for one request and
     # never stored. See NearbyQueryView.
     path('nearby/query/', NearbyQueryView.as_view(), name='nearby-query'),
+    # Called once per app launch. Ends a visibility that belongs to a previous
+    # run — see EndSharingSessionView.
+    path('sharing-session/end/', EndSharingSessionView.as_view(),
+         name='end-sharing-session'),
 ]
 
 map_urlpatterns = [

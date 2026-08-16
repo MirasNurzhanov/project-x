@@ -325,3 +325,245 @@ class ZoneRulesStillApplyTests(TestCase):
         self.assertTrue(row['is_private'])
         self.assertNotIn('bio', row)
         self.assertNotIn('interests', row)
+
+
+class NoAutomaticVisibilityTests(TestCase):
+    """Nothing on the server makes a user visible except their own request.
+
+    The client half of this lives in
+    services/__tests__/noAutomaticVisibility.test.ts. Both are needed: the
+    client one bounds what the app can ask for, this one bounds what the API
+    will do if something asks anyway.
+
+    App Review's list — app open, login, permission granted, GPS fix, map
+    opened, foreground, background start, location change, zone entry — is all
+    the same shape of thing: an event that reaches an endpoint. So rather than
+    simulate each, these pin that the endpoints those events reach cannot
+    change the sharing mode at all.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.me = make_user('me')
+        self.client.force_authenticate(self.me)
+
+    def assert_still_paused(self, note):
+        self.me.refresh_from_db()
+        self.assertEqual(
+            self.me.location_sharing, User.LocationSharing.PAUSED, note,
+        )
+        self.assertFalse(self.me.is_on_map(), note)
+
+    def test_reporting_a_position_cannot_check_anyone_in(self):
+        """"a GPS position is obtained" and "the user's location changes"."""
+        for _ in range(3):
+            self.client.patch(
+                LOCATION, {'latitude': '10.0', 'longitude': '10.0', 'speed': 3.0},
+                format='json',
+            )
+        self.assert_still_paused('a location report changed the sharing mode')
+
+    def test_browsing_the_map_cannot_check_anyone_in(self):
+        """"the map screen opens", and every poll it makes afterwards."""
+        for _ in range(3):
+            self.client.post(
+                NEARBY_QUERY, {'latitude': '10.0', 'longitude': '10.0'},
+                format='json',
+            )
+            self.client.get(NEARBY)
+        self.assert_still_paused('browsing the map changed the sharing mode')
+
+    def test_reading_the_privacy_screen_cannot_check_anyone_in(self):
+        """"the application opens" — this is what it fetches on launch."""
+        for _ in range(3):
+            self.assertEqual(self.client.get(PRIVACY).status_code, 200)
+        self.assert_still_paused('reading privacy changed the sharing mode')
+
+    def test_other_privacy_settings_do_not_drag_sharing_with_them(self):
+        """A PATCH that says nothing about location must not imply one."""
+        response = self.client.patch(
+            PRIVACY, {'is_private': True, 'visibility_stories': 'nobody'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assert_still_paused('an unrelated privacy change turned sharing on')
+
+    def test_a_zone_change_cannot_check_anyone_in(self):
+        """"the user enters a zone" — and setting one up, which is the only
+        zone action a paused user can take."""
+        response = self.client.patch(
+            '/api/users/zone/', {'zone_active': True, 'zone_radius': 1000},
+            format='json',
+        )
+        self.assertIn(response.status_code, (200, 400))
+        self.assert_still_paused('a zone change turned sharing on')
+
+    def test_only_the_privacy_endpoint_can_turn_sharing_on(self):
+        """The positive case, so the tests above cannot pass by the endpoint
+        being broken for everyone."""
+        response = self.client.patch(
+            PRIVACY, {'location_sharing': 'live'}, format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+
+        self.me.refresh_from_db()
+        self.assertTrue(self.me.is_on_map())
+
+    def test_the_serializer_is_the_only_place_the_field_is_writable(self):
+        """Static backstop for an endpoint nobody has written yet.
+
+        A new view that spreads `request.data` onto the user — the usual way
+        this kind of hole appears — would have to add the field to a serializer
+        to work, and there is only one that accepts it.
+        """
+        from users.serializers import (
+            PrivacySettingsSerializer,
+            UserProfileSerializer,
+        )
+
+        self.assertIn('location_sharing', PrivacySettingsSerializer().fields)
+
+        profile = UserProfileSerializer().fields['location_sharing']
+        self.assertFalse(
+            profile.read_only,
+            'If /me ever becomes writable for this field it needs the same '
+            'consent story as the privacy screen, or it is a second door.',
+        )
+
+
+class SharingSessionTests(TestCase):
+    """Visibility belongs to the run of the app that chose it.
+
+    App Review's last bullet — never check somebody in because "any previous
+    preference says they were visible" — is the one a persistent setting cannot
+    satisfy on its own. The token is how it is satisfied: minted on going
+    visible, held in memory by the client, and gone the moment the process is.
+
+    What it must *not* do is turn backgrounding into a check-out. Nothing here
+    counts down and nothing expires; only a run that cannot produce the token
+    ends the session.
+    """
+
+    END = '/api/proximity/sharing-session/end/'
+
+    def setUp(self):
+        self.client = APIClient()
+        self.me = make_user('me')
+        self.client.force_authenticate(self.me)
+
+    def go_visible(self):
+        response = self.client.patch(
+            PRIVACY, {'location_sharing': 'live'}, format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.me.refresh_from_db()
+        return response.json()['sharing_session']
+
+    def test_going_visible_mints_a_token(self):
+        token = self.go_visible()
+        self.assertIsNotNone(token)
+        self.assertEqual(str(self.me.sharing_session), token)
+
+    def test_a_cold_launch_presents_nothing_and_is_paused(self):
+        """The whole feature, in one test."""
+        self.go_visible()
+        self.client.patch(
+            LOCATION, {'latitude': '10.0', 'longitude': '10.0'}, format='json',
+        )
+
+        response = self.client.post(self.END, {'session': None}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['location_sharing'], 'paused')
+
+        self.me.refresh_from_db()
+        self.assertFalse(self.me.is_on_map())
+        self.assertIsNone(self.me.latitude)
+        self.assertIsNone(self.me.sharing_session)
+
+    def test_omitting_the_field_entirely_is_the_same_as_null(self):
+        """An older client, or one that lost the token some other way."""
+        self.go_visible()
+        response = self.client.post(self.END, {}, format='json')
+        self.assertEqual(response.json()['location_sharing'], 'paused')
+
+    def test_the_run_that_owns_the_session_is_left_alone(self):
+        """Why it is a token and not a bare "pause me".
+
+        The startup call races the user's own tap. Somebody who opens the app
+        and immediately chooses Live has the current token by the time it
+        lands, and must not be paused by it.
+        """
+        token = self.go_visible()
+
+        response = self.client.post(self.END, {'session': token}, format='json')
+        self.assertEqual(response.json()['location_sharing'], 'live')
+
+        self.me.refresh_from_db()
+        self.assertTrue(self.me.is_on_map())
+        self.assertIsNotNone(self.me.sharing_session)
+
+    def test_a_stale_token_from_a_previous_run_does_not_match(self):
+        stale = self.go_visible()
+        self.client.patch(PRIVACY, {'location_sharing': 'paused'}, format='json')
+        self.go_visible()
+
+        response = self.client.post(self.END, {'session': stale}, format='json')
+        self.assertEqual(response.json()['location_sharing'], 'paused')
+
+    def test_pausing_by_hand_also_clears_the_token(self):
+        """Otherwise a token could outlive the visibility it was minted for and
+        be replayed against the next one."""
+        self.go_visible()
+        self.client.patch(PRIVACY, {'location_sharing': 'paused'}, format='json')
+
+        self.me.refresh_from_db()
+        self.assertIsNone(self.me.sharing_session)
+
+    def test_resuming_mints_a_fresh_token(self):
+        first = self.go_visible()
+        self.client.patch(PRIVACY, {'location_sharing': 'paused'}, format='json')
+        second = self.go_visible()
+        self.assertNotEqual(first, second)
+
+    def test_calling_it_while_already_paused_is_a_no_op(self):
+        response = self.client.post(self.END, {'session': None}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['location_sharing'], 'paused')
+
+    def test_it_is_idempotent(self):
+        self.go_visible()
+        for _ in range(3):
+            response = self.client.post(self.END, {'session': None}, format='json')
+            self.assertEqual(response.json()['location_sharing'], 'paused')
+
+    def test_the_token_is_not_writable_through_the_privacy_endpoint(self):
+        """A client that could choose its own token could keep any session
+        alive forever."""
+        token = self.go_visible()
+        self.client.patch(
+            PRIVACY,
+            {'sharing_session': '00000000-0000-0000-0000-000000000000'},
+            format='json',
+        )
+        self.me.refresh_from_db()
+        self.assertEqual(str(self.me.sharing_session), token)
+
+    def test_nothing_about_it_expires(self):
+        """No clock, no countdown, no backgrounding rule. The session ends when
+        a run without the token says so, and at no other time."""
+        token = self.go_visible()
+        self.client.patch(
+            LOCATION, {'latitude': '10.0', 'longitude': '10.0'}, format='json',
+        )
+
+        # Stands in for time passing and for the app being backgrounded: the
+        # background task keeps reporting and never touches the session.
+        for _ in range(5):
+            self.client.patch(
+                LOCATION, {'latitude': '10.0', 'longitude': '10.0'}, format='json',
+            )
+            self.assertEqual(self.client.get(NEARBY).status_code, 200)
+
+        self.me.refresh_from_db()
+        self.assertTrue(self.me.is_on_map())
+        self.assertEqual(str(self.me.sharing_session), token)

@@ -350,6 +350,11 @@ class PrivacySettingsSerializer(serializers.ModelSerializer):
         model = User
         fields = (
             'location_sharing',
+            # Read-only, and read *once*: the client keeps it in memory for the
+            # life of the process and never writes it to disk. Persisting it
+            # would rebuild the thing it exists to prevent — a token that
+            # survives a restart is a preference that says you were visible.
+            'sharing_session',
             'is_private',
             'visibility_interests',
             'visibility_stories',
@@ -361,6 +366,7 @@ class PrivacySettingsSerializer(serializers.ModelSerializer):
             'discoverable_by_username',
             'discoverable_by_interest',
         )
+        read_only_fields = ('sharing_session',)
 
 
 class NotificationSettingsSerializer(serializers.ModelSerializer):

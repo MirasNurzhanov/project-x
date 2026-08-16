@@ -280,6 +280,39 @@ class User(AbstractUser):
         db_index=True,
     )
 
+    #: Which *run of the app* turned sharing on, or null while paused.
+    #:
+    #: Visibility does not expire, but it also does not survive the app being
+    #: closed: App Review's list of things that must not check somebody in ends
+    #: with "any previous preference says they were visible", and a mode that
+    #: outlived the session it was chosen in is exactly that. So going visible
+    #: mints a token here, the client holds it *in memory only*, and a client
+    #: that comes back without it is a client that has been restarted — see
+    #: proximity.views.EndSharingSessionView.
+    #:
+    #: A token rather than a flag, and compared rather than trusted, because
+    #: the call that ends a session races the tap that starts one. A user who
+    #: opens the app and immediately chooses Live must not be paused a moment
+    #: later by a startup effect that was already in flight; the token it
+    #: presents is the old one, does not match, and the mismatch is what makes
+    #: it safe to act on.
+    #:
+    #: Deliberately not an expiry. Nothing here counts down, and backgrounding,
+    #: locking the phone and the background location task all leave it alone.
+    sharing_session = models.UUIDField(null=True, blank=True, editable=False)
+
+    def begin_sharing_session(self):
+        """Mint the token that ties this visibility to this run. No save."""
+        import uuid
+
+        self.sharing_session = uuid.uuid4()
+        return ['sharing_session']
+
+    def end_sharing_session(self):
+        """Forget it, so nothing can present a matching one later. No save."""
+        self.sharing_session = None
+        return ['sharing_session']
+
     def is_on_map(self, now=None):
         """Whether this user may be drawn on anybody else's map.
 
