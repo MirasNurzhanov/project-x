@@ -61,10 +61,25 @@ class PausedBrowsingTests(TestCase):
 
     def test_the_stored_route_still_returns_nothing_for_them(self):
         """The two paths are not interchangeable, and the GET is the one that
-        needs an anchor it does not have."""
+        needs an anchor it does not have.
+
+        Empty rather than an error, and deliberately unlike the not-yet-
+        reported case below: being paused is a working state, not a failure.
+        """
         response = self.client.get('/api/proximity/nearby/')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
+
+    def test_a_sharing_user_with_no_position_yet_gets_a_400(self):
+        """The gap right after choosing Live, which the client falls back on.
+
+        The two empty-handed cases have to be distinguishable: an empty list
+        means "nobody is around" and the map draws it, a 400 means "ask again
+        with your own coordinate".
+        """
+        share_location(self.me)
+        response = self.client.get('/api/proximity/nearby/')
+        self.assertEqual(response.status_code, 400)
 
     def test_browsing_stores_no_position(self):
         self.query()

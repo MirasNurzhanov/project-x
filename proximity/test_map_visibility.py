@@ -272,3 +272,104 @@ class SideChannelTests(TestCase):
 
         self.assertEqual(self.report().status_code, 403)
         self.assertEqual(Encounter.objects.count(), 0)
+
+
+class GoingLiveEndToEndTests(TransactionTestCase):
+    """The exact sequence the app performs when somebody chooses Live.
+
+    Written after a report of "I went Live and the map was empty". The steps
+    matter and so does their order: a user comes off Paused with *no stored
+    position*, because pausing deleted it, so the privacy PATCH and the first
+    location report are two separate round trips with a gap in between.
+
+    `TransactionTestCase` because /api/map/nearby/ fans out across a thread
+    pool — see MapEndpointTests.
+    """
+
+    def setUp(self):
+        self.interest = Interest.objects.create(name='Climbing')
+        self.me = make_user('me')
+        self.neighbour = make_user('neighbour')
+        for user in (self.me, self.neighbour):
+            user.interests.add(self.interest)
+        self.client = APIClient()
+        self.client.force_authenticate(self.me)
+
+    def go_live(self, client, user):
+        """Privacy first, then a position — the order the client uses."""
+        response = client.patch(
+            '/api/users/privacy/', {'location_sharing': 'live'}, format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        response = client.patch(
+            '/api/proximity/location/',
+            {'latitude': '10.0', 'longitude': '10.0'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        user.refresh_from_db()
+
+    def test_going_live_shows_other_live_users(self):
+        their_client = APIClient()
+        their_client.force_authenticate(self.neighbour)
+        self.go_live(their_client, self.neighbour)
+        self.go_live(self.client, self.me)
+
+        response = self.client.get('/api/map/nearby/')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIn(
+            self.neighbour.pk, {u['id'] for u in response.json()['users']},
+            'Two users both on Live and standing on the same spot must see '
+            'each other.',
+        )
+
+    def test_the_map_is_empty_only_because_everyone_else_is_paused(self):
+        """The state every account is in immediately after users/0029.
+
+        Not a defect: the neighbour has a position on file from before the
+        migration and is still not shown, because the migration paused them and
+        only they can undo that. Pinned so the difference between "the query is
+        broken" and "nobody has opted in yet" stays legible.
+        """
+        self.neighbour.latitude, self.neighbour.longitude = 10, 10
+        self.neighbour.save(update_fields=['latitude', 'longitude'])
+        self.go_live(self.client, self.me)
+
+        response = self.client.get('/api/map/nearby/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['users'], [])
+
+        share_location(self.neighbour)
+        response = self.client.get('/api/map/nearby/')
+        self.assertIn(self.neighbour.pk, {u['id'] for u in response.json()['users']})
+
+    def test_the_gap_before_the_first_report_is_a_400_the_client_can_act_on(self):
+        """What the client sees between the two round trips above.
+
+        400, not an empty list: an empty list is indistinguishable from "nobody
+        is around" and the client would draw a blank map. The 400 is what
+        services/discovery.ts keys its fallback to the private query on.
+        """
+        self.client.patch(
+            '/api/users/privacy/', {'location_sharing': 'live'}, format='json',
+        )
+        response = self.client.get('/api/map/nearby/')
+        self.assertEqual(response.status_code, 400)
+
+    def test_the_fallback_query_answers_during_that_gap(self):
+        share_location(self.neighbour)
+        self.neighbour.latitude, self.neighbour.longitude = 10, 10
+        self.neighbour.save(update_fields=['latitude', 'longitude'])
+
+        self.client.patch(
+            '/api/users/privacy/', {'location_sharing': 'live'}, format='json',
+        )
+        response = self.client.post(
+            '/api/map/nearby/query/',
+            {'latitude': '10.0', 'longitude': '10.0'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIn(
+            self.neighbour.pk, {u['id'] for u in response.json()['users']},
+        )

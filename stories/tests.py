@@ -13,6 +13,7 @@ from rest_framework.test import APIClient
 from stories.models import Story, StoryReaction
 from stories.views import _adjust_likes
 from users.models import User
+from users.testing import share_location
 
 #: The reaction endpoint requires the viewer to be within 500m of the story.
 HERE = {'latitude': '10.000000', 'longitude': '10.000000'}
@@ -21,10 +22,15 @@ FAR = {'latitude': '20.000000', 'longitude': '20.000000'}
 
 
 def make_user(name, **extra):
-    return User.objects.create_user(
+    # On the map by default. `location_sharing` defaults to Paused now (see
+    # users.visibility), and a paused viewer has no stored anchor — so a
+    # fixture for a test about stories has to opt in or it measures the
+    # default. proximity/test_map_visibility.py owns the assertions about that,
+    # and proximity/test_private_query.py covers browsing while paused.
+    return share_location(User.objects.create_user(
         username=name, email=f'{name}@example.com', password='testpass-123',
         date_of_birth=date(1995, 1, 1), **extra
-    )
+    ))
 
 
 class AdjustLikesTests(TestCase):

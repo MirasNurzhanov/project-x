@@ -549,11 +549,24 @@ class NearbyUsersView(APIView):
         delete_old_encounters_throttled()
         user = request.user
 
-        if not user.is_on_map() or user.latitude is None or user.longitude is None:
-            # No stored anchor. Empty rather than an error: a paused client
-            # polling this while it switches over to the query endpoint should
-            # see an empty map, not a failure.
+        # Paused: empty, not an error. Their client uses the query endpoint and
+        # only reaches this while switching over; a failure there would be
+        # noise about a state that is working as intended.
+        if not user.is_on_map():
             return Response([])
+
+        # Sharing, but nothing on file yet — the gap between choosing Live and
+        # the first report landing, which pausing having deleted the position
+        # makes certain rather than rare. A 400 rather than an empty list, and
+        # the difference matters: an empty list is indistinguishable from
+        # "nobody is around", so the client would draw a blank map and believe
+        # it. The 400 is what services/discovery.ts falls back to the private
+        # query on, and it is the same answer /api/map/nearby/ gives.
+        if user.latitude is None or user.longitude is None:
+            return Response(
+                {'detail': 'Your location is not set.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         return Response(nearby_users(
             user, float(user.latitude), float(user.longitude), request,
