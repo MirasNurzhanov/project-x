@@ -52,6 +52,37 @@ def _build_relationships(user, nearby_ids):
     return relationships
 
 
+# ─── Machine-readable error codes ─────────────────────────────────────────────
+# Paired with `detail` in the project's usual error shape (see users/views.py).
+# The client branches on these and never on the prose, because the prose is
+# copy: it gets rewritten, translated and shortened, and a client keyed to it
+# breaks silently and at a distance.
+#
+# The distinction they draw is the one that matters to the map. Both are "we
+# cannot answer you", and they mean opposite things about what to do next:
+
+#: Sharing is off. Nothing to answer with, and nothing to wait for — the user
+#: has to choose Live or Approximate first. Not a transient condition.
+CODE_SHARING_PAUSED = 'location_sharing_paused'
+
+#: Sharing is on, but no position has been reported yet. Transient by
+#: definition: a fix is coming, or the client can supply one itself. The client
+#: must show "getting your location" rather than "nobody nearby", because an
+#: empty map here is a claim about the world that we have not checked.
+CODE_LOCATION_NOT_AVAILABLE = 'location_not_available'
+
+
+def location_not_available():
+    """The response for sharing-on-but-no-position-yet. One shape, one place."""
+    return Response(
+        {
+            'detail': 'Location has not been reported yet.',
+            'code': CODE_LOCATION_NOT_AVAILABLE,
+        },
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
 DEFAULT_RADIUS_KM = 0.5
 CONNECTED_RADIUS_KM = 1.0
 
@@ -330,7 +361,7 @@ class UpdateLocationView(APIView):
             return Response(
                 {
                     'detail': 'Location sharing is paused.',
-                    'code': 'location_sharing_paused',
+                    'code': CODE_SHARING_PAUSED,
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
@@ -563,10 +594,7 @@ class NearbyUsersView(APIView):
         # it. The 400 is what services/discovery.ts falls back to the private
         # query on, and it is the same answer /api/map/nearby/ gives.
         if user.latitude is None or user.longitude is None:
-            return Response(
-                {'detail': 'Your location is not set.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return location_not_available()
 
         return Response(nearby_users(
             user, float(user.latitude), float(user.longitude), request,
@@ -665,11 +693,18 @@ class NearbyMapView(APIView):
 
     def get(self, request):
         user = request.user
-        if not user.is_on_map() or user.latitude is None or user.longitude is None:
+        # Same two-way split as NearbyUsersView, and for the same reason: the
+        # client draws a different screen for each.
+        if not user.is_on_map():
             return Response(
-                {'detail': 'Your location is not set.'},
+                {
+                    'detail': 'Location sharing is paused.',
+                    'code': CODE_SHARING_PAUSED,
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if user.latitude is None or user.longitude is None:
+            return location_not_available()
         return Response(_map_payload(
             user, float(user.latitude), float(user.longitude), request,
         ))

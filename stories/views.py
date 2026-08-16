@@ -147,8 +147,15 @@ class NearbyStoriesView(APIView):
 
     def get(self, request):
         user = request.user
-        if not user.is_on_map() or user.latitude is None or user.longitude is None:
+        # Paused is an empty list: a working state with nothing to show. No
+        # position yet is the shared `location_not_available` code, so a client
+        # gets the same answer here as it does from the proximity endpoints and
+        # needs one branch, not three.
+        if not user.is_on_map():
             return Response([])
+        if user.latitude is None or user.longitude is None:
+            from proximity.views import location_not_available
+            return location_not_available()
         return Response(nearby_stories(
             user, float(user.latitude), float(user.longitude), request,
         ))
@@ -166,8 +173,22 @@ class ReactToStoryView(APIView):
             return Response({'detail': 'Story has expired.'}, status=status.HTTP_410_GONE)
 
         user = request.user
+        # Reacting takes standing near the story, so it needs a position like
+        # anything else — and the two ways of not having one are worth telling
+        # apart here too. Paused is a setting the user can change; no fix yet
+        # resolves on its own.
+        if not user.is_on_map():
+            from proximity.views import CODE_SHARING_PAUSED
+            return Response(
+                {
+                    'detail': 'Location sharing is paused.',
+                    'code': CODE_SHARING_PAUSED,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if user.latitude is None or user.longitude is None:
-            return Response({'detail': 'Your location is not set.'}, status=status.HTTP_400_BAD_REQUEST)
+            from proximity.views import location_not_available
+            return location_not_available()
 
         distance_km = haversine(
             float(user.latitude), float(user.longitude),

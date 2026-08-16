@@ -13,6 +13,7 @@ pass on the day somebody added one.
 """
 import ast
 import inspect
+import pathlib
 
 from django.test import TestCase, TransactionTestCase
 from rest_framework.test import APIClient
@@ -22,6 +23,7 @@ from interests.models import Interest
 from notifications.models import Notification
 from users.middleware import HEADER, FOREGROUND, PRESENCE_EXEMPT_PATHS
 from users.models import User
+from regions import places
 from users.testing import share_location
 
 QUERY_URL = '/api/proximity/nearby/query/'
@@ -330,15 +332,29 @@ class NoWritesOnTheReadPathTests(TestCase):
         'refresh_quietly', 'snapshot_for', 'save_snapshot',
     })
 
-    def offending_calls(self, fn):
-        """Write-shaped calls in `fn`, ignoring local collections.
+    def offending_calls(self, module, name):
+        """Write-shaped calls in `module.name`, ignoring local collections.
 
         `seen.add(...)` and `nearby.append(...)` are a set and a list held for
         the length of one request; `.create(...)` on a manager is not. The
         difference is the receiver, so bare local names are excused and
         anything reached through a manager or queryset is not.
+
+        Parses the whole module and finds the function *by name*, rather than
+        `inspect.getsource(fn)`. That helper resolves the function's recorded
+        first line against the file as it is on disk right now, so it raises or
+        reads the wrong block whenever the file has moved since import — which
+        it did, twice, during this work. Locating by name has no line numbers
+        in it to go stale.
         """
-        tree = ast.parse(inspect.getsource(fn))
+        source = pathlib.Path(inspect.getsourcefile(module)).read_text(encoding='utf-8')
+        module_tree = ast.parse(source)
+        tree = next(
+            (n for n in ast.walk(module_tree)
+             if isinstance(n, ast.FunctionDef) and n.name == name),
+            None,
+        )
+        self.assertIsNotNone(tree, f'{name} not found in {module.__name__}')
         local_names = {'seen', 'nearby', 'distances', 'matches', 'allowed'}
         found = []
         for node in ast.walk(tree):
@@ -358,25 +374,40 @@ class NoWritesOnTheReadPathTests(TestCase):
         return found
 
     def test_nearby_users_writes_nothing(self):
-        from proximity.views import nearby_users
+        from proximity import views
 
         self.assertEqual(
-            self.offending_calls(nearby_users), [],
+            self.offending_calls(views, 'nearby_users'), [],
             'A write appeared on the shared discovery path. It runs for paused '
             'users through /api/proximity/nearby/query/, which must not store '
             'a position, mark presence, or make the caller visible.',
         )
 
     def test_nearby_stories_writes_nothing(self):
-        from stories.views import nearby_stories
+        from stories import views
 
-        self.assertEqual(self.offending_calls(nearby_stories), [])
+        self.assertEqual(self.offending_calls(views, 'nearby_stories'), [])
 
     def test_the_transient_place_lookup_never_reaches_upstream(self):
         """Cache-only, which is also what keeps coordinates out of the logs:
-        the boundary warnings that print a point all live on the upstream
-        path."""
+        the boundary warnings that print a point all live on the upstream path,
+        so a lookup that cannot go upstream cannot log a position either.
+
+        Asserted on the call rather than on the source text. An earlier version
+        read `inspect.getsource`, which reads the file from disk at assert time
+        and mismatches the imported module the moment anything edits it — it
+        failed once for exactly that reason, having tested nothing.
+        """
+        from unittest.mock import patch
+
         from proximity.views import _transient_place
 
-        source = inspect.getsource(_transient_place)
-        self.assertIn('allow_upstream=False', source)
+        # Called directly: this is a unit with one job, and going through the
+        # endpoint would drag in the thread pool and a DB round trip to observe
+        # the same single call.
+        with patch('regions.places.hierarchy_for_point') as lookup:
+            lookup.return_value = places.Hierarchy(city_name='', country_code='')
+            _transient_place(10.0, 10.0)
+
+        lookup.assert_called_once()
+        self.assertIs(lookup.call_args.kwargs.get('allow_upstream'), False)
