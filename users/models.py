@@ -242,85 +242,6 @@ class User(AbstractUser):
             return 'region'
         return 'radius'
 
-    # ── Map check-in ──────────────────────────────────────────────────────────
-    # Whether this user is published to other people's maps, which is a
-    # different question from whether the OS lets Aura read their position.
-    # Granting "Allow While Using" says where the phone is; it says nothing
-    # about wanting to be a dot on a stranger's screen. Treating the first as
-    # consent for the second is what App Review rejected under 5.1.2(i), and
-    # the three concepts live apart now:
-    #
-    #   OS permission    — may we read a position at all
-    #   is_checked_in    — may anyone else be shown it
-    #   location_sharing — how precisely it is stated to those who may see it
-    #
-    # Default False, and False for every account that predates the column: a
-    # user is off the map until they say otherwise.
-    #
-    # A check-in has no expiry. It is on until the user turns it off, and it
-    # survives the app closing, the phone locking and the app being relaunched
-    # — the flag lives here, not in a session. Which puts the whole weight of
-    # the promise on two things: the check-in has to be *deliberate*, taken
-    # against a consent screen that says in as many words that this lasts until
-    # you check out (see the client's CheckInConsentModal), and checking out
-    # has to be reachable from everywhere and instant. There is deliberately no
-    # code path that sets this flag except a user pressing the button.
-
-    is_checked_in = models.BooleanField(default=False, db_index=True)
-    #: When the tap happened. Nothing gates on it — it is what the UI shows
-    #: ("on the map since 14:02") and what support reads when someone asks why
-    #: they were visible. Cleared on check-out so it never describes a state
-    #: the user is no longer in.
-    checked_in_at = models.DateTimeField(null=True, blank=True)
-
-    def is_on_map(self, now=None):
-        """Whether this user may currently be drawn on anybody else's map.
-
-        The Python counterpart of `visibility.checked_in_q`, which is the same
-        rule in SQL. Both exist because list endpoints have to filter in the
-        database and per-row callers cannot; they must never drift apart, so
-        neither grows a condition the other lacks.
-
-        `now` is accepted and unused. It is kept because every other
-        time-sensitive predicate in this codebase takes one, and because a
-        caller sweeping many rows against a single clock should not have to
-        know that this particular rule stopped depending on the time.
-        """
-        return bool(self.is_checked_in)
-
-    def check_in_state(self):
-        """What the client renders: whether you are on the map, and since when."""
-        return {
-            'is_checked_in': bool(self.is_checked_in),
-            'checked_in_at': self.checked_in_at.isoformat() if self.checked_in_at else None,
-        }
-
-    def apply_check_in(self):
-        """Put this user on the map. Does not save.
-
-        No duration argument, and no overload that would accept one. An
-        expiring check-in and an indefinite one are different promises, and the
-        consent screen makes the indefinite one explicitly — a caller able to
-        pass a number here would be able to make a different promise quietly.
-        """
-        self.is_checked_in = True
-        self.checked_in_at = timezone.now()
-        return ['is_checked_in', 'checked_in_at']
-
-    def apply_check_out(self):
-        """Take this user off every map. Does not save.
-
-        Motion goes with it: a speed trail is drawn from a published position,
-        so leaving one behind would outlive the position it belongs to.
-        """
-        self.is_checked_in = False
-        self.checked_in_at = None
-        self.motion_class = self.MotionClass.STATIONARY
-        self.motion_updated_at = None
-        return [
-            'is_checked_in', 'checked_in_at', 'motion_class', 'motion_updated_at',
-        ]
-
     # ── Privacy ───────────────────────────────────────────────────────────────
     # Two independent axes, deliberately kept apart:
     #   location_sharing — am I out there on the map right now, and how precisely
@@ -329,6 +250,25 @@ class User(AbstractUser):
     # see users/migrations/0010 for the mapping.
 
     class LocationSharing(models.TextChoices):
+        """The one control over whether — and how precisely — you are on the map.
+
+        These three were once only about *precision*, sitting behind a separate
+        flag that decided whether you appeared at all. That flag is gone: it was
+        fully determined by this field, so keeping both meant two values that
+        had to agree and could drift. PAUSED is the off position now, and it is
+        the only off position.
+
+        App Review rejected 5.1.2(i) against the old arrangement, where a user
+        was on the map because they had granted the OS location permission.
+        Three things answer that, and all three live on this field:
+
+          * the default is PAUSED, so nobody is published until they choose to
+            be — including every account that predates the change,
+          * moving off PAUSED is a deliberate press against a consent screen
+            that says what it means (see the client's LocationSharingConsent),
+          * and it is the *only* way onto the map; nothing derives it, no
+            background task sets it, and granting a permission does not imply it.
+        """
         LIVE = 'live', 'Live'
         APPROXIMATE = 'approximate', 'Approximate'
         PAUSED = 'paused', 'Paused'
@@ -336,8 +276,23 @@ class User(AbstractUser):
     location_sharing = models.CharField(
         max_length=11,
         choices=LocationSharing.choices,
-        default=LocationSharing.LIVE,
+        default=LocationSharing.PAUSED,
+        db_index=True,
     )
+
+    def is_on_map(self, now=None):
+        """Whether this user may be drawn on anybody else's map.
+
+        The single named predicate for "is this person published", kept as a
+        method rather than inlining the comparison at ~a dozen call sites: the
+        rule has been re-expressed twice already, and each time it was one edit
+        here instead of a hunt. The SQL counterpart is `visibility.on_map_q`,
+        and the two must never disagree.
+
+        `now` is accepted and unused, so callers sweeping many rows against a
+        single clock do not have to know that this rule does not depend on time.
+        """
+        return self.location_sharing != self.LocationSharing.PAUSED
 
     class Audience(models.TextChoices):
         EVERYONE = 'everyone', 'Everyone'

@@ -88,52 +88,70 @@ class CreateStoryView(APIView):
         return Response(StorySerializer(story, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
 
+def nearby_stories(user, lat, lon, request):
+    """Stories placed near (`lat`, `lon`) that `user` may see, serialized.
+
+    The anchor is a parameter for the same reason it is in
+    proximity.views.nearby_users: it comes either from the position stored for
+    a user who shares their location, or from a coordinate a paused user's
+    device supplied for this one request. Read-only either way — nothing here
+    writes, so the private path cannot leave a trace by asking.
+    """
+    min_lat, max_lat, min_lon, max_lon = _bounding_box(lat, lon, NEARBY_RADIUS_KM)
+
+    from django.db.models import Q
+    now = timezone.now()
+    candidates = Story.objects.filter(
+        expires_at__gt=now,
+    ).filter(
+        Q(user=user) |
+        Q(
+            latitude__gte=min_lat,
+            latitude__lte=max_lat,
+            longitude__gte=min_lon,
+            longitude__lte=max_lon,
+        )
+    ).exclude(
+        user_id__in=_blocked_ids_for(user)
+    ).filter(
+        # Whose stories may reach this viewer at all — the author's
+        # Stories setting and private-account gate, applied in SQL.
+        visibility.visible_field_q(user, 'stories')
+    ).select_related('user').prefetch_related('reactions')
+
+    stories = [
+        s for s in candidates
+        if s.user_id == user.pk or haversine(lat, lon, float(s.latitude), float(s.longitude)) <= NEARBY_RADIUS_KM
+    ]
+
+    saved_ids = set(
+        SavedStory.objects.filter(
+            user=user, story_id__in=[s.pk for s in stories],
+        ).values_list('story_id', flat=True)
+    )
+    serializer = StorySerializer(
+        stories, many=True, context={'request': request, 'saved_ids': saved_ids},
+    )
+    return serializer.data
+
+
 class NearbyStoriesView(APIView):
+    """Stories near the position stored for the caller.
+
+    Kept as its own route because the story map is reachable outside the
+    composite map endpoint. A paused caller has no stored anchor, so they get
+    an empty list here and use /api/map/nearby/query/ instead.
+    """
+
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         user = request.user
-        if user.latitude is None or user.longitude is None:
-            return Response({'detail': 'Your location is not set.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        lat = float(user.latitude)
-        lon = float(user.longitude)
-        min_lat, max_lat, min_lon, max_lon = _bounding_box(lat, lon, NEARBY_RADIUS_KM)
-
-        from django.db.models import Q
-        now = timezone.now()
-        candidates = Story.objects.filter(
-            expires_at__gt=now,
-        ).filter(
-            Q(user=user) |
-            Q(
-                latitude__gte=min_lat,
-                latitude__lte=max_lat,
-                longitude__gte=min_lon,
-                longitude__lte=max_lon,
-            )
-        ).exclude(
-            user_id__in=_blocked_ids_for(user)
-        ).filter(
-            # Whose stories may reach this viewer at all — the author's
-            # Stories setting and private-account gate, applied in SQL.
-            visibility.visible_field_q(user, 'stories')
-        ).select_related('user').prefetch_related('reactions')
-
-        stories = [
-            s for s in candidates
-            if s.user_id == user.pk or haversine(lat, lon, float(s.latitude), float(s.longitude)) <= NEARBY_RADIUS_KM
-        ]
-
-        saved_ids = set(
-            SavedStory.objects.filter(
-                user=user, story_id__in=[s.pk for s in stories],
-            ).values_list('story_id', flat=True)
-        )
-        serializer = StorySerializer(
-            stories, many=True, context={'request': request, 'saved_ids': saved_ids},
-        )
-        return Response(serializer.data)
+        if not user.is_on_map() or user.latitude is None or user.longitude is None:
+            return Response([])
+        return Response(nearby_stories(
+            user, float(user.latitude), float(user.longitude), request,
+        ))
 
 
 class ReactToStoryView(APIView):

@@ -29,6 +29,24 @@ WRITE_EVERY = timedelta(seconds=30)
 
 HEADER = 'HTTP_X_AURA_PRESENCE'
 FOREGROUND = 'foreground'
+#: Paths that must never mark anyone present, whatever header they carry.
+#:
+#: The private nearby-query endpoints (see proximity.views.NearbyQueryView) are
+#: how a user with location sharing Paused browses the map. Everything else
+#: about them is read-only, and "creating presence solely because this endpoint
+#: was called" is the one write that could still have crept in through here.
+#:
+#: Belt and braces rather than the enforcement: `visibility.presence_for`
+#: already refuses to emit presence for a paused user at all, so nothing was
+#: leaking. This makes the row stop moving as well as the payload stop
+#: carrying it, which is the version that survives someone later relaxing the
+#: presence rule without thinking about this path.
+#:
+#: Coupled to proximity/urls.py by string. A test pins them together.
+PRESENCE_EXEMPT_PATHS = frozenset({
+    '/api/proximity/nearby/query/',
+    '/api/map/nearby/query/',
+})
 #: Sent on the way to the background, so someone who closes the app drops off
 #: immediately instead of lingering for the rest of the window.
 BACKGROUND = 'background'
@@ -54,6 +72,8 @@ class PresenceMiddleware:
 
         state = request.META.get(HEADER)
         if state not in (FOREGROUND, BACKGROUND):
+            return
+        if request.path in PRESENCE_EXEMPT_PATHS:
             return
 
         user = getattr(request, 'user', None)

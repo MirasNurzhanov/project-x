@@ -17,15 +17,15 @@ from interests.models import Interest
 from notifications.models import Notification
 from stories.models import Story
 from users.models import User
-from users.testing import check_in
+from users.testing import share_location
 
 
 def make_user(name, **extra):
-    # On the map by default. Users are checked *out* on creation now (see
-    # users.visibility), so a fixture for a test about anything else has to
-    # opt in or it measures the check-in gate instead of its own subject.
-    # proximity/test_check_in.py owns the assertions about the default.
-    return check_in(User.objects.create_user(
+    # On the map by default. `location_sharing` defaults to Paused now (see
+    # users.visibility), so a fixture for a test about anything else has to opt
+    # in or it measures the default instead of its own subject.
+    # proximity/test_map_visibility.py owns the assertions about the default.
+    return share_location(User.objects.create_user(
         username=name, email=f'{name}@example.com', password='testpass-123', **extra
     ))
 

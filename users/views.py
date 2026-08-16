@@ -265,23 +265,29 @@ class PrivacySettingsView(APIView):
             user.save(update_fields=['latitude', 'longitude'])
 
         # Pausing is the strongest statement on this screen — "I am not out
-        # there at all" — so it does three things rather than one. It ends any
-        # standing check-in, because a paused user must not still be counting
-        # down towards visible. It forgets the position already on file, which
-        # is the half that was missing: pausing used to stop new reports while
-        # leaving the last one sitting in the row. And it does both here, on
-        # the server, so a client that never gets the memo changes nothing.
+        # there at all" — so it forgets the position already on file rather than
+        # only stopping new ones. Pausing used to leave the last reported
+        # position sitting in the row, which meant the map stopped drawing you
+        # but the database still knew exactly where you had been.
+        #
+        # Motion goes with it: a speed trail is drawn from a published position,
+        # so leaving one behind would outlive the position it belongs to.
+        #
+        # Done here, on the server, so a client that never gets the memo — or
+        # never runs again — changes nothing about the outcome.
         if (
             user.location_sharing != previous_sharing
             and user.location_sharing == User.LocationSharing.PAUSED
         ):
-            fields = user.apply_check_out()
             user.latitude = None
             user.longitude = None
             user.location_updated_at = None
             user.location_accuracy_m = None
-            user.save(update_fields=fields + [
+            user.motion_class = User.MotionClass.STATIONARY
+            user.motion_updated_at = None
+            user.save(update_fields=[
                 'latitude', 'longitude', 'location_updated_at', 'location_accuracy_m',
+                'motion_class', 'motion_updated_at',
             ])
 
         payload = PrivacySettingsSerializer(user).data

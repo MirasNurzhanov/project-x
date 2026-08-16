@@ -14,7 +14,7 @@ from friends.models import BlockedUser, FriendRequest, HiRequest
 from interests.models import Interest
 from stories.models import Story
 from users.models import User
-from users.testing import check_in
+from users.testing import share_location
 from users.visibility import APPROX_GRID_M, snap_coordinates
 
 #: Stands in for "this user has a zone track" in tests that only care about
@@ -23,11 +23,11 @@ TEST_TRACK_URL = 'https://example.com/test-track.mp3'
 
 
 def make_user(name, **extra):
-    # On the map by default. Users are checked *out* on creation now (see
-    # users.visibility), so a fixture for a test about anything else has to
-    # opt in or it measures the check-in gate instead of its own subject.
-    # proximity/test_check_in.py owns the assertions about the default.
-    return check_in(User.objects.create_user(
+    # On the map by default. `location_sharing` defaults to Paused now (see
+    # users.visibility), so a fixture for a test about anything else has to opt
+    # in or it measures the default instead of its own subject.
+    # proximity/test_map_visibility.py owns the assertions about the default.
+    return share_location(User.objects.create_user(
         username=name, email=f'{name}@example.com', password='testpass-123', **extra
     ))
 
@@ -478,9 +478,16 @@ class PrivacySettingsEndpointTests(TestCase):
 # ─── Defaults ─────────────────────────────────────────────────────────────────
 class DefaultsTests(TestCase):
     def test_new_account_defaults(self):
-        user = make_user('fresh')
+        # `make_user` shares location for the rest of this module's benefit, so
+        # the one assertion that is *about* the default builds its own user.
+        # The default itself is Paused, and proximity/test_map_visibility.py is
+        # where that is pinned from every direction.
+        user = User.objects.create_user(
+            username='fresh-default', email='fresh-default@example.com',
+            password='testpass-123',
+        )
         self.assertFalse(user.is_private)
-        self.assertEqual(user.location_sharing, User.LocationSharing.LIVE)
+        self.assertEqual(user.location_sharing, User.LocationSharing.PAUSED)
         # Interests stay open: they are the matching primitive.
         self.assertEqual(user.visibility_interests, User.Audience.EVERYONE)
         for field in ('visibility_stories', 'visibility_stats',

@@ -11,7 +11,11 @@ from regions import places
 from users import visibility, zones
 from users.models import User
 from friends.models import FriendRequest, HiRequest
-from .serializers import CheckInSerializer, LocationUpdateSerializer, NearbyUserSerializer
+from .serializers import (
+    LocationUpdateSerializer,
+    NearbyQuerySerializer,
+    NearbyUserSerializer,
+)
 from .utils import haversine
 from notifications.utils import notify_nearby_matches, notify_zone_music_entry
 from encounters.utils import delete_old_encounters_throttled, record_encounters
@@ -102,7 +106,7 @@ def _viewer_zone_box(user, lat, lon):
     )
 
 
-def _viewer_zone_contains(user, lat, lon, candidate_tolerance_m):
+def _viewer_zone_contains(user, lat, lon, candidate_tolerance_m, anchor):
     """Whether `user`'s own zone covers a candidate at (`lat`, `lon`).
 
     The viewer's zone governs, and the direction is the whole design: this asks
@@ -127,9 +131,13 @@ def _viewer_zone_contains(user, lat, lon, candidate_tolerance_m):
     try:
         return user.zone_contains(lat, lon, tolerance_m=candidate_tolerance_m)
     except zones.ZoneBoundaryUnavailable:
-        metres = haversine(
-            float(user.latitude), float(user.longitude), lat, lon,
-        ) * 1000
+        # `anchor`, not `user.latitude`. A circle zone is centred on where the
+        # viewer is, and on the private-query path that is a coordinate this
+        # request carried rather than one on the row — a paused viewer has no
+        # stored position at all, and reading one here would raise or, worse,
+        # silently measure from a position that is no longer theirs.
+        anchor_lat, anchor_lon = anchor
+        metres = haversine(anchor_lat, anchor_lon, lat, lon) * 1000
         return metres <= user.zone_radius + candidate_tolerance_m
 
 
@@ -160,7 +168,7 @@ def _get_relationship_ids(user, excluded_ids):
 def _trigger_nearby_notifications(user):
     if user.latitude is None or user.longitude is None:
         return
-    if user.location_sharing == User.LocationSharing.PAUSED:
+    if not user.is_on_map():
         return
 
     lat = float(user.latitude)
@@ -194,18 +202,16 @@ def _trigger_nearby_notifications(user):
         if dist <= DEFAULT_RADIUS_KM:
             matches.append((candidate, dist))
 
-    # Each direction is gated on the *sender's* own check-in inside
-    # `can_surface_in_proximity`, so this stays a single call: a checked-out
-    # user is neither announced to anyone nor told about anyone, and no
-    # third state has to be maintained here.
+    # Each direction is gated on the *sender's* own sharing setting inside
+    # `can_surface_in_proximity`, so this stays one call: someone paused is
+    # neither announced to anyone nor told about anyone.
     notify_nearby_matches(user, matches)
     # An encounter is a symmetric record of two people having been in the same
-    # place, so it takes consent from both. The candidate's is already settled
-    # — `visible_users(on_map=True)` filtered on it — which leaves the reporter.
-    # Nothing is written while they are checked out, which is what keeps the
-    # encounter log free of positions nobody agreed to publish.
-    if user.is_on_map():
-        record_encounters(user, matches)
+    # place, so it takes consent from both. The candidate's is settled by
+    # `visible_users(on_map=True)` above and the reporter's by the early return
+    # at the top of this function — which is what keeps the encounter log free
+    # of positions nobody agreed to publish.
+    record_encounters(user, matches)
 
 
 def _trigger_zone_music_alerts(user):
@@ -222,12 +228,10 @@ def _trigger_zone_music_alerts(user):
     """
     if user.latitude is None or user.longitude is None:
         return
-    if user.location_sharing == User.LocationSharing.PAUSED:
-        return
     # Both halves of this alert say where somebody is standing — one tells the
-    # owner a friend just walked into earshot, the other tells the visitor
-    # whose earshot they are in. Neither is sendable without a check-in from
-    # the person it discloses, and the mover is the one being disclosed here.
+    # owner a friend just walked into earshot, the other tells the visitor whose
+    # earshot they are in. Neither is sendable without the person it discloses
+    # being on the map, and the mover is the one disclosed here.
     if not user.is_on_map():
         return
 
@@ -252,15 +256,15 @@ def _trigger_zone_music_alerts(user):
     # to be walked into, so those rows are dropped before the distance maths
     # rather than walked and discarded. `notify_zone_music_entry` re-checks it
     # via `broadcasts_zone_track` for the callers that do not come through here.
-    # `checked_in_q` for the owner side: a zone belongs to a person, and a
-    # person who is off the map has no zone on it to be walked into.
+    # `on_map_q` for the owner side: a zone belongs to a person, and a person
+    # who is off the map has no zone on it to be walked into.
     owners = User.objects.filter(
-        visibility.checked_in_q(),
+        visibility.on_map_q(),
         pk__in=approved_ids,
         music_zone_active=True,
         latitude__isnull=False,
         longitude__isnull=False,
-    ).exclude(location_sharing=User.LocationSharing.PAUSED)
+    )
 
     # `zone_mode` is not consulted. A music zone is always its own circle of
     # `music_zone_radius` now — it never inherits a region border, which is what
@@ -302,12 +306,12 @@ def classify_speed(speed):
 class UpdateLocationView(APIView):
     """Where the phone says it is.
 
-    Reporting a position is not checking in and never becomes one: this view
-    does not touch `is_checked_in` or `checked_in_at`, so no amount of a phone
-    sitting there reporting can put its owner on the map. That separation is the whole of the fix for
-    5.1.2(i) — the position is stored as the anchor for the owner's *own*
-    queries ("who is near me", which district am I in), and `visible_users`
-    decides whether anybody else ever sees it.
+    Reporting a position never changes who may see it: this view does not touch
+    `location_sharing`, so no amount of a phone sitting there reporting can put
+    its owner on the map. That separation is the whole of the fix for 5.1.2(i) —
+    a stored position is the anchor for the owner's *own* queries ("who is near
+    me", "which district am I in"), and `visible_users` decides independently
+    whether anybody else ever sees it.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -316,6 +320,20 @@ class UpdateLocationView(APIView):
         serializer = LocationUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = request.user
+
+        # Paused means we hold no position at all, so there is nothing for this
+        # to write. The client already refuses to send one, which makes this
+        # unreachable from our own app — and that is exactly why it is here:
+        # the only caller that can reach it is one we did not write, and "the
+        # app would not do that" is not an access control.
+        if not user.is_on_map():
+            return Response(
+                {
+                    'detail': 'Location sharing is paused.',
+                    'code': 'location_sharing_paused',
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
         # The client fuzzes too, but it is not trusted to: on Approximate the
         # precise value is discarded here, before anything is written.
         user.latitude, user.longitude = visibility.store_coordinates(
@@ -334,12 +352,8 @@ class UpdateLocationView(APIView):
             'updated_at',
         ]
 
-        # Motion only ever exists to be drawn on somebody else's map, so it is
-        # not recorded for a user who is not on one. Without this a checked-out
-        # user would still be accumulating a movement classification, which is
-        # state about them that has no reader and no consent behind it.
         motion = classify_speed(serializer.validated_data.get('speed'))
-        if motion is not None and user.is_on_map():
+        if motion is not None:
             user.motion_class = motion
             user.motion_updated_at = timezone.now()
             fields += ['motion_class', 'motion_updated_at']
@@ -359,242 +373,227 @@ class UpdateLocationView(APIView):
         return Response({'latitude': str(user.latitude), 'longitude': str(user.longitude)})
 
 
-class MapCheckInView(APIView):
-    """The one way onto other people's maps, and the one way off.
+def nearby_users(user, lat, lon, request):
+    """Everyone `user` may see from (`lat`, `lon`), serialized.
 
-    GET    — whether you are on the map, and since when.
-    POST   — go on the map, from a position supplied in the same request.
-    DELETE — come off it now.
+    The anchor is a parameter rather than a read of `user.latitude` because it
+    has two sources and they are not interchangeable:
 
-    Nothing else in the codebase sets `is_checked_in`. That is the point, and
-    it carries more weight now that a check-in does not expire: the flag can
-    only move because somebody pressed something, so the consent screen in
-    front of the POST is the whole of what the user agreed to and the DELETE is
-    the whole of how they take it back. The location reporter below
-    deliberately does not touch these fields — a phone left running cannot put
-    its owner on the map.
+      * a user who shares their location is anchored on the position stored for
+        them, which is also the position other people see;
+      * a paused user is anchored on a coordinate their device sent for this
+        request only, which is never stored and never shown to anybody.
+
+    Nothing in here writes. Everything that used to be a side effect of asking
+    "who is near me" — the encounter rows, the nearby pushes, the place
+    snapshot — lives on the write path in `UpdateLocationView`, which is the
+    half a paused user cannot reach. Keeping this function free of writes is
+    what makes the private path safe to expose rather than a second way to
+    become visible.
     """
+    blocked_ids = visibility.blocked_ids_for(user)
 
-    permission_classes = [permissions.IsAuthenticated]
+    friend_ids, connected_ids = _get_relationship_ids(user, blocked_ids | {user.pk})
 
-    def get(self, request):
-        return Response(request.user.check_in_state())
+    # Single chokepoint: blocks both ways and paused accounts are gone
+    # before any of the distance tiers below get to see the rows.
+    base_qs = (
+        visibility.visible_users(user, on_map=True)
+        .filter(latitude__isnull=False, longitude__isnull=False)
+        .prefetch_related('interests')
+    )
 
-    def post(self, request):
-        serializer = CheckInSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        user = request.user
+    # Friends: always visible, no distance limit
+    friend_candidates = base_qs.filter(pk__in=friend_ids) if friend_ids else User.objects.none()
 
-        # Paused is a standing "do not put me on the map"; checking in over the
-        # top of it would be the app overruling a setting the user last touched
-        # on purpose. Refused with something the client can act on rather than
-        # silently flipping it back to Live.
-        if user.location_sharing == User.LocationSharing.PAUSED:
-            return Response(
-                {
-                    'detail': 'Location sharing is paused. Resume it in Privacy '
-                              'to check in.',
-                    'code': 'location_sharing_paused',
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
+    # How far this viewer sees, which is now something they chose rather
+    # than a constant. `zone_box` is the bounding box of their zone —
+    # their circle, or their district's or city's outline — and every
+    # non-friend tier below is gated on it. Nothing about the people being
+    # looked at enters into it: visibility is not mutual, so somebody found
+    # this way generally cannot see back.
+    #
+    # Deliberately independent of `zone_active`, which has one documented
+    # job — whether the circle is *drawn* on the map — and has never gated
+    # anything else. See ZoneSwitchScopeTests.
+    zone_box = _viewer_zone_box(user, lat, lon)
 
-        # The position rides the check-in and is stored through the same
-        # fuzzing path as any other report, so an Approximate sharer's precise
-        # point is discarded here too rather than being written just this once.
-        user.latitude, user.longitude = visibility.store_coordinates(
+    # Connected: inside the zone, or within CONNECTED_RADIUS_KM.
+    #
+    # The 1km stays as a floor rather than being replaced. Somebody you have
+    # exchanged a Hi with is a weaker tie than a friend but not a stranger,
+    # and shrinking your own zone to 50m is a statement about *discovery* —
+    # it should not quietly drop the people you have already met. The zone
+    # only ever widens this tier.
+    if connected_ids:
+        conn_lat_delta = CONNECTED_RADIUS_KM / 111.0
+        conn_lon_delta = CONNECTED_RADIUS_KM / (111.0 * math.cos(math.radians(lat)))
+        connected_candidates = base_qs.filter(
+            Q(
+                latitude__range=(lat - conn_lat_delta, lat + conn_lat_delta),
+                longitude__range=(lon - conn_lon_delta, lon + conn_lon_delta),
+            ) | zone_box,
+            pk__in=connected_ids,
+        )[:MAX_ZONE_CANDIDATES]
+    else:
+        connected_candidates = User.objects.none()
+
+    # Strangers: inside the viewer's zone, filtered by age_tier and
+    # interests. This is where the fixed 500m used to be, and it is gone —
+    # a viewer's reach is their zone and nothing else. For anyone who has
+    # never touched the setting that is a 500m circle, which is the same
+    # number by a different route.
+    stranger_candidates = (
+        base_qs
+        .exclude(pk__in=friend_ids)
+        .exclude(pk__in=connected_ids)
+        .filter(zone_box)
+    )
+    if user.age_tier:
+        stranger_candidates = stranger_candidates.filter(age_tier=user.age_tier)
+    user_interest_ids = list(user.interests.values_list('id', flat=True))
+    if user_interest_ids:
+        # Strangers are surfaced through shared interests, so opting out of
+        # interest discovery keeps you off strangers' maps.
+        stranger_candidates = stranger_candidates.filter(
+            interests__in=user_interest_ids, discoverable_by_interest=True,
+        ).distinct()
+
+    distances = {}
+    nearby = []
+    seen = set()
+
+    # Distances are measured against whatever position is stored. For an
+    # Approximate user that is already the snapped point, so the number is
+    # coarse by construction rather than by being withheld.
+    for candidate in friend_candidates:
+        distances[candidate.pk] = round(
+            haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
+        nearby.append(candidate)
+        seen.add(candidate.pk)
+
+    # The exact test, for both gated tiers. The box above was a bounding
+    # box; this is the boundary itself — a circle measured properly, or the
+    # ray cast against the real outline. Tolerance is the *candidate's*,
+    # because it is their stored position being tested and theirs that may
+    # have been snapped to a grid cell.
+    def in_zone(candidate):
+        return _viewer_zone_contains(
             user,
-            serializer.validated_data['latitude'],
-            serializer.validated_data['longitude'],
-        )
-        user.location_updated_at = timezone.now()
-        accuracy = serializer.validated_data.get('accuracy')
-        user.location_accuracy_m = (
-            float(accuracy) if accuracy is not None and accuracy >= 0 else None
+            float(candidate.latitude), float(candidate.longitude),
+            visibility.position_tolerance_m(candidate),
+            anchor=(lat, lon),
         )
 
-        fields = user.apply_check_in() + [
-            'latitude', 'longitude', 'location_updated_at', 'location_accuracy_m',
-            'updated_at',
-        ]
-        user.save(update_fields=fields)
-        places.refresh_quietly(user)
-        return Response(user.check_in_state(), status=status.HTTP_200_OK)
+    for candidate in connected_candidates:
+        if candidate.pk in seen:
+            continue
+        dist = round(haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
+        # The 1km floor, or the zone if it reaches further. Either qualifies.
+        if dist <= CONNECTED_RADIUS_KM or in_zone(candidate):
+            distances[candidate.pk] = dist
+            nearby.append(candidate)
+            seen.add(candidate.pk)
 
-    def delete(self, request):
-        """Leave the map immediately.
+    for candidate in stranger_candidates[:MAX_ZONE_CANDIDATES]:
+        if candidate.pk in seen:
+            continue
+        if not in_zone(candidate):
+            continue
+        distances[candidate.pk] = round(
+            haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
+        nearby.append(candidate)
+        seen.add(candidate.pk)
 
-        Idempotent, and never an error: someone tapping "check out" twice, or
-        from two screens at once, wants the same outcome both times and should
-        not be shown a failure for asking. This is the only way off the map, so
-        it has to succeed whatever state it finds.
-        """
-        user = request.user
-        user.save(update_fields=user.apply_check_out() + ['updated_at'])
-        return Response(user.check_in_state(), status=status.HTTP_200_OK)
+    # Nearest first, then capped. The order matters more than it used to:
+    # inside a city zone this is the difference between the 200 people
+    # closest to you and 200 arbitrary rows from the same city.
+    #
+    # Friends are exempt. They are visible at any distance by design, and a
+    # cap that quietly dropped the friend across town the moment a city zone
+    # filled the list would be the zone setting silently changing something
+    # that has nothing to do with discovery.
+    nearby.sort(key=lambda u: distances.get(u.pk, float('inf')))
+    if len(nearby) > MAX_NEARBY_MATCHES:
+        friends = [u for u in nearby if u.pk in friend_ids]
+        others = [u for u in nearby if u.pk not in friend_ids]
+        room = max(0, MAX_NEARBY_MATCHES - len(friends))
+        nearby = friends + others[:room]
+        nearby.sort(key=lambda u: distances.get(u.pk, float('inf')))
+
+    nearby_ids = [u.pk for u in nearby]
+    relationships = _build_relationships(user, nearby_ids)
+    serializer = NearbyUserSerializer(
+        nearby,
+        many=True,
+        context={
+            'request': request,
+            'distances': distances,
+            'relationships': relationships,
+            'my_interest_ids': set(user_interest_ids),
+        },
+    )
+    return serializer.data
 
 
 class NearbyUsersView(APIView):
+    """Who is near the position stored for the caller.
+
+    Only answers for somebody who shares their location, because only they have
+    a stored position — see NearbyQueryView for the other half.
+    """
+
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         delete_old_encounters_throttled()
         user = request.user
 
-        if user.location_sharing == User.LocationSharing.PAUSED:
+        if not user.is_on_map() or user.latitude is None or user.longitude is None:
+            # No stored anchor. Empty rather than an error: a paused client
+            # polling this while it switches over to the query endpoint should
+            # see an empty map, not a failure.
             return Response([])
 
-        if user.latitude is None or user.longitude is None:
-            return Response(
-                {'detail': 'Your location is not set.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        return Response(nearby_users(
+            user, float(user.latitude), float(user.longitude), request,
+        ))
 
-        lat = float(user.latitude)
-        lon = float(user.longitude)
 
-        blocked_ids = visibility.blocked_ids_for(user)
+class NearbyQueryView(APIView):
+    """Who is near a coordinate the caller supplies, for this request only.
 
-        friend_ids, connected_ids = _get_relationship_ids(user, blocked_ids | {user.pk})
+    The browsing half of the map, and the reason a paused user can still use
+    it. Everything about it is read-only by construction: it validates two
+    numbers, hands them to `nearby_users` as an anchor, and returns the answer.
+    It does not write `latitude`/`longitude`, `location_updated_at`,
+    `location_accuracy_m` or the motion fields; it does not snapshot a place;
+    it does not send an alert or record an encounter; and it cannot make the
+    caller appear on anybody's map, because appearing is decided by
+    `location_sharing` and nothing here touches that field either.
 
-        # Single chokepoint: blocks both ways and paused accounts are gone
-        # before any of the distance tiers below get to see the rows.
-        base_qs = (
-            visibility.visible_users(user, on_map=True)
-            .filter(latitude__isnull=False, longitude__isnull=False)
-            .prefetch_related('interests')
-        )
+    The invariant, stated the way it is worth remembering:
 
-        # Friends: always visible, no distance limit
-        friend_candidates = base_qs.filter(pk__in=friend_ids) if friend_ids else User.objects.none()
+        a public location update requires sharing to be on
+        a private nearby query does not, and never turns it on
 
-        # How far this viewer sees, which is now something they chose rather
-        # than a constant. `zone_box` is the bounding box of their zone —
-        # their circle, or their district's or city's outline — and every
-        # non-friend tier below is gated on it. Nothing about the people being
-        # looked at enters into it: visibility is not mutual, so somebody found
-        # this way generally cannot see back.
-        #
-        # Deliberately independent of `zone_active`, which has one documented
-        # job — whether the circle is *drawn* on the map — and has never gated
-        # anything else. See ZoneSwitchScopeTests.
-        zone_box = _viewer_zone_box(user, lat, lon)
+    Open to callers who *are* sharing, too. They have no reason to use it, but
+    refusing them would mean a second policy to keep in step with this one, and
+    the endpoint is harmless: it still writes nothing, and a client that lies
+    about where it is could already have lied to the update endpoint instead.
+    """
 
-        # Connected: inside the zone, or within CONNECTED_RADIUS_KM.
-        #
-        # The 1km stays as a floor rather than being replaced. Somebody you have
-        # exchanged a Hi with is a weaker tie than a friend but not a stranger,
-        # and shrinking your own zone to 50m is a statement about *discovery* —
-        # it should not quietly drop the people you have already met. The zone
-        # only ever widens this tier.
-        if connected_ids:
-            conn_lat_delta = CONNECTED_RADIUS_KM / 111.0
-            conn_lon_delta = CONNECTED_RADIUS_KM / (111.0 * math.cos(math.radians(lat)))
-            connected_candidates = base_qs.filter(
-                Q(
-                    latitude__range=(lat - conn_lat_delta, lat + conn_lat_delta),
-                    longitude__range=(lon - conn_lon_delta, lon + conn_lon_delta),
-                ) | zone_box,
-                pk__in=connected_ids,
-            )[:MAX_ZONE_CANDIDATES]
-        else:
-            connected_candidates = User.objects.none()
+    permission_classes = [permissions.IsAuthenticated]
 
-        # Strangers: inside the viewer's zone, filtered by age_tier and
-        # interests. This is where the fixed 500m used to be, and it is gone —
-        # a viewer's reach is their zone and nothing else. For anyone who has
-        # never touched the setting that is a 500m circle, which is the same
-        # number by a different route.
-        stranger_candidates = (
-            base_qs
-            .exclude(pk__in=friend_ids)
-            .exclude(pk__in=connected_ids)
-            .filter(zone_box)
-        )
-        if user.age_tier:
-            stranger_candidates = stranger_candidates.filter(age_tier=user.age_tier)
-        user_interest_ids = list(user.interests.values_list('id', flat=True))
-        if user_interest_ids:
-            # Strangers are surfaced through shared interests, so opting out of
-            # interest discovery keeps you off strangers' maps.
-            stranger_candidates = stranger_candidates.filter(
-                interests__in=user_interest_ids, discoverable_by_interest=True,
-            ).distinct()
-
-        distances = {}
-        nearby = []
-        seen = set()
-
-        # Distances are measured against whatever position is stored. For an
-        # Approximate user that is already the snapped point, so the number is
-        # coarse by construction rather than by being withheld.
-        for candidate in friend_candidates:
-            distances[candidate.pk] = round(
-                haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
-            nearby.append(candidate)
-            seen.add(candidate.pk)
-
-        # The exact test, for both gated tiers. The box above was a bounding
-        # box; this is the boundary itself — a circle measured properly, or the
-        # ray cast against the real outline. Tolerance is the *candidate's*,
-        # because it is their stored position being tested and theirs that may
-        # have been snapped to a grid cell.
-        def in_zone(candidate):
-            return _viewer_zone_contains(
-                user,
-                float(candidate.latitude), float(candidate.longitude),
-                visibility.position_tolerance_m(candidate),
-            )
-
-        for candidate in connected_candidates:
-            if candidate.pk in seen:
-                continue
-            dist = round(haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
-            # The 1km floor, or the zone if it reaches further. Either qualifies.
-            if dist <= CONNECTED_RADIUS_KM or in_zone(candidate):
-                distances[candidate.pk] = dist
-                nearby.append(candidate)
-                seen.add(candidate.pk)
-
-        for candidate in stranger_candidates[:MAX_ZONE_CANDIDATES]:
-            if candidate.pk in seen:
-                continue
-            if not in_zone(candidate):
-                continue
-            distances[candidate.pk] = round(
-                haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
-            nearby.append(candidate)
-            seen.add(candidate.pk)
-
-        # Nearest first, then capped. The order matters more than it used to:
-        # inside a city zone this is the difference between the 200 people
-        # closest to you and 200 arbitrary rows from the same city.
-        #
-        # Friends are exempt. They are visible at any distance by design, and a
-        # cap that quietly dropped the friend across town the moment a city zone
-        # filled the list would be the zone setting silently changing something
-        # that has nothing to do with discovery.
-        nearby.sort(key=lambda u: distances.get(u.pk, float('inf')))
-        if len(nearby) > MAX_NEARBY_MATCHES:
-            friends = [u for u in nearby if u.pk in friend_ids]
-            others = [u for u in nearby if u.pk not in friend_ids]
-            room = max(0, MAX_NEARBY_MATCHES - len(friends))
-            nearby = friends + others[:room]
-            nearby.sort(key=lambda u: distances.get(u.pk, float('inf')))
-
-        nearby_ids = [u.pk for u in nearby]
-        relationships = _build_relationships(user, nearby_ids)
-        serializer = NearbyUserSerializer(
-            nearby,
-            many=True,
-            context={
-                'request': request,
-                'distances': distances,
-                'relationships': relationships,
-                'my_interest_ids': set(user_interest_ids),
-            },
-        )
-        return Response(serializer.data)
+    def post(self, request):
+        serializer = NearbyQuerySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return Response(nearby_users(
+            request.user,
+            float(serializer.validated_data['latitude']),
+            float(serializer.validated_data['longitude']),
+            request,
+        ))
 
 
 # Shared across requests on purpose: eight threads is the ceiling on how much
@@ -609,39 +608,97 @@ class NearbyUsersView(APIView):
 _MAP_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix='map-nearby')
 
 
-def _run_subview(view_get, request):
+def _run(fn, *args):
     # These threads never see Django's request_started/finished signals, so
     # stale-connection cleanup has to happen by hand on both sides of the call.
     close_old_connections()
     try:
-        return view_get(request)
+        return fn(*args)
     finally:
         close_old_connections()
 
 
+def _map_payload(user, lat, lon, request):
+    """The whole map from one anchor: people, stories, and club meetups.
+
+    No shared transaction (ATOMIC_REQUESTS is off), so the three reads are
+    independent and overlap instead of paying their latencies back to back.
+
+    Meetups take no anchor at all — they are scoped by club membership, not by
+    distance — so the coordinate never reaches that query.
+    """
+    from clubs.views import ClubEventNearbyView
+    from stories.views import nearby_stories
+
+    users_f = _MAP_POOL.submit(_run, nearby_users, user, lat, lon, request)
+    stories_f = _MAP_POOL.submit(_run, nearby_stories, user, lat, lon, request)
+    meetups_f = _MAP_POOL.submit(_run, _meetups, ClubEventNearbyView(), request)
+
+    return {
+        'users': users_f.result(),
+        'stories': stories_f.result(),
+        'meetups': meetups_f.result(),
+    }
+
+
+def _meetups(view, request):
+    return view.get(request).data
+
+
 class NearbyMapView(APIView):
+    """The map, anchored on the position stored for the caller."""
+
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         user = request.user
-        if user.latitude is None or user.longitude is None:
+        if not user.is_on_map() or user.latitude is None or user.longitude is None:
             return Response(
                 {'detail': 'Your location is not set.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        return Response(_map_payload(
+            user, float(user.latitude), float(user.longitude), request,
+        ))
 
-        from stories.views import NearbyStoriesView
-        from clubs.views import ClubEventNearbyView
 
-        # No shared transaction (ATOMIC_REQUESTS is off), so the three reads
-        # are independent and can overlap instead of paying their latencies
-        # back to back.
-        users_f = _MAP_POOL.submit(_run_subview, NearbyUsersView().get, request)
-        stories_f = _MAP_POOL.submit(_run_subview, NearbyStoriesView().get, request)
-        meetups_f = _MAP_POOL.submit(_run_subview, ClubEventNearbyView().get, request)
+class MapQueryView(APIView):
+    """The map, anchored on a coordinate supplied for this request only.
 
-        return Response({
-            'users': users_f.result().data,
-            'stories': stories_f.result().data,
-            'meetups': meetups_f.result().data,
-        })
+    The composite counterpart of NearbyQueryView, and read-only for the same
+    reasons — see that class, which is where the invariant is written down.
+
+    `place` rides along because a paused user still has to be able to tell
+    which city they are in, and the ordinary route to that answer reads the
+    stored position they do not have. Resolved cache-only: `allow_upstream` is
+    False, so this cannot reach a geocoder, and the boundary lookups that log
+    coordinates on the upstream path are unreachable from here.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = NearbyQuerySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        lat = float(serializer.validated_data['latitude'])
+        lon = float(serializer.validated_data['longitude'])
+
+        payload = _map_payload(request.user, lat, lon, request)
+        payload['place'] = _transient_place(lat, lon)
+        return Response(payload)
+
+
+def _transient_place(lat, lon):
+    """Which city/district a point falls in, computed and thrown away.
+
+    Reads the Region cache only. Nothing is written — in particular no
+    UserPlace row, which is the persistent "where is this user" record and
+    exactly the kind of presence this path must not create.
+    """
+    hierarchy = places.hierarchy_for_point(lat, lon, allow_upstream=False)
+    return {
+        'city': hierarchy.city_name or None,
+        'district': hierarchy.district_name or None,
+        'region': hierarchy.region_name or None,
+        'country_code': hierarchy.country_code or None,
+    }

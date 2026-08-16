@@ -109,27 +109,28 @@ def is_approved_viewer(rel):
     return rel in (SELF, FRIEND, CONNECTED)
 
 
-# ─── Map check-in ─────────────────────────────────────────────────────────────
-# Being on the map is an act, not a setting. `User.is_checked_in` records that
-# somebody performed it; nothing else — not an OS permission, not a location
-# report, not having the app open — puts a person on another user's screen.
-#
-# It stays on until they turn it off, across app launches and reboots. The
-# consent screen that precedes it says so; see users/models.py.
+# ─── On the map ───────────────────────────────────────────────────────────────
+# Being on the map is a choice, and `User.location_sharing` is where it is
+# recorded. Nothing else — not an OS permission, not a location report, not
+# having the app open — puts a person on another user's screen; the field
+# defaults to PAUSED and only a deliberate press moves it off.
 #
 # Two shapes of the same rule, because list endpoints have to filter in the
-# database and per-row callers cannot. `User.is_on_map` is the Python half.
+# database and per-row callers cannot. `User.is_on_map` is the Python half, and
+# neither may grow a condition the other lacks.
 
 
-def checked_in_q(prefix=None, now=None):
-    """Q selecting rows whose owner is on the map.
+def on_map_q(prefix=None, now=None):
+    """Q selecting rows whose owner is currently sharing their location.
 
     `prefix` is the path from the row to the user, for tables that point at one
     (`'user'`, `'author'`); None when filtering users directly. `now` is
     accepted and unused, matching `User.is_on_map` — see the note there.
     """
+    from .models import User
+
     base = '' if prefix is None else f'{prefix}__'
-    return Q(**{f'{base}is_checked_in': True})
+    return ~Q(**{f'{base}location_sharing': User.LocationSharing.PAUSED})
 
 
 # ─── Queryset filter ──────────────────────────────────────────────────────────
@@ -140,16 +141,16 @@ def visible_users(viewer, queryset=None, *, exclude_self=True,
     Always drops both directions of a block. The keyword flags add the
     surface-specific rules:
 
-    on_map          — drop anyone not currently checked in, and anyone who
-                      paused location sharing (proximity surfaces only)
+    on_map          — drop anyone not currently sharing their location
+                      (proximity surfaces only)
     discoverable_by — 'username' or 'interest'; drop anyone opted out of that
                       search surface
 
-    `on_map` is the gate App Review asked for, and it is deliberately the same
-    keyword the map endpoints already passed: every surface that publishes a
-    position was routed through here before the check-in existed, so adding the
-    condition in one place covered all of them at once and no new endpoint can
-    reach a position without opting into the rule.
+    `on_map` is the gate App Review asked for under 5.1.2(i), and it is
+    deliberately the same keyword the map endpoints already passed: every
+    surface that publishes a position was routed through here already, so the
+    rule lives in one place and no new endpoint can reach a position without
+    opting into it.
     """
     from .models import User
 
@@ -158,10 +159,7 @@ def visible_users(viewer, queryset=None, *, exclude_self=True,
     if exclude_self:
         qs = qs.exclude(pk=viewer.pk)
     if on_map:
-        # Check-in first: it is the consent, and it is not implied by anything
-        # else here. Someone sharing Live who never checked in is off the map.
-        qs = qs.filter(checked_in_q())
-        qs = qs.exclude(location_sharing=User.LocationSharing.PAUSED)
+        qs = qs.filter(on_map_q())
     if discoverable_by == 'username':
         qs = qs.filter(discoverable_by_username=True)
     elif discoverable_by == 'interest':
@@ -275,11 +273,9 @@ def can_surface_in_proximity(viewer, target, rel=None):
     if rel == BLOCKED:
         return False
     # "Someone is near you" is a publication of where `target` is standing, so
-    # it needs the same consent the map dot does. Applied per direction by the
+    # it takes the same consent the map dot does. Applied per direction by the
     # callers, which ask this twice with the pair swapped.
     if not target.is_on_map():
-        return False
-    if target.location_sharing == User.LocationSharing.PAUSED:
         return False
     if rel in (SELF, FRIEND, CONNECTED):
         return True
@@ -309,14 +305,11 @@ def proximity_visible_ids(viewer, candidate_ids):
     return allowed
 
 
-# Deliberately *not* gated on the live check-in, unlike everything above it.
-# These lists are history — the encounter log, and who sent you an alert — and
-# the rows in them were only ever written while the other person was checked in
-# (see proximity.views, which will not record an encounter otherwise). Retracting
-# a past, consented publication because someone has since checked out would empty
-# both screens every time a friend closed the app, which is a different promise
-# from the one the check-in makes. Blocking and opting out still apply on read,
-# because those *are* directed retractions.
+# Note this one *does* apply the live setting, unlike the encounter history it
+# feeds: `location_sharing` is checked above, so pausing retracts you from the
+# lists as well as from the map. That is the older behaviour and it is kept
+# deliberately — pausing is the strongest thing a user can say on this subject,
+# and it should not leave them legible in a second place.
 
 
 def minimal_only(viewer, target, rel=None):

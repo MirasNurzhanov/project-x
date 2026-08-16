@@ -45,6 +45,21 @@ from .models import Region, UserPlace
 
 logger = logging.getLogger(__name__)
 
+
+def log_point(lat, lon):
+    """A coordinate coarse enough to put in a log line.
+
+    Two decimal places is about a kilometre — enough to answer "which city did
+    this break in", which is the only thing these warnings are ever read for,
+    and not enough to place a person. Application logs outlive the request and
+    get shipped somewhere; a user's exact position should not be in them, and
+    the private browsing path (proximity.views.NearbyQueryView) makes that
+    sharper still because a paused user's coordinate is never stored anywhere
+    else at all.
+    """
+    return f'{lat:.2f},{lon:.2f}'
+
+
 #: The three tiers, widest first. Anything that walks them — a serializer, a
 #: picker, a comparison — walks them in this order.
 TIERS = ('city', 'region', 'district')
@@ -215,7 +230,7 @@ def _deepen(lat, lon, country):
         boundaries = overpass.boundaries_at(lat, lon, levels)
     except upstream.UpstreamError as exc:
         # A shallower chain is a narrower menu, not a failed lookup.
-        logger.warning('Chain deepening failed at %s,%s: %s', lat, lon, exc)
+        logger.warning('Chain deepening failed at %s: %s', log_point(lat, lon), exc)
         return
     if not boundaries:
         return
@@ -234,7 +249,7 @@ def _deepen(lat, lon, country):
     try:
         nominatim.lookup(missing)
     except upstream.UpstreamError as exc:
-        logger.warning('Could not fetch deeper boundaries at %s,%s: %s', lat, lon, exc)
+        logger.warning('Could not fetch deeper boundaries at %s: %s', log_point(lat, lon), exc)
 
 
 def hierarchy_for_point(lat, lon, allow_upstream=True, tolerance_m=0.0):
@@ -273,7 +288,7 @@ def hierarchy_for_point(lat, lon, allow_upstream=True, tolerance_m=0.0):
             )
         except upstream.UpstreamError as exc:
             # A missing district tier is a narrower menu, not a failed lookup.
-            logger.warning('District warm-up failed at %s,%s: %s', lat, lon, exc)
+            logger.warning('District warm-up failed at %s: %s', log_point(lat, lon), exc)
         _deepen(lat, lon, country or city.country_code)
 
     chain = _sub_areas(city, lat, lon, tolerance_m)

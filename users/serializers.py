@@ -66,9 +66,6 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'date_of_birth', 'age_tier', 'nationality', 'profession', 'interests',
             'latitude', 'longitude',
             'location_sharing', 'privacy_mode', 'date_joined', 'links',
-            # Read-only here for the same reason as on the privacy payload:
-            # /me reports whether you are on the map, it does not put you there.
-            'is_checked_in', 'checked_in_at',
             'is_private',
             'visibility_interests', 'visibility_stories', 'visibility_stats',
             'visibility_zone_audio', 'visibility_connections', 'visibility_presence',
@@ -79,10 +76,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
         )
         # `privacy_mode` is the legacy active/ghost/invisible view of
         # `location_sharing`, kept so app builds predating the split keep working.
-        read_only_fields = (
-            'id', 'email', 'age_tier', 'date_joined', 'privacy_mode',
-            'is_checked_in', 'checked_in_at',
-        )
+        read_only_fields = ('id', 'email', 'age_tier', 'date_joined', 'privacy_mode')
 
     def get_links(self, obj):
         # Your own profile always shows your own links.
@@ -343,20 +337,18 @@ class PrivacySettingsSerializer(serializers.ModelSerializer):
     """Everything on the Privacy & safety screen, read and written as one
     object so the client never has to guess which endpoint owns a setting.
 
-    `is_checked_in` appears here and is *read-only*, which is the whole reason
-    it appears at all: the Privacy screen has to be able to say whether you are
-    currently on the map, and it must not be a switch you can flip from a
-    settings list. Going on the map is a deliberate act performed on the map —
-    see proximity.views.MapCheckInView, the only writer. Checking *out* is
-    always allowed from anywhere, but it goes through that view's DELETE too,
-    so there is one path off as well as one path on.
+    `location_sharing` is the writable field that decides whether this user is
+    on the map at all, and this is the endpoint that writes it. That is a
+    settings PATCH doing something App Review cares about, so the surrounding
+    conditions carry the weight: the field defaults to PAUSED, the client puts
+    a consent screen in front of every move off PAUSED, and moving *to* PAUSED
+    is always allowed and takes effect at once. See PrivacySettingsView, which
+    is where the side effects of the transition live.
     """
 
     class Meta:
         model = User
         fields = (
-            'is_checked_in',
-            'checked_in_at',
             'location_sharing',
             'is_private',
             'visibility_interests',
@@ -369,11 +361,6 @@ class PrivacySettingsSerializer(serializers.ModelSerializer):
             'discoverable_by_username',
             'discoverable_by_interest',
         )
-        # Read-only, and that is enforcement rather than convention: this is
-        # the endpoint the settings screens PATCH, and a writable
-        # `is_checked_in` here would be precisely the standing "always share"
-        # switch that the check-in exists instead of.
-        read_only_fields = ('is_checked_in', 'checked_in_at')
 
 
 class NotificationSettingsSerializer(serializers.ModelSerializer):

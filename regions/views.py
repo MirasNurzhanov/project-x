@@ -17,7 +17,7 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import geometry, nominatim, resolver, upstream
+from . import geometry, nominatim, places, resolver, upstream
 from .models import Region
 from .resolver import Outcome
 from .serializers import (
@@ -161,7 +161,7 @@ class RegionForPointView(APIView):
         try:
             result = resolver.resolve(lat, lon, kind=level, viewer=request.user)
         except upstream.UpstreamError as exc:
-            logger.warning('Region lookup failed at %s,%s: %s', lat, lon, exc)
+            logger.warning('Region lookup failed at %s: %s', places.log_point(lat, lon), exc)
             return _upstream_unavailable(
                 exc, 'Could not find your area right now. Please try again.',
             )

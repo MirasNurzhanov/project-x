@@ -1,10 +1,16 @@
-"""The map check-in gate, which is what App Review asked for under 5.1.2(i).
+"""Who is on the map, which is what App Review rejected under 5.1.2(i).
 
-The rule these all circle is one sentence: *nothing* except a deliberate
-check-in puts a user on somebody else's map, and it stops doing so on its own.
-The cases below are the ways that could go wrong — a permission mistaken for
-consent, a default that leaks, a phone that renews itself, a side channel that
+The rule these all circle is one sentence: *nothing* except the user's own
+choice of Live or Approximate puts them on somebody else's map, and Paused is
+where everybody starts. The cases below are the ways that could go wrong — a
+permission mistaken for consent, a default that leaks, a side channel that
 publishes a position the map does not.
+
+`location_sharing` is the only axis. It briefly sat beside a second
+`is_checked_in` flag; once the three mode buttons became the only control the
+two were fully determined by each other, so they were collapsed. Anything
+asserting the old flag is gone rather than translated — see
+users/migrations/0029.
 """
 from django.test import TestCase, TransactionTestCase
 from rest_framework.test import APIClient
@@ -14,6 +20,7 @@ from friends.models import FriendRequest
 from interests.models import Interest
 from notifications.models import Notification
 from users.models import User
+from users.testing import share_location
 
 
 def make_user(name, **extra):
@@ -22,33 +29,36 @@ def make_user(name, **extra):
     )
 
 
-def check_in(user):
-    """Put `user` on the map the way the endpoint would, for other tests."""
-    user.save(update_fields=user.apply_check_in())
-    return user
-
-
-class CheckInDefaultTests(TestCase):
+class SharingDefaultTests(TestCase):
     """Off is the state you get for free, from every direction."""
 
-    def test_new_account_is_not_checked_in(self):
+    def test_new_account_is_paused(self):
         user = make_user('fresh')
-        self.assertFalse(user.is_checked_in)
-        self.assertIsNone(user.checked_in_at)
+        self.assertEqual(user.location_sharing, User.LocationSharing.PAUSED)
         self.assertFalse(user.is_on_map())
 
-    def test_live_location_sharing_is_not_a_check_in(self):
+    def test_reporting_a_position_does_not_put_anyone_on_the_map(self):
         """The distinction the rejection was about.
 
-        `location_sharing` says how precisely a *published* position is stated.
-        It has never meant "publish it", and the default value of Live must not
-        be readable as consent to appear.
+        Granting the OS permission and having the app report a position is not
+        consent to be published, so the reporter refuses outright rather than
+        storing something it will not show.
         """
-        user = make_user('sharer', location_sharing=User.LocationSharing.LIVE)
+        user = make_user('reporter')
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.patch(
+            '/api/proximity/location/',
+            {'latitude': '10.0', 'longitude': '10.0'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 403)
+        user.refresh_from_db()
+        self.assertIsNone(user.latitude)
         self.assertFalse(user.is_on_map())
 
-    def test_reporting_a_position_does_not_check_anyone_in(self):
-        user = make_user('reporter')
+    def test_sharing_lets_the_position_through(self):
+        user = share_location(make_user('sharer'))
         client = APIClient()
         client.force_authenticate(user)
         response = client.patch(
@@ -58,22 +68,21 @@ class CheckInDefaultTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         user.refresh_from_db()
-        self.assertFalse(user.is_checked_in)
-        self.assertFalse(user.is_on_map())
+        self.assertEqual(float(user.latitude), 10.0)
 
 
-class CheckInVisibilityTests(TestCase):
+class MapVisibilityTests(TestCase):
     """Who comes back from /api/proximity/nearby/, and on what terms."""
 
     def setUp(self):
         self.client = APIClient()
-        self.me = make_user('me', latitude='10.0', longitude='10.0')
+        self.me = share_location(
+            make_user('me', latitude='10.0', longitude='10.0'))
         self.other = make_user('other', latitude='10.0005', longitude='10.0005')
         # Strangers only find each other through a shared interest.
         interest = Interest.objects.create(name='Climbing')
         self.me.interests.add(interest)
         self.other.interests.add(interest)
-        check_in(self.me)
         self.client.force_authenticate(self.me)
 
     def ids(self):
@@ -81,54 +90,47 @@ class CheckInVisibilityTests(TestCase):
         self.assertEqual(response.status_code, 200)
         return {entry['id'] for entry in response.json()}
 
-    def test_checked_out_user_is_absent(self):
+    def test_paused_user_is_absent(self):
         self.assertNotIn(self.other.pk, self.ids())
 
-    def test_checked_in_user_is_present(self):
-        check_in(self.other)
+    def test_sharing_user_is_present(self):
+        share_location(self.other)
         self.assertIn(self.other.pk, self.ids())
 
-    def test_check_in_survives_until_it_is_taken_back(self):
-        """A check-in has no clock on it — only a check-out ends it.
+    def test_approximate_is_still_on_the_map(self):
+        """Approximate is a precision, not an off switch — unlike Paused."""
+        share_location(self.other, User.LocationSharing.APPROXIMATE)
+        self.assertIn(self.other.pk, self.ids())
 
-        The property the whole design now rests on, and the one most likely to
-        be broken by someone reintroducing an expiry: closing the app, locking
-        the phone and coming back days later must all leave you exactly as
-        visible as you were, because the flag lives on the row and not in a
-        session.
+    def test_visibility_lasts_until_it_is_taken_back(self):
+        """There is no clock on it — only choosing Paused ends it.
+
+        The property the design rests on, and the one most likely to be broken
+        by someone reintroducing an expiry: closing the app, locking the phone
+        and coming back days later must all leave you exactly as visible as you
+        were, because the setting lives on the row and not in a session.
         """
-        check_in(self.other)
+        share_location(self.other)
         self.assertIn(self.other.pk, self.ids())
-
         # Nothing in between — no refresh, no report, no touch of any kind.
         self.assertIn(self.other.pk, self.ids())
 
-        self.other.save(update_fields=self.other.apply_check_out())
+        self.other.location_sharing = User.LocationSharing.PAUSED
+        self.other.save(update_fields=['location_sharing'])
         self.assertNotIn(self.other.pk, self.ids())
 
-    def test_friendship_does_not_override_a_check_out(self):
+    def test_friendship_does_not_override_pausing(self):
         """Friends are exempt from the distance limits, not from consent."""
         FriendRequest.objects.create(
             sender=self.me, receiver=self.other,
             status=FriendRequest.Status.ACCEPTED,
         )
         self.assertNotIn(self.other.pk, self.ids())
-        check_in(self.other)
-        self.assertIn(self.other.pk, self.ids())
-
-    def test_checked_out_viewer_can_still_browse(self):
-        """Deciding not to be seen is not a decision to be blind.
-
-        Apple's requirement is about being displayed, not about looking, and
-        removing the map for anyone who has not checked in would be a UX
-        change nobody asked for.
-        """
-        check_in(self.other)
-        self.me.save(update_fields=self.me.apply_check_out())
+        share_location(self.other)
         self.assertIn(self.other.pk, self.ids())
 
 
-class CheckInMapEndpointTests(TransactionTestCase):
+class MapEndpointTests(TransactionTestCase):
     """The composite /api/map/nearby/ must not be a second, laxer door.
 
     `TransactionTestCase` rather than `TestCase`: this view fans its three
@@ -140,12 +142,12 @@ class CheckInMapEndpointTests(TransactionTestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.me = make_user('me', latitude='10.0', longitude='10.0')
+        self.me = share_location(
+            make_user('me', latitude='10.0', longitude='10.0'))
         self.other = make_user('other', latitude='10.0005', longitude='10.0005')
         interest = Interest.objects.create(name='Climbing')
         self.me.interests.add(interest)
         self.other.interests.add(interest)
-        check_in(self.me)
         self.client.force_authenticate(self.me)
 
     def map_user_ids(self):
@@ -153,151 +155,81 @@ class CheckInMapEndpointTests(TransactionTestCase):
         self.assertEqual(response.status_code, 200)
         return {u['id'] for u in response.json()['users']}
 
-    def test_checked_out_user_is_absent_from_the_map_payload(self):
+    def test_paused_user_is_absent_from_the_map_payload(self):
         self.assertNotIn(self.other.pk, self.map_user_ids())
-        check_in(self.other)
+        share_location(self.other)
         self.assertIn(self.other.pk, self.map_user_ids())
 
 
-class CheckInEndpointTests(TestCase):
-    """The only route that writes the flag."""
+class SharingTransitionTests(TestCase):
+    """Moving between the three modes, and what each move drags with it."""
 
     def setUp(self):
         self.client = APIClient()
-        self.me = make_user('me')
+        self.me = share_location(
+            make_user('me', latitude='10.0', longitude='10.0'))
         self.client.force_authenticate(self.me)
 
-    def test_check_in_publishes_and_stores_the_position(self):
-        response = self.client.post(
-            '/api/proximity/check-in/',
-            {'latitude': '10.0', 'longitude': '20.0'},
-            format='json',
+    def patch(self, mode):
+        return self.client.patch(
+            '/api/users/privacy/', {'location_sharing': mode}, format='json',
         )
+
+    def test_pausing_forgets_the_position(self):
+        response = self.patch('paused')
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()['is_checked_in'])
-        self.assertIsNotNone(response.json()['checked_in_at'])
+
+        self.me.refresh_from_db()
+        self.assertFalse(self.me.is_on_map())
+        self.assertIsNone(self.me.latitude)
+        self.assertIsNone(self.me.longitude)
+        self.assertIsNone(self.me.location_updated_at)
+
+    def test_pausing_clears_motion(self):
+        """A speed trail is drawn from a published position, so it must not
+        outlive the position it belongs to."""
+        self.me.motion_class = User.MotionClass.FAST
+        self.me.motion_updated_at = self.me.created_at
+        self.me.save(update_fields=['motion_class', 'motion_updated_at'])
+
+        self.patch('paused')
+
+        self.me.refresh_from_db()
+        self.assertEqual(self.me.motion_class, User.MotionClass.STATIONARY)
+        self.assertIsNone(self.me.motion_updated_at)
+
+    def test_resuming_starts_from_no_position(self):
+        """Coming back does not restore where you were.
+
+        Pausing deleted it and nothing reconstructs it — the next position on
+        file is one the phone reports after the user has chosen to share again.
+        """
+        self.patch('paused')
+        self.patch('live')
 
         self.me.refresh_from_db()
         self.assertTrue(self.me.is_on_map())
-        self.assertEqual(float(self.me.latitude), 10.0)
+        self.assertIsNone(self.me.latitude)
 
-    def test_check_in_requires_a_position(self):
-        response = self.client.post('/api/proximity/check-in/', {}, format='json')
-        self.assertEqual(response.status_code, 400)
-        self.me.refresh_from_db()
-        self.assertFalse(self.me.is_checked_in)
+    def test_switching_to_approximate_destroys_the_precise_position(self):
+        self.patch('approximate')
 
-    def test_a_duration_cannot_be_asked_for(self):
-        """There is one kind of check-in, and the consent screen describes it.
-
-        A client sending `duration_minutes` is either an old build or a
-        modified one. Either way it gets the only check-in there is — an
-        indefinite one — rather than a quietly shorter promise the user was
-        never shown.
-        """
-        response = self.client.post(
-            '/api/proximity/check-in/',
-            {'latitude': '1.0', 'longitude': '1.0', 'duration_minutes': 15},
-            format='json',
-        )
-        self.assertEqual(response.status_code, 200)
         self.me.refresh_from_db()
         self.assertTrue(self.me.is_on_map())
+        # Snapped to the ~500m grid, so no longer the point that was reported.
+        self.assertNotEqual(float(self.me.latitude), 10.0)
 
-    def test_check_out_is_immediate_and_idempotent(self):
-        self.client.post(
-            '/api/proximity/check-in/',
-            {'latitude': '1.0', 'longitude': '1.0'},
-            format='json',
-        )
-        for _ in range(2):
-            response = self.client.delete('/api/proximity/check-in/')
-            self.assertEqual(response.status_code, 200)
-            self.assertFalse(response.json()['is_checked_in'])
-        self.me.refresh_from_db()
-        self.assertFalse(self.me.is_on_map())
-        self.assertIsNone(self.me.checked_in_at)
-
-    def test_get_reports_the_state(self):
-        response = self.client.get('/api/proximity/check-in/')
-        self.assertEqual(response.status_code, 200)
-        self.assertFalse(response.json()['is_checked_in'])
-
-        check_in(self.me)
-        response = self.client.get('/api/proximity/check-in/')
-        self.assertTrue(response.json()['is_checked_in'])
-        self.assertIsNotNone(response.json()['checked_in_at'])
-
-    def test_checking_in_twice_does_not_stack_anything(self):
-        """Pressing it again is a no-op, not a second something.
-
-        Worth pinning now that there is no expiry: a second check-in has
-        nothing to extend, so the only thing it can do is move `checked_in_at`,
-        and it must not leave the user in a state a single check-out cannot
-        undo.
-        """
-        for _ in range(2):
-            self.client.post(
-                '/api/proximity/check-in/',
-                {'latitude': '1.0', 'longitude': '1.0'},
-                format='json',
-            )
-        self.client.delete('/api/proximity/check-in/')
-        self.me.refresh_from_db()
-        self.assertFalse(self.me.is_on_map())
-
-    def test_paused_sharing_refuses_a_check_in(self):
-        self.me.location_sharing = User.LocationSharing.PAUSED
-        self.me.save(update_fields=['location_sharing'])
-        response = self.client.post(
-            '/api/proximity/check-in/',
-            {'latitude': '1.0', 'longitude': '1.0'},
-            format='json',
-        )
-        self.assertEqual(response.status_code, 409)
-        self.me.refresh_from_db()
-        self.assertFalse(self.me.is_checked_in)
-
-    def test_check_in_cannot_be_set_through_the_privacy_endpoint(self):
-        """No settings screen may switch this on — only the map does.
-
-        The one that matters most under an indefinite check-in: a writable flag
-        on a settings payload is a standing "always share" preference, which is
-        the thing the guideline names outright.
-        """
-        response = self.client.patch(
-            '/api/users/privacy/', {'is_checked_in': True}, format='json',
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertFalse(response.json()['is_checked_in'])
-        self.me.refresh_from_db()
-        self.assertFalse(self.me.is_checked_in)
+    def test_the_payload_reports_the_mode_back(self):
+        self.assertEqual(self.patch('paused').json()['location_sharing'], 'paused')
+        self.assertEqual(self.patch('live').json()['location_sharing'], 'live')
 
 
-class PauseEndsVisibilityTests(TestCase):
-    def test_pausing_checks_out_and_forgets_the_position(self):
-        me = make_user('me', latitude='10.0', longitude='10.0')
-        check_in(me)
-        client = APIClient()
-        client.force_authenticate(me)
-
-        response = client.patch(
-            '/api/users/privacy/', {'location_sharing': 'paused'}, format='json',
-        )
-        self.assertEqual(response.status_code, 200)
-
-        me.refresh_from_db()
-        self.assertFalse(me.is_checked_in)
-        self.assertIsNone(me.checked_in_at)
-        self.assertIsNone(me.latitude)
-        self.assertIsNone(me.longitude)
-
-
-class CheckInSideChannelTests(TestCase):
+class SideChannelTests(TestCase):
     """Everything else that says where somebody is standing."""
 
     def setUp(self):
-        self.mover = make_user('mover', latitude='10.0', longitude='10.0')
+        self.mover = share_location(
+            make_user('mover', latitude='10.0', longitude='10.0'))
         self.resident = make_user('resident', latitude='10.0002', longitude='10.0002')
         interest = Interest.objects.create(name='Climbing')
         self.mover.interests.add(interest)
@@ -312,43 +244,31 @@ class CheckInSideChannelTests(TestCase):
             format='json',
         )
 
-    def test_no_encounter_is_logged_for_a_checked_out_reporter(self):
-        check_in(self.resident)
+    def test_no_encounter_is_logged_with_a_paused_bystander(self):
         self.report()
         self.assertEqual(Encounter.objects.count(), 0)
 
-    def test_encounter_is_logged_once_both_are_checked_in(self):
-        check_in(self.resident)
-        check_in(self.mover)
+    def test_encounter_is_logged_once_both_are_sharing(self):
+        share_location(self.resident)
         self.report()
         self.assertEqual(Encounter.objects.count(), 1)
 
-    def test_checked_out_user_is_not_announced_as_nearby(self):
+    def test_a_paused_user_is_not_announced_as_nearby(self):
         """The push that says "someone is near you" is a publication too."""
-        check_in(self.mover)
         self.report()
         self.assertFalse(
             Notification.objects.filter(
                 recipient=self.resident,
                 notification_type=Notification.Type.NEARBY_USER,
             ).exists(),
-            'a checked-out user was told about someone, or announced to them',
+            'a paused user was told about someone, or announced to them',
         )
 
-    def test_motion_is_not_recorded_while_checked_out(self):
-        self.client.patch(
-            '/api/proximity/location/',
-            {'latitude': '10.0', 'longitude': '10.0', 'speed': 12.0},
-            format='json',
-        )
-        self.mover.refresh_from_db()
-        self.assertIsNone(self.mover.motion_updated_at)
+    def test_a_paused_reporter_cannot_reach_the_side_channels_at_all(self):
+        """The reporter is refused before any of this runs."""
+        self.mover.location_sharing = User.LocationSharing.PAUSED
+        self.mover.save(update_fields=['location_sharing'])
+        share_location(self.resident)
 
-        check_in(self.mover)
-        self.client.patch(
-            '/api/proximity/location/',
-            {'latitude': '10.0', 'longitude': '10.0', 'speed': 12.0},
-            format='json',
-        )
-        self.mover.refresh_from_db()
-        self.assertEqual(self.mover.motion_class, User.MotionClass.FAST)
+        self.assertEqual(self.report().status_code, 403)
+        self.assertEqual(Encounter.objects.count(), 0)

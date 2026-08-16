@@ -125,6 +125,11 @@ class QueryBudgetTests(TestCase):
             location_updated_at=timezone.now(), location_accuracy_m=10.0,
             last_seen=timezone.now(), age_tier=User.AgeTier.ADULT,
             date_of_birth=date(1995, 1, 1),
+            # Sharing, because these budgets are about the cost of the hot
+            # paths for people who are actually on the map. `location_sharing`
+            # defaults to Paused, and a fixture full of paused users would
+            # measure the early returns rather than the work.
+            location_sharing=User.LocationSharing.LIVE,
         )
         user.interests.set(cls.interests[: (i % 4) + 2])
         return user

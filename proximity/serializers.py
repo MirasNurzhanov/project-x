@@ -5,8 +5,8 @@ from users.models import User
 from interests.serializers import InterestSerializer
 
 
-class CheckedOutUser(Exception):
-    """Raised when a row reaches NearbyUserSerializer without a live check-in.
+class NotOnMap(Exception):
+    """Raised when a row reaches NearbyUserSerializer with sharing paused.
 
     Never expected — the querysets filter on it — so it is a bug signal rather
     than control flow. It is caught one level up and the row is dropped, which
@@ -35,18 +35,15 @@ class LocationUpdateSerializer(serializers.Serializer):
     accuracy = serializers.FloatField(required=False, allow_null=True, min_value=-1)
 
 
-class CheckInSerializer(serializers.Serializer):
-    """A manual check-in: where the user is standing when they press it.
+class NearbyQuerySerializer(serializers.Serializer):
+    """The anchor for one private discovery request, and nothing else.
 
-    The coordinates are required and are not optional sugar. A check-in is an
-    act performed *somewhere*, and demanding the fix in the same request means
-    there is no code path that can flip the flag without a position the user
-    just agreed to publish — including no path a future caller could reach by
-    accident.
-
-    There is no duration field. A check-in runs until the user checks out, and
-    a client able to ask for something else would be able to make a promise the
-    consent screen in front of it did not make.
+    Deliberately narrower than LocationUpdateSerializer: no `speed`, no
+    `accuracy`. Those exist because the update endpoint *stores* what it is
+    given, and this one stores nothing — a field accepted here could only ever
+    be a field somebody later persisted by mistake. If a future reader wants
+    accuracy for this path, the honest move is to add it and prove nothing
+    writes it, not to have left the door open.
     """
 
     latitude = serializers.DecimalField(
@@ -55,7 +52,6 @@ class CheckInSerializer(serializers.Serializer):
     longitude = serializers.DecimalField(
         max_digits=11, decimal_places=8, min_value=-180, max_value=180
     )
-    accuracy = serializers.FloatField(required=False, allow_null=True, min_value=-1)
 
 
 class _NearbyUserListSerializer(serializers.ListSerializer):
@@ -70,8 +66,8 @@ class _NearbyUserListSerializer(serializers.ListSerializer):
         for item in data:
             try:
                 out.append(self.child.to_representation(item))
-            except CheckedOutUser as exc:
-                print(f'[Map] dropped checked-out user {exc.args[0]} from a nearby payload')
+            except NotOnMap as exc:
+                print(f'[Map] dropped paused user {exc.args[0]} from a nearby payload')
         return out
 
 
@@ -113,15 +109,14 @@ class NearbyUserSerializer(serializers.Serializer):
         rel = self.context.get('relationships', {}).get(obj.pk, visibility.STRANGER)
 
         # The querysets feeding this serializer all go through
-        # `visible_users(on_map=True)`, so nobody checked out should ever reach
-        # here. Asserted rather than assumed: this is the last line before
-        # coordinates leave the process, and a future caller that assembles its
-        # own list is exactly the mistake that would put someone back on the map
-        # without their say-so. Raising would take the whole map down for one
-        # bad row, so the row is dropped instead — see `to_representation` on
-        # ListSerializer, which is why the caller filters rather than us.
+        # `visible_users(on_map=True)`, so nobody paused should ever reach here.
+        # Checked rather than assumed: this is the last line before coordinates
+        # leave the process, and a future caller assembling its own list is
+        # exactly the mistake that would put someone back on the map without
+        # their say-so. Raising would take the whole map down for one bad row,
+        # so the row is dropped instead — see `_NearbyUserListSerializer`.
         if not obj.is_on_map():
-            raise CheckedOutUser(obj.pk)
+            raise NotOnMap(obj.pk)
 
         data = {
             'id': obj.id,

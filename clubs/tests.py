@@ -38,7 +38,7 @@ from regions.models import Region, UserPlace
 
 from . import visibility
 from .models import Club, ClubMember
-from users.testing import check_in
+from users.testing import share_location
 
 User = get_user_model()
 
@@ -119,9 +119,9 @@ class GeoFixture(TestCase):
         )
         if at is not None:
             self.stand(user, at)
-        # See users/testing.py: off the map is the default now, and club
+        # See users/testing.py: paused is the default now, and club
         # visibility is decided from where somebody is standing.
-        return check_in(user)
+        return share_location(user)
 
     def stand(self, user, at, accuracy=None):
         """Put a user at a coordinate the way a location report would."""
