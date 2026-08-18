@@ -958,3 +958,189 @@ class StoryLocationTests(TestCase):
         story = Story.objects.get(pk=story_id)
         self.assertEqual(float(story.latitude), 10.0)
         self.assertEqual(float(story.longitude), 10.0)
+
+
+class StalePositionTests(TestCase):
+    """A live setting over a coordinate nobody has refreshed is not a location.
+
+    `location_sharing` has no expiry by design, so a phone that is force-killed
+    or loses signal for good leaves the setting on and the last coordinate in
+    the row. The session teardown catches it on the next launch, and the next
+    launch may never come — so until then the row would keep being served as
+    though its owner were standing there.
+
+    The split these tests pin: freshness gates *publication*, never the choice.
+    A stale user is off other people's maps and can still fix it.
+    """
+
+    HERE = {'latitude': '10.00000000', 'longitude': '10.00000000'}
+
+    def setUp(self):
+        self.interest = Interest.objects.create(name='Stale Sailing')
+        self.me = make_user('stale_me', latitude='10.0000', longitude='10.0000')
+        self.viewer = make_user('stale_viewer', latitude='10.0001', longitude='10.0001')
+        for user in (self.me, self.viewer):
+            user.interests.set([self.interest])
+            share_location(user)
+
+        self.client_me = APIClient()
+        self.client_me.force_authenticate(self.me)
+        self.viewer_client = APIClient()
+        self.viewer_client.force_authenticate(self.viewer)
+
+    def age_position(self, seconds):
+        """Backdate my last report by `seconds`, leaving the setting alone."""
+        from django.utils import timezone
+        from datetime import timedelta
+
+        old = timezone.now() - timedelta(seconds=seconds)
+        # `.update()` so `updated_at` (auto_now) ages with it — otherwise the
+        # fallback in `fresh_position_q` would keep the row looking fresh and
+        # the test would pass for the wrong reason.
+        User.objects.filter(pk=self.me.pk).update(
+            location_updated_at=old, updated_at=old,
+        )
+        self.me.refresh_from_db()
+
+    def go_stale(self):
+        """Age my position past the window, whatever the window is set to."""
+        from users.visibility import position_max_age_s
+
+        self.age_position(position_max_age_s() + 60)
+
+    def nearby_ids(self):
+        return {row['id'] for row in self.viewer_client.get(NEARBY).json()}
+
+    def test_a_fresh_sharer_is_visible(self):
+        """The control. Without this the assertions below pass vacuously."""
+        self.assertIn(self.me.pk, self.nearby_ids())
+
+    # -- the window itself ----------------------------------------------------
+    # Pinned by magnitude rather than by re-reading the constant, which would
+    # only assert that a number equals itself. These say what the number *means*
+    # in minutes of a real person not reporting, so moving it is a deliberate
+    # act with a failing test attached rather than a one-character edit.
+
+    def test_a_position_from_fourteen_minutes_ago_is_still_published(self):
+        """The tolerance half. Ten-second foreground reports and 30s/50m
+        background ones mean roughly thirty consecutive misses fit inside the
+        window — a tunnel or a dead spot must not drop somebody off the map."""
+        self.age_position(14 * 60)
+        self.assertIn(self.me.pk, self.nearby_ids())
+
+    def test_a_position_from_sixteen_minutes_ago_is_withheld(self):
+        """The cutoff half. Past this we stop claiming to know where they are."""
+        self.age_position(16 * 60)
+        self.assertNotIn(self.me.pk, self.nearby_ids())
+
+    def test_club_scoping_shares_the_one_window(self):
+        """One answer to "how old is too old", read from one place.
+
+        Clubs used to keep its own six-hour copy, which meant a position could
+        be too stale to draw on a map and still fresh enough to decide which
+        city somebody was in. `clubs.visibility` now reads this value rather
+        than declaring one, so the two cannot drift; the assertion is here to
+        catch a future edit that reintroduces a second literal.
+        """
+        from clubs.visibility import _max_age
+        from users.visibility import position_max_age_s
+
+        self.assertEqual(_max_age(), position_max_age_s())
+
+    def test_a_stale_sharer_is_not_returned_to_anyone(self):
+        self.go_stale()
+        self.assertNotIn(self.me.pk, self.nearby_ids())
+
+    def test_stale_and_paused_are_indistinguishable_from_outside(self):
+        """A viewer must not be able to tell "stopped reporting" from "checked
+        out" — the two look identical, which is what stops the gap being a
+        side channel for whether somebody's phone died."""
+        self.go_stale()
+        stale_view = self.viewer_client.get(NEARBY).json()
+
+        User.objects.filter(pk=self.me.pk).update(
+            location_sharing=User.LocationSharing.PAUSED,
+            latitude=None, longitude=None, location_updated_at=None,
+        )
+        paused_view = self.viewer_client.get(NEARBY).json()
+
+        self.assertEqual(stale_view, paused_view)
+
+    def test_a_stale_user_can_still_report_a_position(self):
+        """The deadlock this split exists to avoid.
+
+        Gating the *write* on freshness would lock out precisely the people
+        trying to become fresh again, and their only route back onto the map
+        would be to check out and in.
+        """
+        self.go_stale()
+        response = self.client_me.patch(LOCATION, self.HERE, format='json')
+        self.assertEqual(response.status_code, 200)
+        # And they are back, without having touched the setting.
+        self.me.refresh_from_db()
+        self.assertEqual(self.me.location_sharing, User.LocationSharing.LIVE)
+        self.assertIn(self.me.pk, self.nearby_ids())
+
+    def test_a_stale_user_can_still_ask_who_is_nearby(self):
+        """Their own query is anchored on their own position. Stale or not,
+        that is a question about them, not a publication of them."""
+        self.go_stale()
+        self.assertEqual(self.client_me.get(NEARBY).status_code, 200)
+
+    def test_checking_out_while_stale_still_tears_down(self):
+        """The rows most in need of clearing are exactly the stale ones, so the
+        teardown must not test freshness before running."""
+        self.go_stale()
+        response = self.client_me.patch(
+            PRIVACY, {'location_sharing': 'paused'}, format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.me.refresh_from_db()
+        self.assertIsNone(self.me.latitude)
+        self.assertIsNone(self.me.location_updated_at)
+        self.assertIsNone(self.me.sharing_session)
+
+    def test_the_python_and_sql_halves_agree(self):
+        """`is_on_map` and `on_map_q` are twins and drift is the failure mode
+        that would leave one surface publishing what the other withholds."""
+        from users import visibility
+
+        for stale in (False, True):
+            if stale:
+                self.go_stale()
+            in_sql = User.objects.filter(
+                visibility.on_map_q(), pk=self.me.pk,
+            ).exists()
+            self.assertEqual(
+                self.me.is_on_map(), in_sql,
+                f'halves disagree when stale={stale}',
+            )
+
+    def test_freshness_does_not_gate_the_choice(self):
+        """`is_sharing` is about what the user asked for, and nothing else."""
+        self.go_stale()
+        self.assertTrue(self.me.is_sharing())
+        self.assertFalse(self.me.has_fresh_position())
+        self.assertFalse(self.me.is_on_map())
+
+    def test_a_stale_authors_story_pin_survives(self):
+        """The deliberate asymmetry.
+
+        A pin sits at the coordinate the story was posted at, so it says nothing
+        about where its author is standing now. Withdrawing it because their
+        phone stopped reporting would hide a story that is still theirs to show.
+        """
+        from stories.visibility import is_placed_for
+        from stories.models import Story
+
+        befriend(self.me, self.viewer)
+        story = Story.objects.create(
+            user=self.me, content='here', latitude='10.0000', longitude='10.0000',
+        )
+        self.assertTrue(is_placed_for(self.viewer, story))
+        self.go_stale()
+        story.user.refresh_from_db()
+        self.assertTrue(
+            is_placed_for(self.viewer, story),
+            'a story pin was withdrawn because its author stopped reporting',
+        )

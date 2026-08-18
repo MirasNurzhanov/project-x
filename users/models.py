@@ -313,19 +313,51 @@ class User(AbstractUser):
         self.sharing_session = None
         return ['sharing_session']
 
-    def is_on_map(self, now=None):
-        """Whether this user may be drawn on anybody else's map.
+    def is_sharing(self):
+        """Whether this user has asked to be visible.
 
-        The single named predicate for "is this person published", kept as a
-        method rather than inlining the comparison at ~a dozen call sites: the
-        rule has been re-expressed twice already, and each time it was one edit
-        here instead of a hunt. The SQL counterpart is `visibility.on_map_q`,
-        and the two must never disagree.
-
-        `now` is accepted and unused, so callers sweeping many rows against a
-        single clock do not have to know that this rule does not depend on time.
+        The choice alone. Says nothing about whether we currently hold a
+        position for them, which is exactly what the write path needs: refusing
+        a location update because the position it replaces has gone stale would
+        be a deadlock. SQL counterpart is `visibility.sharing_q`.
         """
         return self.location_sharing != self.LocationSharing.PAUSED
+
+    def has_fresh_position(self, now=None):
+        """Whether the position on this row is recent enough to publish.
+
+        `updated_at` is the fallback for rows predating the
+        `location_updated_at` column — see `visibility.fresh_position_q`, which
+        is the SQL half and carries the reasoning.
+        """
+        from django.utils import timezone
+
+        from . import visibility
+
+        stamp = self.location_updated_at or self.updated_at
+        if stamp is None:
+            return False
+        age = ((now or timezone.now()) - stamp).total_seconds()
+        return age <= visibility.position_max_age_s()
+
+    def is_on_map(self, now=None):
+        """Whether this user may be drawn on anybody else's map right now.
+
+        The single named predicate for "is this person published", kept as a
+        method rather than inlining at ~a dozen call sites: the rule has been
+        re-expressed three times already, and each time it was one edit here
+        instead of a hunt. The SQL counterpart is `visibility.on_map_q`, and the
+        two must never disagree.
+
+        Both halves, and the second is not decoration: `location_sharing` has no
+        expiry, so a phone that stops reporting leaves a live setting and a
+        stale coordinate behind it. Publishing that pair claims somebody is
+        standing where they were hours ago.
+
+        `now` lets a caller sweeping many rows measure them all against one
+        clock.
+        """
+        return self.is_sharing() and self.has_fresh_position(now)
 
     class Audience(models.TextChoices):
         EVERYONE = 'everyone', 'Everyone'

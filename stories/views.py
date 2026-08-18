@@ -93,7 +93,11 @@ def _position_for(user, serializer):
     the one making the promise. A build that keeps sending coordinates while
     paused - an old one, a modified one - gets them dropped.
     """
-    if not user.is_on_map():
+    # `is_sharing`, not `is_on_map`: this is the author's own act, and a story
+    # carries the coordinate it was posted at rather than a claim about where
+    # its author is now. Freshness governs the *user marker*, which does make
+    # that claim — see users.visibility for the split.
+    if not user.is_sharing():
         return {'latitude': None, 'longitude': None, 'place_name': ''}
 
     lat = serializer.validated_data.get('latitude')
@@ -234,7 +238,7 @@ class NearbyStoriesView(APIView):
         # position yet is the shared `location_not_available` code, so a client
         # gets the same answer here as it does from the proximity endpoints and
         # needs one branch, not three.
-        if not user.is_on_map():
+        if not user.is_sharing():
             return Response([])
         if user.latitude is None or user.longitude is None:
             from proximity.views import location_not_available
@@ -320,7 +324,7 @@ class ReactToStoryView(APIView):
             # like anything else - and the two ways of not having one are worth
             # telling apart. Paused is a setting the user can change; no fix
             # yet resolves on its own.
-            if not user.is_on_map():
+            if not user.is_sharing():
                 from proximity.views import CODE_SHARING_PAUSED
                 return Response(
                     {

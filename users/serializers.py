@@ -222,7 +222,9 @@ def _live_story_summaries(obj, viewer=None):
     from django.utils import timezone
     from stories.models import Story
 
-    placed = obj.pk == getattr(viewer, 'pk', None) or obj.is_on_map()
+    # `is_sharing`, matching stories.visibility.is_placed_for — a place name on
+    # a story says where that story was posted, not where its author is now.
+    placed = obj.pk == getattr(viewer, 'pk', None) or obj.is_sharing()
     return [
         {
             'id': s.id,

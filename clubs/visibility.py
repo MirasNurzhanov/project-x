@@ -36,17 +36,29 @@ from django.db.models import Q
 from django.utils import timezone
 
 from regions import places
+from users import visibility as user_visibility
 
 from .models import Club, ClubMember
 
 #: How old the position we hold may be before it stops admitting anyone to
-#: anywhere. Long enough to survive a phone in a pocket on the underground,
-#: short enough that yesterday's city is not still deciding today's clubs.
-DEFAULT_POSITION_MAX_AGE_S = 6 * 3600
+#: anywhere.
+#:
+#: Borrowed from `users.visibility`, not declared. There is one answer in this
+#: app to "how old is too old for a position", and clubs holding a second copy
+#: of it is how the two drift apart — this used to be six hours while the map
+#: ran on fifteen minutes, which meant a person could be too stale to draw on a
+#: map and still fresh enough to pick their city.
+#:
+#: `CLUB_POSITION_MAX_AGE_S` still overrides it, so the two *can* be separated
+#: deliberately if club scoping ever wants a longer memory than the map. It
+#: takes a setting to do it rather than an unnoticed edit.
+DEFAULT_POSITION_MAX_AGE_S = user_visibility.DEFAULT_POSITION_MAX_AGE_S
 
 
 def _max_age():
-    return getattr(settings, 'CLUB_POSITION_MAX_AGE_S', DEFAULT_POSITION_MAX_AGE_S)
+    return getattr(
+        settings, 'CLUB_POSITION_MAX_AGE_S', user_visibility.position_max_age_s(),
+    )
 
 
 #: A clause that matches no row, spelled as an impossible condition on a column

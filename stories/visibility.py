@@ -60,7 +60,12 @@ def is_placed_for(viewer, story):
     """
     if not story.is_placed:
         return False
-    return story.user_id == viewer.pk or story.user.is_on_map()
+    # `is_sharing`, not `is_on_map`. A pin sits at the coordinate the story was
+    # posted at, so it makes no claim about where its author is standing now —
+    # and withdrawing a friend's pin six hours after their phone stopped
+    # reporting would hide a story that is still theirs to show. Freshness
+    # gates the live user marker, which does make that claim.
+    return story.user_id == viewer.pk or story.user.is_sharing()
 
 
 def can_show_on_map(viewer, story):
@@ -86,5 +91,7 @@ def placed_q(viewer):
     other in the first place.
     """
     has_position = Q(latitude__isnull=False, longitude__isnull=False)
-    author_on_map = Q(user_id=viewer.pk) | visibility.on_map_q('user')
-    return readable_q(viewer) & has_position & author_on_map
+    # `sharing_q`, matching `is_placed_for` — see the note there for why a pin
+    # is not gated on the freshness of its author's own position.
+    author_sharing = Q(user_id=viewer.pk) | visibility.sharing_q('user')
+    return readable_q(viewer) & has_position & author_sharing

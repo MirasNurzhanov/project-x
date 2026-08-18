@@ -125,22 +125,99 @@ def is_approved_viewer(rel):
 # having the app open — puts a person on another user's screen; the field
 # defaults to PAUSED and only a deliberate press moves it off.
 #
-# Two shapes of the same rule, because list endpoints have to filter in the
-# database and per-row callers cannot. `User.is_on_map` is the Python half, and
-# neither may grow a condition the other lacks.
+# That choice is necessary but not sufficient, which is why there are two
+# predicates here rather than one:
+#
+#   sharing_q / is_sharing   the choice alone. "Has this person asked to be
+#                            visible." The write path and every self-anchored
+#                            query use this, and they must: gating a location
+#                            *write* on the freshness of the position it is
+#                            about to replace is a deadlock — a user whose fix
+#                            went stale could never post a fresh one.
+#
+#   on_map_q / is_on_map     the choice AND a position recent enough to stand
+#                            behind. "May this person be drawn on somebody
+#                            else's screen, right now." Everything that
+#                            publishes a coordinate uses this.
+#
+# The second exists because `location_sharing` has no expiry by design (see
+# users/0030 and the sharing-session note on the model): a phone that is
+# force-killed, loses signal for good, or simply stops reporting leaves the
+# field non-paused and the last coordinate sitting in the row. Without a
+# freshness gate that row keeps being served as though the person were standing
+# there — which is the one thing a live map must never claim. The session
+# teardown catches it on the next launch, and "the next launch" may be never.
+#
+# Each pair is a Python half and a SQL half, because list endpoints have to
+# filter in the database and per-row callers cannot. Within a pair, neither
+# half may grow a condition the other lacks.
+
+#: How old the position we hold may be before we stop acting on it.
+#:
+#: Fifteen minutes, and this is the app's single answer to "how old is too old".
+#: `clubs.visibility` reads it from here rather than keeping its own, so a
+#: position cannot be too stale to draw on a map yet fresh enough to decide
+#: which city someone is in.
+#:
+#: Fifteen minutes is what an actively-shared position looks like with room to
+#: spare: the foreground map reports every 10s and the iOS background task every
+#: 30s or 50m, so this tolerates roughly thirty consecutive missed updates —
+#: a tunnel, a dead spot, a spell of no signal — before it gives up.
+#:
+#: It has a real consequence on Android and that consequence is correct. Android
+#: ships with `isAndroidBackgroundLocationEnabled: false`, so positions there
+#: stop the moment the app leaves the foreground; an Android user who backgrounds
+#: Aura drops off other people's maps about fifteen minutes later even though
+#: they are still checked in. That is the honest outcome — we genuinely do not
+#: know where they are — and `is_sharing` keeps them able to resume instantly by
+#: reopening the app, without touching the setting.
+DEFAULT_POSITION_MAX_AGE_S = 15 * 60
 
 
-def on_map_q(prefix=None, now=None):
-    """Q selecting rows whose owner is currently sharing their location.
+def position_max_age_s():
+    from django.conf import settings
 
-    `prefix` is the path from the row to the user, for tables that point at one
-    (`'user'`, `'author'`); None when filtering users directly. `now` is
-    accepted and unused, matching `User.is_on_map` — see the note there.
+    return getattr(settings, 'MAP_POSITION_MAX_AGE_S', DEFAULT_POSITION_MAX_AGE_S)
+
+
+def sharing_q(prefix=None):
+    """Q selecting rows whose owner has chosen to share their location.
+
+    The choice alone — says nothing about whether we currently hold a position
+    for them. `prefix` is the path from the row to the user, for tables that
+    point at one (`'user'`, `'author'`); None when filtering users directly.
     """
     from .models import User
 
     base = '' if prefix is None else f'{prefix}__'
     return ~Q(**{f'{base}location_sharing': User.LocationSharing.PAUSED})
+
+
+def fresh_position_q(prefix=None, now=None):
+    """Q selecting rows whose stored position is recent enough to publish.
+
+    `location_updated_at` is the honest answer. `updated_at` is the fallback for
+    rows written before that column existed (users/0018) — an upper bound on the
+    age rather than the age, which is the right direction to be wrong in: it can
+    only make a position look *newer* than it is, and the owner's next report
+    corrects it. Same reasoning, and same fallback, as
+    `clubs.visibility._position_age`.
+    """
+    base = '' if prefix is None else f'{prefix}__'
+    cutoff = (now or timezone.now()) - timedelta(seconds=position_max_age_s())
+    return Q(**{f'{base}location_updated_at__gte': cutoff}) | Q(**{
+        f'{base}location_updated_at__isnull': True,
+        f'{base}updated_at__gte': cutoff,
+    })
+
+
+def on_map_q(prefix=None, now=None):
+    """Q selecting rows that may be drawn on somebody else's map right now.
+
+    The choice *and* a position we are still willing to stand behind. The SQL
+    counterpart of `User.is_on_map`.
+    """
+    return sharing_q(prefix) & fresh_position_q(prefix, now)
 
 
 # ─── Queryset filter ──────────────────────────────────────────────────────────

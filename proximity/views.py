@@ -358,7 +358,11 @@ class UpdateLocationView(APIView):
         # unreachable from our own app — and that is exactly why it is here:
         # the only caller that can reach it is one we did not write, and "the
         # app would not do that" is not an access control.
-        if not user.is_on_map():
+        #
+        # `is_sharing`, not `is_on_map`: this is the endpoint that *makes* a
+        # position fresh, so gating it on the freshness of the one it replaces
+        # would lock out precisely the users trying to fix it.
+        if not user.is_sharing():
             return Response(
                 {
                     'detail': 'Location sharing is paused.',
@@ -584,7 +588,12 @@ class NearbyUsersView(APIView):
         # Paused: empty, not an error. Their client uses the query endpoint and
         # only reaches this while switching over; a failure there would be
         # noise about a state that is working as intended.
-        if not user.is_on_map():
+        #
+        # `is_sharing` throughout this view: the caller's own freshness governs
+        # what *others* see of them, not whether they may ask this question. A
+        # stale sharer still gets an answer, anchored on the position below,
+        # and the report going out alongside this refreshes it.
+        if not user.is_sharing():
             return Response([])
 
         # Sharing, but nothing on file yet — the gap between choosing Live and
@@ -643,7 +652,10 @@ class EndSharingSessionView(APIView):
             # missing one by the shape of the answer.
             return Response({'location_sharing': user.location_sharing})
 
-        if user.is_on_map():
+        # `is_sharing`: a session whose position has already gone stale still
+        # has to be torn down, and testing freshness here would skip exactly
+        # the rows most in need of clearing.
+        if user.is_sharing():
             # Same teardown as choosing Paused by hand, and deliberately the
             # same code path: a session ending must not leave a weaker trace
             # than the button does.
@@ -761,7 +773,7 @@ class NearbyMapView(APIView):
         user = request.user
         # Same two-way split as NearbyUsersView, and for the same reason: the
         # client draws a different screen for each.
-        if not user.is_on_map():
+        if not user.is_sharing():
             return Response(
                 {
                     'detail': 'Location sharing is paused.',

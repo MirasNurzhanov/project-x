@@ -12,11 +12,20 @@ would make the one property App Review cares about invisible to the suite. The
 tests that assert the default build their users without this — see
 proximity/test_map_visibility.py.
 """
+from django.utils import timezone
+
 from users.models import User
 
 
-def share_location(user, mode=None):
-    """Put `user` on the map, at `mode` precision (Live unless told otherwise)."""
+def share_location(user, mode=None, reported_at=None):
+    """Put `user` on the map, at `mode` precision (Live unless told otherwise).
+
+    Stamps `location_updated_at` as well as the setting, because being on the
+    map takes both now: a live setting over a coordinate nobody has refreshed
+    for hours is exactly the state `users.visibility.fresh_position_q` exists to
+    withhold. Pass `reported_at` to build that stale case on purpose.
+    """
     user.location_sharing = mode or User.LocationSharing.LIVE
-    user.save(update_fields=['location_sharing'])
+    user.location_updated_at = reported_at or timezone.now()
+    user.save(update_fields=['location_sharing', 'location_updated_at'])
     return user
