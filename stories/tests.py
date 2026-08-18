@@ -10,6 +10,7 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from friends.models import FriendRequest
 from stories.models import Story, StoryReaction
 from stories.views import _adjust_likes
 from users.models import User
@@ -19,6 +20,12 @@ from users.testing import share_location
 HERE = {'latitude': '10.000000', 'longitude': '10.000000'}
 NEAR = {'latitude': '10.000500', 'longitude': '10.000500'}
 FAR = {'latitude': '20.000000', 'longitude': '20.000000'}
+
+
+def befriend(a, b):
+    FriendRequest.objects.create(
+        sender=a, receiver=b, status=FriendRequest.Status.ACCEPTED,
+    )
 
 
 def make_user(name, **extra):
@@ -83,14 +90,14 @@ class ReactToStoryTests(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        # Stories default to friends-only. These tests are about the counter,
-        # not about who may see a story, so the author publishes to everyone —
-        # otherwise every request below is a legitimate 404 and the counter is
-        # never reached. Visibility itself is covered in users/tests.py.
-        self.author = make_user(
-            'author', visibility_stories=User.Audience.EVERYONE, **HERE,
-        )
+        # A story is friends-only, whatever the setting says (see
+        # users.visibility.can_view). These tests are about the counter, not
+        # about who may see a story, so the two are friends — otherwise every
+        # request below is a legitimate 404 and the counter is never reached.
+        # Visibility itself is covered in users/tests.py.
+        self.author = make_user('author', **HERE)
         self.viewer = make_user('viewer', **NEAR)
+        befriend(self.author, self.viewer)
         self.story = Story.objects.create(
             user=self.author, content='hello', **HERE,
             expires_at=timezone.now() + timedelta(hours=5),
@@ -139,6 +146,7 @@ class ReactToStoryTests(TestCase):
 
     def test_two_people_liking_counts_both(self):
         other = make_user('other', **NEAR)
+        befriend(self.author, other)
         self.react('like')
         self.client.force_authenticate(other)
         self.react('like')
@@ -151,6 +159,7 @@ class ReactToStoryTests(TestCase):
 
     def test_too_far_away_is_refused(self):
         distant = make_user('distant', **FAR)
+        befriend(self.author, distant)
         self.client.force_authenticate(distant)
         self.assertEqual(self.react('like').status_code, 403)
         self.assertEqual(self.likes(), 0)
@@ -176,8 +185,9 @@ class StoryCoordinateTypeTests(TestCase):
     """
 
     def test_nearby_story_coordinates_are_numbers(self):
-        author = make_user('author', **HERE, visibility_stories='everyone')
+        author = make_user('author', **HERE)
         viewer = make_user('viewer', **HERE)
+        befriend(author, viewer)
         Story.objects.create(
             user=author, content='hi', latitude='10.000500', longitude='10.000500',
             expires_at=timezone.now() + timedelta(hours=5),

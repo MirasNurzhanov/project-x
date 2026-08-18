@@ -150,7 +150,7 @@ class PublicProfileSerializer(serializers.Serializer):
             data['connections'] = _connection_summaries(obj, viewer=me)
 
         if visibility.can_view(me, obj, 'stories', rel):
-            data['stories'] = _live_story_summaries(obj)
+            data['stories'] = _live_story_summaries(obj, viewer=me)
 
         # A removed music zone is absent here too, not just on the map. A
         # profile that still offered a play button for a zone its owner had
@@ -209,18 +209,29 @@ def _connection_summaries(obj, viewer):
     ]
 
 
-def _live_story_summaries(obj):
+def _live_story_summaries(obj, viewer=None):
     """Unexpired stories. Coordinates are deliberately left out — a profile
-    listing is not a location feed."""
+    listing is not a location feed.
+
+    Nor is the place name, once its author is off the map: "Blue Bottle, 8th
+    Ave" says where somebody is as plainly as a pair of decimals does, and this
+    is the third surface it could have escaped through after the map feed and
+    the saved list. The stories themselves stay - pausing takes you off the
+    map, it does not withdraw you from your friends.
+    """
     from django.utils import timezone
     from stories.models import Story
 
+    placed = obj.pk == getattr(viewer, 'pk', None) or obj.is_on_map()
     return [
         {
             'id': s.id,
-            'image': s.image.url if s.image else None,
+            # `image_url` first: a photo uploaded straight to Cloudinary never
+            # touches the `image` field, and reading only that one renders
+            # every such story blank here.
+            'image': s.image_url or (s.image.url if s.image else None),
             'content': s.content,
-            'place_name': s.place_name,
+            'place_name': s.place_name if placed else '',
             'created_at': s.created_at,
         }
         for s in Story.objects.filter(user=obj, expires_at__gt=timezone.now()).order_by('-created_at')

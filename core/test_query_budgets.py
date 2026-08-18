@@ -223,6 +223,13 @@ class QueryBudgetTests(TestCase):
     def test_nearby_stories_is_a_fixed_number_of_queries(self):
         self.assertWithinBudget(13, 'get', '/api/stories/nearby/')
 
+    def test_friend_stories_are_a_fixed_number_of_queries(self):
+        """The chat screen polls this for its story rings, so it is a hot path
+        like the map feeds beside it - and it must not grow a query per story
+        or per author."""
+        response = self.assertWithinBudget(12, 'get', '/api/stories/friends/')
+        self.assertTrue(response.data['results'], 'the feed answered empty')
+
     def test_nearby_meetups_is_a_fixed_number_of_queries(self):
         self.assertWithinBudget(3, 'get', '/api/clubs/events/nearby/')
 

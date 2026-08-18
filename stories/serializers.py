@@ -1,6 +1,7 @@
 from django.db.models import Count
 from rest_framework import serializers
 from .models import SavedStory, Story, StoryReaction
+from .visibility import is_placed_for
 
 
 class StorySerializer(serializers.ModelSerializer):
@@ -36,10 +37,12 @@ class StorySerializer(serializers.ModelSerializer):
         return obj.image.url if obj.image else None
 
     def get_latitude(self, obj):
-        return float(obj.latitude)
+        # None for a story posted while location sharing was paused. Those
+        # carry no position at all - see stories/models.Story.latitude.
+        return None if obj.latitude is None else float(obj.latitude)
 
     def get_longitude(self, obj):
-        return float(obj.longitude)
+        return None if obj.longitude is None else float(obj.longitude)
 
     def get_author(self, obj):
         from django.utils import timezone
@@ -83,7 +86,49 @@ class StorySerializer(serializers.ModelSerializer):
         return counts
 
 
+class SocialStorySerializer(StorySerializer):
+    """A story as the chat/avatar surfaces need it: no coordinates.
+
+    Those surfaces answer "what did my friend post", never "where". They were
+    served by the map serializer, which meant a friend opening a story ring
+    received the author's coordinate in the payload whether or not anything on
+    screen would ever draw it - and kept receiving it after the author paused,
+    since the row still holds what it held. Removing the fields is the fix; a
+    client cannot leak what it was never sent.
+
+    `place_name` survives only while the story is a pin the viewer could see on
+    the map anyway. It is a location under another name ("Blue Bottle, 8th
+    Ave"), so it answers to the same rule the coordinate does.
+    """
+
+    place_name = serializers.SerializerMethodField()
+
+    class Meta(StorySerializer.Meta):
+        fields = [
+            f for f in StorySerializer.Meta.fields
+            if f not in ('latitude', 'longitude')
+        ]
+
+    def get_place_name(self, obj):
+        # `is_placed_for`, not `can_show_on_map`: every row that reaches this
+        # serializer came out of a queryset already filtered by `readable_q`,
+        # so re-deriving the relationship here would be a pair of queries per
+        # story to re-answer a question already answered in SQL.
+        request = self.context.get('request')
+        if request is None:
+            return ''
+        return obj.place_name if is_placed_for(request.user, obj) else ''
+
+
 class StoryCreateSerializer(serializers.ModelSerializer):
+    """Note what is *not* here: `user`, and the final say over the position.
+
+    Latitude and longitude are optional because a locationless story is a
+    normal story, and the pair the client sends is a proposal rather than the
+    stored value - CreateStoryView runs it through the author's location
+    sharing mode, which may fuzz it or drop it entirely.
+    """
+
     class Meta:
         model = Story
         fields = ['content', 'image', 'image_url', 'latitude', 'longitude', 'place_name']

@@ -27,6 +27,16 @@ CONNECTED = 'connected'
 STRANGER = 'stranger'
 BLOCKED = 'blocked'
 
+#: Fields whose "Everyone" is not literal: the audience is capped at friends
+#: however the setting reads. `can_view` is where each cap is argued; this is
+#: the list `visible_field_q` needs to apply the same thing in SQL, and the two
+#: must not drift.
+#:
+#: `zone_audio` is capped at friends-or-connected rather than friends, so it is
+#: not on this list - it has no queryset filter and `can_view` is its only
+#: gate.
+FRIENDS_ONLY_FIELDS = frozenset({'stories'})
+
 #: Per-field visibility setting backing each logical field name.
 FIELD_SETTINGS = {
     'interests': 'visibility_interests',
@@ -198,6 +208,18 @@ def can_view(viewer, target, field, rel=None):
     # way regardless of the presence audience setting.
     if field == 'zone_audio':
         return rel in (FRIEND, CONNECTED)
+    # And a story is never for a stranger either - same collapse, one tier
+    # tighter. A story is a photograph of where somebody is and who they are
+    # with, and the product it belongs to is "show this to your friends", not
+    # "publish it to whoever happens to be standing nearby". So "Everyone"
+    # means the same thing as "Friends" here, and "Nobody" still means nobody.
+    #
+    # Not CONNECTED, unlike zone audio: a Hi is a hello, and the audience for
+    # a story is the list of people who were actually chosen. Whether a story
+    # that passes this may also be *placed on a map* is a second question,
+    # asked separately - see stories/visibility.py.
+    if field == 'stories':
+        return rel == FRIEND
     if audience == User.Audience.FRIENDS:
         return rel == FRIEND
     return True
@@ -242,11 +264,18 @@ def visible_field_q(viewer, field, prefix='user'):
     friend_ids, approved_ids = approved_ids_for(viewer)
 
     q = Q(**{owner: viewer.pk})
-    q |= Q(**{setting: User.Audience.EVERYONE}) & (
-        Q(**{f'{prefix}__is_private': False}) | Q(**{f'{owner}__in': approved_ids})
-    )
-    # Friends are always approved, so the private gate is already satisfied.
-    q |= Q(**{setting: User.Audience.FRIENDS, f'{owner}__in': friend_ids})
+    if field in FRIENDS_ONLY_FIELDS:
+        # The SQL half of the cap in `can_view`: "Everyone" is not literal for
+        # these, so both settings resolve to the same audience and only
+        # "Nobody" differs. The private-account gate needs no clause of its
+        # own here - a friend is always an approved viewer.
+        q |= ~Q(**{setting: User.Audience.NOBODY}) & Q(**{f'{owner}__in': friend_ids})
+    else:
+        q |= Q(**{setting: User.Audience.EVERYONE}) & (
+            Q(**{f'{prefix}__is_private': False}) | Q(**{f'{owner}__in': approved_ids})
+        )
+        # Friends are always approved, so the private gate is already satisfied.
+        q |= Q(**{setting: User.Audience.FRIENDS, f'{owner}__in': friend_ids})
 
     # Blocks are excluded here rather than left to the caller. Callers today
     # all happen to filter them separately, but this Q has to be safe on its

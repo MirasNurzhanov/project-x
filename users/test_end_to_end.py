@@ -224,18 +224,28 @@ class HidingOtherPeopleTests(TestCase):
         self.assertNotIn(self.me.pk, theirs)
 
     def test_block_hides_stories_both_ways(self):
+        # Friends first: stories are friends-only, so without this both lists
+        # are empty before the block and the test cannot fail.
+        FriendRequest.objects.create(
+            sender=self.me, receiver=self.pest,
+            status=FriendRequest.Status.ACCEPTED,
+        )
         for user in (self.me, self.pest):
-            user.visibility_stories = User.Audience.EVERYONE
-            user.save(update_fields=['visibility_stories'])
             Story.objects.create(
                 user=user, content='hi', latitude='10.0005', longitude='10.0005',
                 expires_at=timezone.now() + timezone.timedelta(hours=5),
             )
+        self.assertTrue(self.my_client.get('/api/stories/nearby/').json())
+
         self.block()
         mine = self.my_client.get('/api/stories/nearby/').json()
         theirs = self.their_client.get('/api/stories/nearby/').json()
         self.assertEqual([s for s in mine if s['author']['id'] == self.pest.pk], [])
         self.assertEqual([s for s in theirs if s['author']['id'] == self.me.pk], [])
+        # And out of the social feed as well, which the map filter does not
+        # reach — blocking is not a map rule.
+        feed = self.my_client.get('/api/stories/friends/').json()['results']
+        self.assertEqual([s for s in feed if s['author']['id'] == self.pest.pk], [])
 
     def test_unblock_restores_visibility(self):
         self.build_shared_history()
@@ -258,7 +268,14 @@ class ChokepointSafetyTests(TestCase):
 
     def setUp(self):
         self.me = make_user('me')
-        self.pest = make_user('pest', visibility_stories=User.Audience.EVERYONE)
+        self.pest = make_user('pest')
+        # Friends, because a story only ever reaches a friend now (see
+        # users.visibility.can_view). Without this the queryset is empty for
+        # the right reason and the block assertion below proves nothing.
+        FriendRequest.objects.create(
+            sender=self.me, receiver=self.pest,
+            status=FriendRequest.Status.ACCEPTED,
+        )
         self.story = Story.objects.create(
             user=self.pest, content='hi', latitude='10.0', longitude='10.0',
             expires_at=timezone.now() + timezone.timedelta(hours=5),
@@ -333,45 +350,28 @@ class PrivateAccountEndToEndTests(TestCase):
         self.assertNotIn('bio', body)
 
 
-class ConsumerParityTests(TestCase):
-    """The WebSocket returns its own hand-rolled payload rather than going
-    through the serializer, so it is the most likely place for a rule to be
-    missing. Assert it agrees with the REST endpoint."""
+class NoLocationSocketTests(TestCase):
+    """There is no socket that reports a position or answers "who is nearby".
 
-    def setUp(self):
-        self.interest = Interest.objects.create(name='Test Sailing')
-        self.me = make_user('me', latitude='10.0000', longitude='10.0000')
-        self.other = make_user('other', latitude='10.0010', longitude='10.0010')
-        for user in (self.me, self.other):
-            user.interests.set([self.interest])
+    There was one, and it hand-rolled its own payload and its own radius rather
+    than going through the serializer and the zone engine — which is how it came
+    to write a paused user's coordinates to their row before checking whether
+    they were sharing at all, something the REST endpoint refuses with a 403.
+    Nothing subscribed to it. This asserts the route stays gone rather than
+    being reintroduced as a faster path around `users.visibility`.
+    """
 
-    def consumer_ids(self, lat='10.0000', lon='10.0000'):
-        from proximity.consumers import LocationConsumer
+    def test_no_proximity_route_is_registered(self):
+        from core.asgi import application
 
-        consumer = LocationConsumer()
-        consumer.user = self.me
-        return {entry['id'] for entry in consumer._update_and_find_nearby.__wrapped__(
-            consumer, float(lat), float(lon)
-        )}
+        router = application.application_mapping['websocket']
+        patterns = []
+        while hasattr(router, 'inner'):
+            router = router.inner
+        for route in router.routes:
+            patterns.append(str(route.pattern))
 
-    def test_paused_user_hidden_from_the_socket(self):
-        self.assertIn(self.other.pk, self.consumer_ids())
-        self.other.location_sharing = User.LocationSharing.PAUSED
-        self.other.save(update_fields=['location_sharing'])
-        self.assertNotIn(self.other.pk, self.consumer_ids())
-
-    def test_blocked_user_hidden_from_the_socket(self):
-        BlockedUser.objects.create(blocker=self.other, blocked=self.me)
-        self.assertNotIn(self.other.pk, self.consumer_ids())
-
-    def test_interest_opt_out_hidden_from_the_socket(self):
-        self.other.discoverable_by_interest = False
-        self.other.save(update_fields=['discoverable_by_interest'])
-        self.assertNotIn(self.other.pk, self.consumer_ids())
-
-    def test_socket_fuzzes_an_approximate_reporters_own_position(self):
-        self.me.location_sharing = User.LocationSharing.APPROXIMATE
-        self.me.save(update_fields=['location_sharing'])
-        self.consumer_ids('52.37021900', '4.89516700')
-        self.me.refresh_from_db()
-        self.assertNotEqual(str(self.me.latitude), '52.37021900')
+        self.assertFalse(
+            [p for p in patterns if 'proximity' in p],
+            f'a proximity websocket is routed again: {patterns}',
+        )

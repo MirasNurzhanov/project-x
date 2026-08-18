@@ -11,10 +11,12 @@ The three states the whole API turns on:
     live, no position yet   400 + code      transient; ask again with a fix
     live, with a position   200 [rows]      the normal answer
 """
+from unittest import mock
+
 from django.test import TestCase, TransactionTestCase
 from rest_framework.test import APIClient
 
-from friends.models import BlockedUser
+from friends.models import BlockedUser, FriendRequest
 from interests.models import Interest
 from proximity.views import CODE_LOCATION_NOT_AVAILABLE, CODE_SHARING_PAUSED
 from users.models import User
@@ -30,6 +32,38 @@ def make_user(name, **extra):
     return User.objects.create_user(
         username=name, email=f'{name}@example.com', password='testpass-123', **extra
     )
+
+
+def befriend(a, b):
+    FriendRequest.objects.create(
+        sender=a, receiver=b, status=FriendRequest.Status.ACCEPTED,
+    )
+
+
+class _InlineFuture:
+    def __init__(self, value):
+        self._value = value
+
+    def result(self):
+        return self._value
+
+
+class _InlinePool:
+    def submit(self, fn, *args):
+        return _InlineFuture(fn(*args))
+
+
+def inline_map_pool():
+    """Run the composite map endpoint's fan-out on the calling thread.
+
+    In tests the database is one in-memory SQLite connection and a TestCase
+    holds an open transaction for the whole method, so the eight-thread fan-out
+    in proximity.views reads rows the test itself has just written and gets
+    "database table is locked". Production runs Postgres with a connection per
+    thread and does not. What is under test here is the payload, not the
+    executor that assembles it.
+    """
+    return mock.patch('proximity.views._MAP_POOL', _InlinePool())
 
 
 class ApiStateMatrixTests(TestCase):
@@ -567,3 +601,360 @@ class SharingSessionTests(TestCase):
         self.me.refresh_from_db()
         self.assertTrue(self.me.is_on_map())
         self.assertEqual(str(self.me.sharing_session), token)
+
+
+class StoryLocationTests(TestCase):
+    """Stories and live location are two products that share one table.
+
+    The rule the app promises, and the one asserted here:
+
+        turning off location sharing takes you and your stories off the map.
+        It does not stop you sharing stories with your friends.
+
+    So every test below is one of two questions asked of the same row - may my
+    friend read this, and may anybody draw it at a coordinate - and the point
+    is that they have different answers. See stories/visibility.py.
+    """
+
+    STORIES = '/api/stories/'
+    NEARBY_STORIES = '/api/stories/nearby/'
+    FRIEND_STORIES = '/api/stories/friends/'
+    MAP_QUERY = '/api/map/nearby/query/'
+    MINE = '/api/stories/mine/'
+    SAVED = '/api/stories/saved/'
+
+    HERE = {'latitude': '10.000000', 'longitude': '10.000000'}
+
+    def setUp(self):
+        self.author = share_location(make_user('author'))
+        self.author_client = APIClient()
+        self.author_client.force_authenticate(self.author)
+
+        self.viewer = share_location(make_user('viewer'))
+        self.viewer_client = APIClient()
+        self.viewer_client.force_authenticate(self.viewer)
+
+        # A story is for friends, so the pair the assertions are about has to
+        # be one. The stranger case gets its own test below.
+        befriend(self.author, self.viewer)
+
+        for client in (self.author_client, self.viewer_client):
+            client.patch(LOCATION, dict(self.HERE), format='json')
+
+    # -- helpers --------------------------------------------------------------
+    def post_story(self, client=None, **fields):
+        body = {'content': 'hello', **self.HERE, **fields}
+        return (client or self.author_client).post(self.STORIES, body, format='json')
+
+    def pause(self, client):
+        response = client.patch(PRIVACY, {'location_sharing': 'paused'}, format='json')
+        self.assertEqual(response.status_code, 200)
+
+    def map_story_ids(self):
+        """What the viewer's map actually draws."""
+        response = self.viewer_client.get(self.NEARBY_STORIES)
+        self.assertEqual(response.status_code, 200)
+        return {s['id'] for s in response.json()}
+
+    def feed_story_ids(self, client=None):
+        """What the viewer's chat/avatar surface actually offers."""
+        response = (client or self.viewer_client).get(self.FRIEND_STORIES)
+        self.assertEqual(response.status_code, 200)
+        return {s['id'] for s in response.json()['results']}
+
+    # -- the setup itself -----------------------------------------------------
+    def test_the_setup_really_did_publish_a_pin(self):
+        """Otherwise half the assertions below pass against an empty map."""
+        response = self.post_story()
+        self.assertEqual(response.status_code, 201)
+        story_id = response.json()['id']
+        self.assertIn(story_id, self.map_story_ids())
+        self.assertIn(story_id, self.feed_story_ids())
+
+    # -- posting while paused -------------------------------------------------
+    def test_a_paused_author_can_post(self):
+        """The behaviour this whole change is about.
+
+        Posting used to be refused outright while paused, which reads the
+        switch as "stop using stories" when what it says is "stop appearing on
+        the map".
+        """
+        self.pause(self.author_client)
+        response = self.post_story()
+        self.assertEqual(response.status_code, 201, response.content)
+
+    def test_a_paused_story_carries_no_position(self):
+        """Enforced in the database, not in the client that sent it.
+
+        The request above carried a coordinate - the composer sends one - and
+        the server is the thing that has to refuse to keep it. A build that
+        keeps sending them while paused gets them dropped.
+        """
+        from stories.models import Story
+
+        self.pause(self.author_client)
+        story_id = self.post_story(place_name='Blue Bottle').json()['id']
+
+        story = Story.objects.get(pk=story_id)
+        self.assertIsNone(story.latitude)
+        self.assertIsNone(story.longitude)
+        # A place name is a location under another name, so it goes too.
+        self.assertEqual(story.place_name, '')
+
+    def test_a_paused_story_does_not_borrow_an_old_position(self):
+        """Not the last one we held, either.
+
+        Pausing deletes the stored position, but the author was Live a moment
+        ago and the row could plausibly be repopulated from anywhere. Posting
+        from Live first is what makes this test able to fail.
+        """
+        from stories.models import Story
+
+        self.post_story()
+        self.pause(self.author_client)
+        story_id = self.post_story().json()['id']
+
+        self.assertIsNone(Story.objects.get(pk=story_id).latitude)
+
+    def test_a_sharing_author_may_post_without_a_position(self):
+        """Locationless is a kind of story, not an error state.
+
+        The client sends a coordinate when it has one, and a phone that has not
+        got a fix yet - or never asked for the permission - is not a reason to
+        refuse the story.
+        """
+        from stories.models import Story
+
+        response = self.author_client.post(
+            self.STORIES, {'content': 'no fix here'}, format='json',
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        story = Story.objects.get(pk=response.json()['id'])
+        self.assertIsNone(story.latitude)
+        self.assertIn(story.pk, self.feed_story_ids())
+        self.assertNotIn(story.pk, self.map_story_ids())
+
+    def test_a_paused_story_reaches_a_friend(self):
+        self.pause(self.author_client)
+        story_id = self.post_story().json()['id']
+        self.assertIn(story_id, self.feed_story_ids())
+
+    def test_a_paused_story_is_not_on_the_map(self):
+        # The viewer is still Live, and their own pin is the control: without
+        # it "absent from the composite map" also passes against a map that
+        # returned nothing at all.
+        control_id = self.post_story(self.viewer_client).json()['id']
+        self.pause(self.author_client)
+        story_id = self.post_story().json()['id']
+
+        self.assertNotIn(story_id, self.map_story_ids())
+        with inline_map_pool():
+            composite = self.viewer_client.get('/api/map/nearby/')
+        self.assertEqual(composite.status_code, 200)
+        drawn = {s['id'] for s in composite.json()['stories']}
+        self.assertIn(control_id, drawn)
+        self.assertNotIn(story_id, drawn)
+
+    def test_the_friend_feed_carries_no_coordinates_at_all(self):
+        """Data minimisation, not just filtering.
+
+        The chat surface never draws a map, so the fields are absent from its
+        payload rather than present and null - a client cannot leak what it was
+        never sent, in this or any future version of it.
+        """
+        self.post_story(place_name='Blue Bottle')
+        rows = self.viewer_client.get(self.FRIEND_STORIES).json()['results']
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertNotIn('latitude', row)
+            self.assertNotIn('longitude', row)
+
+    def test_a_paused_authors_place_name_is_withheld_too(self):
+        """The story was posted Live, so it has one; pausing has to reach it.
+
+        Otherwise the coordinate is gone and the string naming the same spot is
+        still there, which is the same leak spelled differently.
+        """
+        self.post_story(place_name='Blue Bottle')
+        rows = self.viewer_client.get(self.FRIEND_STORIES).json()['results']
+        self.assertEqual([r['place_name'] for r in rows], ['Blue Bottle'])
+
+        self.pause(self.author_client)
+        rows = self.viewer_client.get(self.FRIEND_STORIES).json()['results']
+        self.assertEqual([r['place_name'] for r in rows], [''])
+
+    # -- pausing after posting ------------------------------------------------
+    def test_pausing_retracts_the_pin_but_keeps_the_story(self):
+        """The case a write-time check could never have handled.
+
+        Nothing was wrong when this story was posted - the author was on the
+        map. Pausing is what changes the answer, and it has to change exactly
+        one of the two: the pin goes, the story stays.
+        """
+        story_id = self.post_story().json()['id']
+        self.assertIn(story_id, self.map_story_ids())
+
+        self.pause(self.author_client)
+        self.assertNotIn(story_id, self.map_story_ids())
+        self.assertIn(story_id, self.feed_story_ids())
+
+    def test_resuming_brings_the_pin_back(self):
+        """Pausing retracts, it does not destroy. Otherwise the switch is a
+        one-way door and users learn not to touch it."""
+        story_id = self.post_story().json()['id']
+        self.pause(self.author_client)
+        self.assertNotIn(story_id, self.map_story_ids())
+
+        self.author_client.patch(PRIVACY, {'location_sharing': 'live'}, format='json')
+        self.assertIn(story_id, self.map_story_ids())
+
+    def test_a_paused_author_still_sees_their_own(self):
+        """Their archive is theirs. A pin only they can see is not a
+        publication - the rule is about who else learns where they were."""
+        story_id = self.post_story().json()['id']
+        self.pause(self.author_client)
+
+        mine = self.author_client.get(self.MINE)
+        self.assertEqual(mine.status_code, 200)
+        self.assertIn(story_id, {s['id'] for s in mine.json()['results']})
+        self.assertIn(story_id, self.feed_story_ids(self.author_client))
+
+    def test_a_paused_author_can_still_delete_their_own(self):
+        story_id = self.post_story().json()['id']
+        self.pause(self.author_client)
+        self.assertEqual(
+            self.author_client.delete(f'/api/stories/{story_id}/').status_code, 204,
+        )
+
+    # -- acting on a paused author's story ------------------------------------
+    def test_a_friend_can_still_react_when_the_author_pauses(self):
+        """Reading and reacting are the story; the map is the other product.
+
+        The 500m rule this used to run is also a probe once the author is off
+        the map: the 403 would report whether the reactor is standing near the
+        position the author just withdrew.
+        """
+        story_id = self.post_story().json()['id']
+        self.pause(self.author_client)
+
+        response = self.viewer_client.post(
+            f'/api/stories/{story_id}/react/', {'reaction': 'like'}, format='json',
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+
+    def test_a_friend_can_still_save_when_the_author_pauses(self):
+        story_id = self.post_story().json()['id']
+        self.assertEqual(
+            self.viewer_client.post(f'/api/stories/{story_id}/save/').status_code, 201,
+        )
+        self.pause(self.author_client)
+
+        saved = self.viewer_client.get(self.SAVED)
+        self.assertEqual(saved.status_code, 200)
+        rows = saved.json()['results']
+        self.assertIn(story_id, {s['id'] for s in rows})
+        # Kept, but stripped: a bookmark is not a standing grant of a position.
+        for row in rows:
+            self.assertNotIn('latitude', row)
+            self.assertEqual(row['place_name'], '')
+
+    def test_a_paused_pair_can_still_react(self):
+        """Both ends off the map. Neither has a position and neither needs one:
+        there is nothing here to be within 500m of."""
+        self.pause(self.author_client)
+        self.pause(self.viewer_client)
+        story_id = self.post_story().json()['id']
+
+        response = self.viewer_client.post(
+            f'/api/stories/{story_id}/react/', {'reaction': 'like'}, format='json',
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+
+    def test_the_500m_rule_still_holds_for_a_pin(self):
+        """The negative half. A story that *is* a pin still takes standing near
+        it, which is the surface that rule was written for."""
+        story_id = self.post_story().json()['id']
+        self.viewer_client.patch(
+            LOCATION, {'latitude': '10.5', 'longitude': '10.5'}, format='json',
+        )
+        response = self.viewer_client.post(
+            f'/api/stories/{story_id}/react/', {'reaction': 'like'}, format='json',
+        )
+        self.assertEqual(response.status_code, 403)
+
+    # -- who a story is for ---------------------------------------------------
+    def test_a_stranger_gets_nothing_even_at_everyone(self):
+        """Everyone is not literal for stories. A story is for the people the
+        author chose, not for whoever happens to be standing nearby."""
+        self.author.visibility_stories = User.Audience.EVERYONE
+        self.author.save(update_fields=['visibility_stories'])
+        story_id = self.post_story().json()['id']
+
+        stranger = share_location(make_user('stranger'))
+        stranger_client = APIClient()
+        stranger_client.force_authenticate(stranger)
+        stranger_client.patch(LOCATION, dict(self.HERE), format='json')
+
+        self.assertNotIn(story_id, self.feed_story_ids(stranger_client))
+        self.assertNotIn(
+            story_id,
+            {s['id'] for s in stranger_client.get(self.NEARBY_STORIES).json()},
+        )
+        self.assertEqual(
+            stranger_client.post(f'/api/stories/{story_id}/react/',
+                                 {'reaction': 'like'}, format='json').status_code,
+            404,
+        )
+
+    def test_blocking_hides_stories_both_ways(self):
+        """Including the pin, and including the direction the blocker did not
+        choose - a block is mutually invisible or it is detectable."""
+        mine_id = self.post_story().json()['id']
+        theirs_id = self.post_story(self.viewer_client).json()['id']
+        self.assertIn(mine_id, self.feed_story_ids())
+
+        BlockedUser.objects.create(blocker=self.author, blocked=self.viewer)
+
+        self.assertNotIn(mine_id, self.feed_story_ids())
+        self.assertNotIn(mine_id, self.map_story_ids())
+        self.assertNotIn(theirs_id, self.feed_story_ids(self.author_client))
+        self.assertEqual(
+            self.viewer_client.post(f'/api/stories/{mine_id}/react/',
+                                    {'reaction': 'like'}, format='json').status_code,
+            404,
+        )
+
+    # -- precision ------------------------------------------------------------
+    def test_approximate_fuzzes_the_pin_as_well_as_the_dot(self):
+        """Otherwise the setting is undone by using the app.
+
+        Someone whose dot is snapped to a ~500m cell would hand back the exact
+        point by posting, under their own name - a worse leak than the one the
+        setting exists to prevent, because it is a place they chose to stop at.
+        """
+        from stories.models import Story
+        from users.visibility import snap_coordinates
+
+        share_location(self.author, User.LocationSharing.APPROXIMATE)
+        story_id = self.post_story().json()['id']
+
+        story = Story.objects.get(pk=story_id)
+        self.assertNotEqual(
+            (str(story.latitude), str(story.longitude)),
+            (self.HERE['latitude'], self.HERE['longitude']),
+            'an Approximate author posted a precise pin',
+        )
+        # And it is the same cell their dot is snapped to, not a second scheme.
+        snapped_lat, snapped_lon = snap_coordinates(self.author, 10.0, 10.0)
+        self.assertEqual(float(story.latitude), round(float(snapped_lat), 6))
+        self.assertEqual(float(story.longitude), round(float(snapped_lon), 6))
+
+    def test_live_pins_are_not_fuzzed(self):
+        """The negative half, so the test above cannot pass by the coordinate
+        being mangled for everybody."""
+        from stories.models import Story
+
+        story_id = self.post_story().json()['id']
+        story = Story.objects.get(pk=story_id)
+        self.assertEqual(float(story.latitude), 10.0)
+        self.assertEqual(float(story.longitude), 10.0)

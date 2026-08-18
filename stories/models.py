@@ -11,12 +11,28 @@ class Story(models.Model):
     # Set when the client uploaded straight to Cloudinary and only the URL
     # passed through here. Takes precedence over `image` when both exist.
     image_url = models.URLField(max_length=500, blank=True, default='')
-    latitude = models.DecimalField(max_digits=9, decimal_places=6)
-    longitude = models.DecimalField(max_digits=9, decimal_places=6)
+    # Null together, and null is the normal case rather than a defect: a story
+    # posted while location sharing is Paused carries no position at all. The
+    # two products are separate - a story is something you show your friends,
+    # a position is something you publish to a map - and only the second one
+    # answers to `location_sharing`. See stories/visibility.py, and
+    # CreateStoryView, which is what actually enforces the null.
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     place_name = models.CharField(max_length=200, blank=True)
     expires_at = models.DateTimeField(db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     likes_count = models.IntegerField(default=0)
+
+    @property
+    def is_placed(self):
+        """Whether this story carries a position at all.
+
+        Necessary but not sufficient for it to be drawn: a placed story whose
+        author has since paused stays readable and stops being a map pin. That
+        second half is `stories.visibility.can_show_on_map`.
+        """
+        return self.latitude is not None and self.longitude is not None
 
     def save(self, *args, **kwargs):
         if not self.pk:

@@ -197,10 +197,57 @@ class FieldVisibilityTests(TestCase):
         feed = self.client.get('/api/stories/nearby/').json()
         self.assertEqual([s for s in feed if s['author']['id'] == self.target.pk], [])
 
-        self.set_visibility(visibility_stories=User.Audience.EVERYONE)
+        befriend(self.viewer, self.target)
         self.assertEqual(len(self.profile()['stories']), 1)
         feed = self.client.get('/api/stories/nearby/').json()
         self.assertEqual(len([s for s in feed if s['author']['id'] == self.target.pk]), 1)
+
+    def test_stories_never_reach_a_stranger(self):
+        """"Everyone" is not literal for stories, exactly as it is not for zone
+        audio: a story is for the people the author chose, not for whoever
+        happens to be standing nearby. Only "Nobody" differs from the default.
+        """
+        Story.objects.create(
+            user=self.target, content='hi', latitude='10.001', longitude='10.001',
+            expires_at=timezone.now() + timezone.timedelta(hours=5),
+        )
+        self.set_visibility(visibility_stories=User.Audience.EVERYONE)
+
+        self.assertNotIn('stories', self.profile())
+        feed = self.client.get('/api/stories/nearby/').json()
+        self.assertEqual([s for s in feed if s['author']['id'] == self.target.pk], [])
+
+        # And not to an accepted connection either — a Hi is a hello. This is
+        # one tier tighter than zone audio, which does reach a connection.
+        connect(self.viewer, self.target)
+        self.assertNotIn('stories', self.profile())
+
+    def test_stories_nobody_hides_them_from_friends_too(self):
+        Story.objects.create(
+            user=self.target, content='hi', latitude='10.001', longitude='10.001',
+            expires_at=timezone.now() + timezone.timedelta(hours=5),
+        )
+        befriend(self.viewer, self.target)
+        self.set_visibility(visibility_stories=User.Audience.NOBODY)
+        self.assertNotIn('stories', self.profile())
+
+    def test_a_friends_story_survives_them_leaving_the_map(self):
+        """The two are separate products. Location sharing decides whether a
+        story can be a *pin*; it has never been what decides whether a friend
+        may read one — see stories/visibility.py."""
+        story = Story.objects.create(
+            user=self.target, content='hi', latitude='10.001', longitude='10.001',
+            expires_at=timezone.now() + timezone.timedelta(hours=5),
+        )
+        befriend(self.viewer, self.target)
+        self.target.location_sharing = User.LocationSharing.PAUSED
+        self.target.save(update_fields=['location_sharing'])
+
+        feed = self.client.get('/api/stories/friends/').json()['results']
+        self.assertIn(story.pk, {s['id'] for s in feed})
+        # The pin, though, is gone with the dot.
+        nearby = self.client.get('/api/stories/nearby/').json()
+        self.assertEqual([s for s in nearby if s['id'] == story.pk], [])
 
     def test_hidden_story_cannot_be_saved_or_reacted_to(self):
         """Hiding a story must remove the ability to act on it, not just the
@@ -220,7 +267,7 @@ class FieldVisibilityTests(TestCase):
         reach copies people already saved."""
         from stories.models import SavedStory
 
-        self.set_visibility(visibility_stories=User.Audience.EVERYONE)
+        befriend(self.viewer, self.target)
         story = Story.objects.create(
             user=self.target, content='hi', latitude='10.0', longitude='10.0',
             expires_at=timezone.now() + timezone.timedelta(hours=5),
