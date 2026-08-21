@@ -335,34 +335,19 @@ class ReactToStoryView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        reaction_type = serializer.validated_data['reaction']
         existing = StoryReaction.objects.filter(user=user, story=story).first()
-
         if existing:
-            was_like = existing.reaction == StoryReaction.ReactionType.LIKE
-            if existing.reaction == reaction_type:
-                # Toggle off
-                existing.delete()
-                if was_like:
-                    _adjust_likes(story, -1)
-                return Response({'detail': 'Reaction removed.', 'user_reaction': None}, status=status.HTTP_200_OK)
-            else:
-                old_type = existing.reaction
-                existing.reaction = reaction_type
-                existing.save(update_fields=['reaction'])
-                # Adjust likes_count
-                if old_type == StoryReaction.ReactionType.LIKE:
-                    _adjust_likes(story, -1)
-                elif reaction_type == StoryReaction.ReactionType.LIKE:
-                    _adjust_likes(story, 1)
-                notify_story_reaction(story, user, reaction_type)
-                return Response({'detail': 'Reaction updated.', 'user_reaction': reaction_type}, status=status.HTTP_200_OK)
-        else:
-            StoryReaction.objects.create(user=user, story=story, reaction=reaction_type)
-            if reaction_type == StoryReaction.ReactionType.LIKE:
-                _adjust_likes(story, 1)
-            notify_story_reaction(story, user, reaction_type)
-            return Response({'detail': 'Reaction added.', 'user_reaction': reaction_type}, status=status.HTTP_201_CREATED)
+            existing.delete()
+            _adjust_likes(story, -1)
+            return Response({'detail': 'Reaction removed.', 'user_reaction': None}, status=status.HTTP_200_OK)
+
+        StoryReaction.objects.create(user=user, story=story, reaction=StoryReaction.ReactionType.LIKE)
+        _adjust_likes(story, 1)
+        notify_story_reaction(story, user)
+        return Response(
+            {'detail': 'Reaction added.', 'user_reaction': StoryReaction.ReactionType.LIKE},
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class MyStoriesView(APIView):

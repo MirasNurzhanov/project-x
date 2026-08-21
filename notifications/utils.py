@@ -19,14 +19,6 @@ def send_push_notification(user, title, message, *, data=None, category='default
     push_to_user(user, title, message, data=data, category=category)
 
 
-REACTION_VERB = {
-    'like': 'liked',
-    'funny': 'found your story funny',
-    'helpful': 'found your story helpful',
-    'interesting': 'found your story interesting',
-}
-
-
 def _story_alert(recipient, sender, story, notification_type, message, push_title):
     """Create a story alert, unless the two are blocked or it is self-directed.
 
@@ -64,17 +56,16 @@ def _story_alert(recipient, sender, story, notification_type, message, push_titl
     return notification
 
 
-def notify_story_reaction(story, sender, reaction: str):
-    """Someone reacted to `story`.
+def notify_story_reaction(story, sender):
+    """Someone liked `story`.
 
-    A reaction toggles and can be switched, and `StoryReaction` allows one per
-    person per story — so one person is one piece of news here, however many
-    times they tap. An unread alert from the same person on the same story is
-    rewritten in place rather than joined by another: the author sees their
-    current reaction, once, and is not pushed at again for changing their mind.
+    `StoryReaction` allows one per person per story — so one person is one
+    piece of news here, however many times they tap. An unread alert from the
+    same person on the same story is rewritten in place rather than joined by
+    another: the author sees that this person liked it, once, and is not
+    pushed at again for tapping it a second time.
     """
-    verb = REACTION_VERB.get(reaction, 'reacted to your story')
-    message = f'@{sender.username} {verb}' + (' your story' if reaction == 'like' else '')
+    message = f'@{sender.username} liked your story'
 
     standing = Notification.objects.filter(
         recipient=story.user,

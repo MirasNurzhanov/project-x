@@ -65,9 +65,6 @@ class Story(models.Model):
 class StoryReaction(models.Model):
     class ReactionType(models.TextChoices):
         LIKE = 'like', 'Like'
-        FUNNY = 'funny', 'Funny'
-        HELPFUL = 'helpful', 'Helpful'
-        INTERESTING = 'interesting', 'Interesting'
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='story_reactions')
     story = models.ForeignKey(Story, on_delete=models.CASCADE, related_name='reactions')

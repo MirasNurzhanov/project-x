@@ -125,24 +125,13 @@ class ReactToStoryTests(TestCase):
         self.assertEqual(self.likes(), 0)
         self.assertFalse(StoryReaction.objects.filter(story=self.story).exists())
 
-    def test_switching_away_from_like_decrements(self):
-        self.react('like')
-        self.assertEqual(self.likes(), 1)
-        self.react('funny')
+    def test_removed_reaction_types_are_rejected(self):
+        """funny/helpful/interesting used to be valid reactions; only like
+        remains — each now behaves like any other unrecognised string."""
+        for reaction in ('funny', 'helpful', 'interesting'):
+            self.assertEqual(self.react(reaction).status_code, 400)
         self.assertEqual(self.likes(), 0)
-
-    def test_switching_to_like_increments(self):
-        self.react('funny')
-        self.assertEqual(self.likes(), 0)
-        self.react('like')
-        self.assertEqual(self.likes(), 1)
-
-    def test_a_non_like_reaction_leaves_the_counter_alone(self):
-        self.react('funny')
-        self.assertEqual(self.likes(), 0)
-        self.assertEqual(
-            StoryReaction.objects.get(story=self.story).reaction, 'funny',
-        )
+        self.assertFalse(StoryReaction.objects.filter(story=self.story).exists())
 
     def test_two_people_liking_counts_both(self):
         other = make_user('other', **NEAR)
@@ -151,11 +140,6 @@ class ReactToStoryTests(TestCase):
         self.client.force_authenticate(other)
         self.react('like')
         self.assertEqual(self.likes(), 2)
-
-    def test_one_reaction_per_person_per_story(self):
-        self.react('like')
-        self.react('funny')
-        self.assertEqual(StoryReaction.objects.filter(story=self.story).count(), 1)
 
     def test_too_far_away_is_refused(self):
         distant = make_user('distant', **FAR)
