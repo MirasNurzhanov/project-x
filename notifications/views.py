@@ -15,7 +15,7 @@ class NotificationListView(generics.ListAPIView):
     def get_queryset(self):
         user = self.request.user
         qs = Notification.objects.filter(recipient=user).select_related(
-            'sender', 'story', 'club', 'event',
+            'sender', 'story', 'club', 'event', 'swift',
         )
 
         # Filtered on read, not only on write: a notification names its sender,

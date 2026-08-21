@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'notifications',
     'friends',
     'stories',
+    'swifts',
 ]
 
 MIDDLEWARE = [
@@ -262,6 +263,37 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.FormParser',
         'rest_framework.parsers.MultiPartParser',
     ),
+    # ── Throttling ────────────────────────────────────────────────────────────
+    # `ScopedRateThrottle` and nothing else, deliberately. It is inert on any
+    # view that does not declare a `throttle_scope`, so adding it here changes
+    # the behaviour of exactly the endpoints that opt in and leaves every
+    # existing one alone — which is what makes it safe to introduce to an app
+    # that has never had throttling.
+    #
+    # A blanket `UserRateThrottle` would be the obvious alternative and is the
+    # wrong tool: the map poll runs every ten seconds from every client, the
+    # unread badge rides on top of it, and a global ceiling tuned to survive
+    # those is far too loose to protect anything that actually needs it.
+    'DEFAULT_THROTTLE_CLASSES': (
+        'rest_framework.throttling.ScopedRateThrottle',
+    ),
+    'DEFAULT_THROTTLE_RATES': {
+        # The one that matters. Without a limit here, anybody who can watch a
+        # Swift can walk the id space and harvest every coordinate the app
+        # holds — the reveal gate makes each one cost a view, but nothing
+        # stopped them from paying that cost a thousand times an hour.
+        #
+        # Counts refusals as well as grants, which is the point: probing an id
+        # that answers 404 is exactly the traffic being limited. Set well above
+        # any real session — revealing sixty distinct locations in an hour is
+        # not something a person does by watching videos.
+        'swift_location_reveal': config('THROTTLE_SWIFT_REVEAL', default='60/hour'),
+        # Posting. A ceiling on flooding rather than on people.
+        'swift_create': config('THROTTLE_SWIFT_CREATE', default='30/hour'),
+        # Reporting. Low, because the only reason to report thirty things an
+        # hour is to bury somebody under flags.
+        'swift_report': config('THROTTLE_SWIFT_REPORT', default='20/hour'),
+    },
 }
 
 CSRF_TRUSTED_ORIGINS = config(
@@ -440,6 +472,62 @@ APPLE_MUSIC_PRIVATE_KEY = config('APPLE_MUSIC_PRIVATE_KEY', default='')
 #: Which country's catalogue to search when the client does not say. Availability
 #: and preview URLs genuinely differ by storefront.
 APPLE_MUSIC_STOREFRONT = config('APPLE_MUSIC_STOREFRONT', default='us')
+
+# ── Epidemic Sound ────────────────────────────────────────────────────────────
+# Credentials for the Swift music catalogue importer in swifts/music/epidemic.py.
+#
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │  THE API KEY GOES HERE — as environment variables, never in this file.    │
+# │                                                                          │
+# │  Local:    backend/project-x/.env      (git-ignored; see .env.example)    │
+# │  Railway:  project → Variables tab                                        │
+# └──────────────────────────────────────────────────────────────────────────┘
+#
+#     EPIDEMIC_SOUND_CLIENT_ID=your-access-key-id
+#     EPIDEMIC_SOUND_CLIENT_SECRET=your-access-key-secret
+#
+# Where they come from, and the part that is easy to get wrong: these are
+# issued under Epidemic Sound's **partner/API agreement**, not with an ordinary
+# subscription. A personal or commercial subscription licenses *you* to put
+# their music in *your* content; Aura is a platform whose users attach music to
+# videos Aura then redistributes, which is a different licence entirely. There
+# is no self-serve key for it — it comes from talking to them.
+#
+# Absent, the importer answers "not configured" and names the missing variable,
+# `python manage.py sync_music --status` says so, and the rest of Swifts is
+# untouched: the picker reads Aura's own `SwiftTrack` table either way, so a
+# hand-curated catalogue works with none of this set.
+EPIDEMIC_SOUND_CLIENT_ID = config('EPIDEMIC_SOUND_CLIENT_ID', default='')
+EPIDEMIC_SOUND_CLIENT_SECRET = config('EPIDEMIC_SOUND_CLIENT_SECRET', default='')
+
+# The licence recorded against every track imported from Epidemic Sound, shown
+# in the admin and never sent to creators. A setting rather than a literal
+# because the wording that makes a track safe to serve is agreement-specific,
+# and it is what somebody will need to read back in two years.
+EPIDEMIC_SOUND_LICENCE = config(
+    'EPIDEMIC_SOUND_LICENCE', default='Epidemic Sound partner agreement',
+)
+#: Only if the agreement requires a per-track credit line. Usually blank.
+EPIDEMIC_SOUND_ATTRIBUTION = config('EPIDEMIC_SOUND_ATTRIBUTION', default='')
+
+# Endpoints, as settings so that partner documentation can correct them without
+# a code change. The defaults are the shape their partner content API uses;
+# confirm each against the docs issued with your agreement — they are the one
+# part of this integration written without that document in hand.
+EPIDEMIC_SOUND_BASE_URL = config(
+    'EPIDEMIC_SOUND_BASE_URL',
+    default='https://partner-content-api.epidemicsound.com',
+)
+EPIDEMIC_SOUND_TOKEN_URL = config(
+    'EPIDEMIC_SOUND_TOKEN_URL',
+    default='https://partner-content-api.epidemicsound.com/v0/token',
+)
+EPIDEMIC_SOUND_SEARCH_PATH = config(
+    'EPIDEMIC_SOUND_SEARCH_PATH', default='/v0/tracks/search',
+)
+EPIDEMIC_SOUND_TRACK_PATH = config(
+    'EPIDEMIC_SOUND_TRACK_PATH', default='/v0/tracks/{id}',
+)
 
 # ── Sign in with Google / Sign in with Apple ──────────────────────────────────
 # The OAuth client ids whose identity tokens /api/users/social/ will accept, as

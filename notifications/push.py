@@ -46,6 +46,7 @@ CATEGORIES = {
     'club_event':    ('notify_club_events', 'events'),
     'social':        ('notify_social', 'social'),
     'story':         ('notify_story_activity', 'social'),
+    'swift':         ('notify_swift_activity', 'social'),
     'zone_music':    ('music_zone_alerts', 'default'),
 }
 

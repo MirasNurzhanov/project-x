@@ -418,6 +418,11 @@ class User(AbstractUser):
     notify_social = models.BooleanField(default=True)
     #: Reactions and replies to your own stories.
     notify_story_activity = models.BooleanField(default=True)
+    #: Likes, comments and reposts on your own Swifts. Default True, matching
+    #: every switch above it: these are added after people already have
+    #: accounts, and a default of False would ship a feature switched off for
+    #: everyone who upgraded.
+    notify_swift_activity = models.BooleanField(default=True)
 
     # ── Presence ──────────────────────────────────────────────────────────────
     # Deliberately *not* `updated_at`. That field is auto_now, so it moves on

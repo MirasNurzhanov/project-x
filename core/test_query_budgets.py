@@ -29,6 +29,7 @@ from interests.models import Interest
 from notifications.models import Notification
 from regions.models import Region, UserPlace
 from stories.models import Story
+from swifts.models import SwiftLike, SwiftVideo, SwiftView
 from users.models import User
 
 LAT, LON = Decimal('25.20000000'), Decimal('55.27000000')  # Dubai
@@ -115,6 +116,23 @@ class QueryBudgetTests(TestCase):
                 recipient=cls.me, sender=other,
                 notification_type=Notification.Type.NEARBY_USER, message='near',
             )
+
+        # Swifts, with engagement by `me` on some of them — the viewer flags
+        # (liked / reposted / viewed) are three separate lookups and the whole
+        # point of the budget is that they stay three rather than three per row.
+        for i, other in enumerate(cls.others[:20]):
+            swift = SwiftVideo.objects.create(
+                author=other, caption=f'sw{i}',
+                video_url='https://cdn.example.com/v/x.mp4',
+                duration_ms=15_000, width=1080, height=1920,
+                latitude=LAT if i % 3 else None,
+                longitude=LON if i % 3 else None,
+                location_shared=bool(i % 3),
+            )
+            if i % 2:
+                SwiftLike.objects.create(swift=swift, user=cls.me)
+            if i % 4 == 0:
+                SwiftView.objects.create(swift=swift, viewer=cls.me)
 
     @classmethod
     def _user(cls, name, i):
@@ -239,6 +257,49 @@ class QueryBudgetTests(TestCase):
 
     def test_notifications_are_a_fixed_number_of_queries(self):
         self.assertWithinBudget(10, 'get', '/api/notifications/')
+
+    # ── Swifts ────────────────────────────────────────────────────────────────
+    def test_swift_feed_does_not_query_per_swift(self):
+        """The feed is the hottest read Swifts will have.
+
+        Four things could each have been a query per row and are not: the
+        author (select_related), and the three viewer flags, which the view
+        batches into one lookup each via `_viewer_context`. `location_available`
+        is the one to watch — it runs the reveal gate per row, and the gate can
+        reach the relationship tables, so a change there is exactly how this
+        budget would quietly start scaling with the page size.
+        """
+        response = self.assertWithinBudget(12, 'get', '/api/swifts/feed/')
+        self.assertGreaterEqual(len(response.data['results']), 10)
+
+    def test_swift_feed_still_answers_the_viewer_flags(self):
+        """The batching has to produce the same answers the per-row queries did."""
+        response = self.client.get('/api/swifts/feed/')
+        by_id = {row['id']: row for row in response.data['results']}
+
+        for swift in SwiftVideo.objects.filter(pk__in=by_id):
+            self.assertEqual(
+                by_id[swift.pk]['viewer_liked'],
+                SwiftLike.objects.filter(swift=swift, user=self.me).exists(),
+                f'viewer_liked wrong for swift {swift.pk}',
+            )
+            self.assertEqual(
+                by_id[swift.pk]['viewer_viewed'],
+                SwiftView.objects.filter(swift=swift, viewer=self.me).exists(),
+                f'viewer_viewed wrong for swift {swift.pk}',
+            )
+
+    def test_swift_feed_never_carries_a_coordinate(self):
+        """The location rule, guarded from outside the swifts app as well.
+
+        `swifts/test_location_privacy.py` owns this assertion properly. It is
+        repeated here against a large, mixed fixture because that suite builds
+        its own small one, and a leak that only appears at page size is exactly
+        the kind this file exists to catch.
+        """
+        raw = self.client.get('/api/swifts/feed/').content.decode()
+        for banned in ('latitude', 'longitude', 'place_name'):
+            self.assertNotIn(banned, raw)
 
     # ── Response size ─────────────────────────────────────────────────────────
     def test_large_json_responses_are_compressed(self):

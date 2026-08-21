@@ -532,3 +532,95 @@ def notify_club_invite(club, invited_by, member):
         category='club_event',
         data={'type': 'club', 'club_id': club.pk, 'club_name': club.name},
     )
+
+
+# ─── Swifts ───────────────────────────────────────────────────────────────────
+# Same three rules as the story alerts above, for the same reasons: nothing is
+# news to you about your own Swift, a block hides both directions, and one
+# person is one piece of news however many times they tap.
+#
+# The coalescing is per (recipient, sender, swift, type), which is why the three
+# kinds are three types rather than one `swift_activity`. Folding them together
+# would mean a like from someone who had already commented silently rewrote the
+# comment alert, and the author would never learn about the comment.
+def _swift_alert(sender, swift, notification_type, message, push_title):
+    """Create — or refresh — one Swift alert.
+
+    An unread alert from the same person, on the same Swift, of the same kind
+    is rewritten in place rather than joined by another: the author sees the
+    current state once, and is not pushed at again for a change of mind.
+
+    `created_at` is `auto_now_add`, so it only moves through an explicit UPDATE
+    — which is what keeps a refreshed alert at the top of the list where it
+    belongs.
+    """
+    from users.visibility import blocked_ids_for
+
+    recipient = swift.author
+    if recipient.pk == sender.pk:
+        return None
+    if sender.pk in blocked_ids_for(recipient):
+        return None
+
+    standing = Notification.objects.filter(
+        recipient=recipient, sender=sender, swift=swift,
+        notification_type=notification_type, is_read=False,
+    )
+    if standing.update(message=message, created_at=timezone.now()):
+        return None
+
+    notification = Notification.objects.create(
+        recipient=recipient, sender=sender, swift=swift,
+        notification_type=notification_type, message=message,
+    )
+    try:
+        send_push_notification(
+            recipient, push_title, message,
+            data={
+                'type': 'swift',
+                'swift_id': swift.pk,
+                'user_id': sender.pk,
+                'username': sender.username,
+            },
+            category='swift',
+        )
+    except Exception as exc:  # noqa: BLE001 — push is never worth a 500
+        print(f'[Push] swift alert failed: {exc}')
+    return notification
+
+
+def notify_swift_like(swift, sender):
+    return _swift_alert(
+        sender=sender,
+        swift=swift,
+        notification_type=Notification.Type.SWIFT_LIKE,
+        message=f'@{sender.username} liked your Swift',
+        push_title='❤️ Swift like',
+    )
+
+
+def notify_swift_comment(swift, sender, text):
+    """Someone commented. The excerpt is what makes the alert worth opening."""
+    excerpt = (text or '').strip()
+    if len(excerpt) > 80:
+        excerpt = excerpt[:80].rstrip() + '…'
+    message = f'@{sender.username} commented on your Swift'
+    if excerpt:
+        message = f'{message}: {excerpt}'
+    return _swift_alert(
+        sender=sender,
+        swift=swift,
+        notification_type=Notification.Type.SWIFT_COMMENT,
+        message=message,
+        push_title='💬 Swift comment',
+    )
+
+
+def notify_swift_repost(swift, sender):
+    return _swift_alert(
+        sender=sender,
+        swift=swift,
+        notification_type=Notification.Type.SWIFT_REPOST,
+        message=f'@{sender.username} reposted your Swift',
+        push_title='🔁 Swift repost',
+    )
