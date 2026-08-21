@@ -107,13 +107,22 @@ def sign_upload(user, *, timestamp=None):
     """Parameters the phone needs to upload one video directly to Cloudinary.
 
     The signature covers every parameter it constrains, which is what stops the
-    client widening its own permissions: the folder is fixed, the resource type
-    is video, and the eager transformation is named here rather than chosen by
-    the caller. A client that alters any of them invalidates the signature.
+    client widening its own permissions: the destination is fixed and the
+    resource type is video. A client that alters any of them invalidates the
+    signature.
 
     The public id embeds the uploader so that an asset can always be traced
     back to an account without a database round trip, and a random component so
-    that two uploads from one person in the same second cannot collide.
+    that two uploads from one person in the same second cannot collide. It
+    carries the `swifts/` prefix, and that prefix *is* the folder — see the
+    note below for why there is no longer a separate `folder` parameter.
+
+    `params` is returned as its own dict and the client posts it back
+    key-for-key, rather than composing the form from a list of its own. The two
+    ends drifting apart is the failure that prevents, and it is a bad one:
+    Cloudinary recomputes the signature over whatever it receives, so a form
+    carrying one parameter too many or too few is a 401 that names no
+    parameter at all.
     """
     import secrets
 
@@ -121,27 +130,42 @@ def sign_upload(user, *, timestamp=None):
     timestamp = timestamp or int(time.time())
     public_id = f'{UPLOAD_FOLDER}/u{user.pk}_{timestamp}_{secrets.token_hex(6)}'
 
+    # Two parameters used to sit in here and both were wrong.
+    #
+    # `folder='swifts'` went alongside a `public_id` that already begins
+    # `swifts/`. Under Cloudinary's fixed-folder mode that stores the asset at
+    # `swifts/swifts/...`; under the dynamic-folder mode every account created
+    # since 2023 gets by default, a slashed `public_id` combined with `folder`
+    # is a conflict and the upload is refused outright.
+    #
+    # `image_metadata='false'` was there to strip the GPS coordinates phone
+    # cameras write into a video container. It never did that. Cloudinary's
+    # `image_metadata` controls whether metadata is *returned in the upload
+    # response*, 'false' is already its default, and the spelling is the
+    # image-only one — deprecated in favour of `media_metadata` — being posted
+    # to the /video/upload endpoint.
+    #
+    # What actually keeps container metadata away from viewers is delivery:
+    # `playback_url` and `poster_url` both end in `q_auto,f_auto`, so every
+    # byte anyone is served is transcoded and carries none of the source
+    # container. The raw original keeps its metadata and is reachable only by
+    # someone who already knows the public id — 48 bits of randomness handed
+    # out from an authenticated endpoint.
     params = {
         'timestamp': str(timestamp),
         'public_id': public_id,
-        'folder': UPLOAD_FOLDER,
-        # Strips location, camera model and everything else the container
-        # carries. This is not a nicety: phone cameras write GPS coordinates
-        # into video metadata, and a Swift whose file quietly contains the
-        # creator's position would defeat every gate in `swifts/visibility.py`
-        # without touching one of them.
-        'image_metadata': 'false',
     }
     signature = _sign(params, secret)
 
     return {
         'cloud_name': cloud,
         'api_key': key,
-        'timestamp': timestamp,
         'signature': signature,
+        'params': params,
+        # Also flat: the client reads `public_id` back when it saves the Swift,
+        # and `timestamp` to judge whether a held signature is still fresh.
+        'timestamp': timestamp,
         'public_id': public_id,
-        'folder': UPLOAD_FOLDER,
-        'image_metadata': 'false',
         'upload_url': f'https://api.cloudinary.com/v1_1/{cloud}/video/upload',
         'max_bytes': MAX_UPLOAD_BYTES,
         'max_duration_ms': MAX_DURATION_MS,

@@ -191,7 +191,7 @@ class UploadSignatureTests(SwiftTestCase):
     def test_returns_everything_the_client_needs(self):
         body = self.client.get(reverse('swift-upload-signature')).json()
 
-        for key in ('cloud_name', 'api_key', 'timestamp', 'signature',
+        for key in ('cloud_name', 'api_key', 'timestamp', 'signature', 'params',
                     'public_id', 'upload_url', 'max_bytes', 'max_duration_ms'):
             self.assertIn(key, body)
         self.assertTrue(body['upload_url'].endswith('/video/upload'))
@@ -205,38 +205,66 @@ class UploadSignatureTests(SwiftTestCase):
         second = self.client.get(reverse('swift-upload-signature')).json()
         self.assertNotEqual(first['public_id'], second['public_id'])
 
-    def test_metadata_stripping_is_signed_in(self):
-        """The GPS-in-the-container leak, closed at the upload itself.
+    def test_the_signed_set_is_exactly_what_cloudinary_will_recompute(self):
+        """The upload form is `params`, plus api_key, signature and the file.
 
-        Phone cameras write coordinates into video metadata. If the client
-        could drop this parameter, the raw asset would carry the creator's
-        position regardless of every gate in `swifts/visibility.py` — so it is
-        part of the signed set and a client that removes it gets a rejected
-        upload rather than a silent leak.
+        Cloudinary recomputes the signature over every field it receives bar
+        those three, so this dict has to *be* the form — one key too many or
+        too few and the upload comes back 401 without naming the parameter.
+        That is what a client composing its own field list kept getting wrong,
+        and why the server now hands over the set instead of describing it.
         """
         body = self.client.get(reverse('swift-upload-signature')).json()
-        self.assertEqual(body['image_metadata'], 'false')
-
-        tampered = dict(body)
-        tampered.pop('image_metadata')
-        self.assertNotEqual(
-            media._sign(
-                {'timestamp': str(body['timestamp']), 'public_id': body['public_id'],
-                 'folder': 'swifts'},
-                CLOUD['API_SECRET'],
-            ),
-            body['signature'],
+        self.assertEqual(
+            set(body['params']),
+            {'timestamp', 'public_id'},
         )
+        self.assertEqual(body['params']['public_id'], body['public_id'])
+        self.assertEqual(body['params']['timestamp'], str(body['timestamp']))
+
+    def test_no_folder_parameter_beside_a_folder_prefixed_public_id(self):
+        """Sending both is a conflict, not a duplication.
+
+        The public id already begins `swifts/`. A `folder` parameter on top of
+        it nests the asset at `swifts/swifts/...` under fixed-folder accounts
+        and is refused outright under dynamic-folder ones, which is the default
+        for every account created since 2023.
+        """
+        body = self.client.get(reverse('swift-upload-signature')).json()
+        self.assertNotIn('folder', body['params'])
+        self.assertTrue(body['public_id'].startswith('swifts/'))
+
+    def test_no_image_only_parameters_on_the_video_endpoint(self):
+        """`image_metadata` used to be signed in here as a metadata strip.
+
+        It was not one. Cloudinary's `image_metadata` says whether metadata
+        comes back in the *response*, 'false' is its default, and the spelling
+        is the deprecated image-only one being posted to /video/upload. What
+        keeps container metadata away from viewers is that delivery always
+        transcodes — see the tests around `playback_url`, which is never built
+        without `q_auto,f_auto`.
+        """
+        body = self.client.get(reverse('swift-upload-signature')).json()
+        self.assertNotIn('image_metadata', body['params'])
+        self.assertNotIn('media_metadata', body['params'])
 
     def test_signature_is_reproducible_from_the_signed_parameters(self):
         body = self.client.get(reverse('swift-upload-signature')).json()
-        expected = media._sign({
-            'timestamp': str(body['timestamp']),
-            'public_id': body['public_id'],
-            'folder': body['folder'],
-            'image_metadata': 'false',
-        }, CLOUD['API_SECRET'])
+        expected = media._sign(body['params'], CLOUD['API_SECRET'])
         self.assertEqual(body['signature'], expected)
+
+    def test_an_extra_form_field_breaks_the_signature(self):
+        """The property the whole scheme rests on, stated once.
+
+        A client cannot quietly widen what it is allowed to upload, because
+        anything it adds to the form changes what Cloudinary recomputes.
+        """
+        body = self.client.get(reverse('swift-upload-signature')).json()
+        widened = dict(body['params'], folder='somewhere-else')
+        self.assertNotEqual(
+            media._sign(widened, CLOUD['API_SECRET']),
+            body['signature'],
+        )
 
     def test_requires_authentication(self):
         self.assertEqual(
