@@ -195,18 +195,82 @@ def _viewer_context(request, swifts):
 
 # ─── Feed and detail ──────────────────────────────────────────────────────────
 class SwiftFeedView(APIView):
-    """The foundation feed: watchable Swifts, newest first.
+    """The feed. Personalised by default, reverse-chronological on request.
 
-    Reverse-chronological on purpose. Ranking is a later stage and belongs in a
-    module of its own; what this establishes is the *shape* — which rows are
-    eligible, what a row contains, and that no row contains a coordinate. A
-    ranked feed swaps the ordering and inherits both.
+    The ordering moved to `recs/` and nothing else did. A row is the same row
+    it always was — same serializer, same fields, same absence of coordinates —
+    because the recommender ranks ids and never touches what a Swift *is*. That
+    separation is what let ranking arrive without re-testing the payload.
+
+    Two modes, and the difference is the pagination mechanism as much as the
+    order:
+
+    `cursor`   ranked. One ranking pass fills a session, and pages are slices
+               of it, so the fifth swipe costs a cache read rather than a
+               re-rank — and so a Swift cannot appear on page 1 and again on
+               page 3, which is what offset paging over a changing ranked list
+               would produce.
+    `offset`   reverse-chronological, unranked. Kept because it is stable
+               without a session, because `?chrono=1` is the answer to "is the
+               recommender doing this", and because an installed client that
+               has not learned about cursors keeps working.
     """
 
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         limit, offset = _page_params(request)
+        chrono = request.query_params.get('chrono') in ('1', 'true', 'yes')
+
+        if chrono:
+            return self._chronological(request, limit, offset)
+        return self._ranked(request, limit)
+
+    def _ranked(self, request, limit):
+        from recs import pipeline
+
+        page_result = pipeline.page(
+            request.user, cursor=request.query_params.get('cursor'), limit=limit,
+        )
+        rows = {
+            row.id: row
+            # Through the gate again, not `SwiftVideo.objects` — a ranked
+            # session is a *cache*, and its ids were checked when it was built.
+            #
+            # Up to `session_ttl_s` can pass between ranking and serving a
+            # later page of it. In that window a Swift can be deleted, switched
+            # to private, taken down by moderation, or its author can block
+            # this viewer — and a bare `filter(id__in=...)` would serve it
+            # anyway, for half an hour, off a permission decision made before
+            # any of that happened. Re-applying `watchable` costs one query for
+            # the block set and keeps the session a hint about *order* rather
+            # than a standing grant.
+            for row in swift_visibility.watchable(request.user)
+            .filter(id__in=page_result.swift_ids)
+            .select_related('author')
+        }
+        # Re-imposed in the recommender's order: `filter(id__in=...)` returns
+        # whatever order the database likes, and losing the ranking at the last
+        # step is a mistake that looks exactly like a ranking bug.
+        ordered = [rows[i] for i in page_result.swift_ids if i in rows]
+
+        serializer = SwiftSerializer(
+            ordered, many=True, context=_viewer_context(request, ordered),
+        )
+        return Response({
+            # No total. A ranked session has no meaningful count — the honest
+            # answer is "as many as we found for you", and inventing a number
+            # here would make the client draw a progress bar against a fiction.
+            'count': None,
+            'results': serializer.data,
+            'next_cursor': page_result.cursor,
+            'has_more': page_result.has_more,
+            # Which source won each slot, so the client can attribute the
+            # signals it sends back. Ids and source names only.
+            'sources': page_result.sources_by_id,
+        })
+
+    def _chronological(self, request, limit, offset):
         qs = (
             swift_visibility.watchable(request.user)
             .select_related('author')
@@ -217,7 +281,12 @@ class SwiftFeedView(APIView):
         serializer = SwiftSerializer(
             page, many=True, context=_viewer_context(request, page),
         )
-        return Response({'count': count, 'results': serializer.data})
+        return Response({
+            'count': count,
+            'results': serializer.data,
+            'next_cursor': None,
+            'has_more': offset + limit < count,
+        })
 
 
 class SwiftMineView(APIView):
@@ -601,6 +670,10 @@ class SwiftCommentsView(APIView):
     """GET the thread, POST a comment or a reply."""
 
     permission_classes = [permissions.IsAuthenticated]
+    # Posting only — a GET of a comment list is an ordinary read. DRF
+    # applies a scope to the whole view, so the ceiling is set high enough
+    # that reading a busy thread repeatedly cannot hit it.
+    throttle_scope = 'swift_comment'
 
     def get(self, request, pk):
         swift = _visible_swift(request.user, pk)

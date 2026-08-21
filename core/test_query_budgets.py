@@ -269,12 +269,73 @@ class QueryBudgetTests(TestCase):
         reach the relationship tables, so a change there is exactly how this
         budget would quietly start scaling with the page size.
         """
-        response = self.assertWithinBudget(12, 'get', '/api/swifts/feed/')
+        response = self.assertWithinBudget(12, 'get', '/api/swifts/feed/?chrono=1')
         self.assertGreaterEqual(len(response.data['results']), 10)
 
+    def test_ranked_feed_costs_one_ranking_pass_not_one_per_swipe(self):
+        """The personalised path has a different budget, and it is honest.
+
+        A cold ranked page is genuinely more expensive than a chronological
+        one: six candidate sources, two filter passes, feature hydration and an
+        impression write. Around forty statements, none of which scales with
+        the candidate count — `recs/tests/test_query_budget.py` proves that part
+        separately.
+
+        What makes it affordable is that it is paid **once per session**. One
+        ranking pass fills sixty ordered ids into the cache and the next five
+        pages are a cache read and a slice. So the number a viewer actually
+        experiences per swipe is the warm one below, and the cold one is
+        amortised across a whole browsing run.
+
+        Both are asserted, because a regression that turned the warm path cold
+        would leave the cold budget green and make the feed six times more
+        expensive with nothing failing.
+        """
+        # Measured directly rather than through `assertWithinBudget`, which
+        # fires each request twice to warm the permission and content-type
+        # caches. That is right for every other endpoint here and wrong for
+        # this one: a ranked request *records impressions*, so the warm-up call
+        # consumes the very Swifts the measured call would have ranked, and the
+        # measurement lands on an exhausted session. Worth knowing beyond this
+        # test — the ranked feed is deliberately not idempotent.
+        from recs.models import SwiftImpression
+
+        self.client.get('/api/swifts/feed/?chrono=1')  # warm the caches only
+        SwiftImpression.objects.all().delete()
+
+        with CaptureQueriesContext(connection) as cold:
+            # A small page, so there is a second one to continue to — the
+            # default limit exceeds this fixture and would exhaust the
+            # session in one go, leaving no cursor to measure the warm path
+            # with.
+            response = self.client.get('/api/swifts/feed/?limit=3')
+        self.assertEqual(response.status_code, 200)
+        self.assertLessEqual(
+            len(cold), 50,
+            f'a cold ranked page ran {len(cold)} queries, budget is 50',
+        )
+
+        cursor = response.data.get('next_cursor')
+        self.assertTrue(cursor, 'expected a cursor to continue the session')
+
+        with CaptureQueriesContext(connection) as warm:
+            second = self.client.get(f'/api/swifts/feed/?limit=3&cursor={cursor}')
+        self.assertEqual(second.status_code, 200)
+        self.assertLessEqual(
+            len(warm), 8,
+            f'a continued page ran {len(warm)} queries, budget is 8 — the '
+            'session cache is what keeps this cheap, so this failing means '
+            'every swipe is now re-ranking',
+        )
+
     def test_swift_feed_still_answers_the_viewer_flags(self):
-        """The batching has to produce the same answers the per-row queries did."""
-        response = self.client.get('/api/swifts/feed/')
+        """The batching has to produce the same answers the per-row queries did.
+
+        Read from `?chrono=1`: this is about the serializer, and the ranked
+        path deliberately withholds Swifts it has already served, which makes
+        it an unstable place to look a row up.
+        """
+        response = self.client.get('/api/swifts/feed/?chrono=1')
         by_id = {row['id']: row for row in response.data['results']}
 
         for swift in SwiftVideo.objects.filter(pk__in=by_id):

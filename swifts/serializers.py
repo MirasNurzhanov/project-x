@@ -231,6 +231,39 @@ class SwiftCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError('That video is too short.')
         return value
 
+    def _check_host(self, value, *, audio=False):
+        from .media import valid_media_url
+
+        if not valid_media_url(value, audio=audio):
+            raise serializers.ValidationError(
+                "That media must be served from Aura's own CDN.")
+        return value
+
+    def validate_video_url(self, value):
+        """Media has to come from our CDN, not from wherever the client says.
+
+        `SwiftSerializer.get_video_url` falls back to this column when there is
+        no Cloudinary id, and hands the result to every viewer's device, which
+        fetches it. An unrestricted URL here is therefore an IP and
+        User-Agent harvester aimed at everybody who scrolls past the card, and
+        arbitrary content rendered inside Aura's UI.
+
+        There is no legitimate case for another host: the upload path is signed
+        direct-to-Cloudinary precisely so media lives in our account.
+        """
+        return self._check_host(value)
+
+    def validate_thumbnail_url(self, value):
+        """Same rule, and the more requested of the two — a poster is fetched
+        for every card in the preload window, not just the one playing."""
+        return self._check_host(value)
+
+    def validate_audio_artwork_url(self, value):
+        return self._check_host(value, audio=True)
+
+    def validate_audio_preview_url(self, value):
+        return self._check_host(value, audio=True)
+
     def validate_media_id(self, value):
         """A public id becomes a path segment in a delivery URL.
 

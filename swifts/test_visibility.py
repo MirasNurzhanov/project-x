@@ -91,7 +91,9 @@ class DeletedAndModeratedTests(SwiftTestCase):
         self.client.force_authenticate(self.viewer)
 
     def _feed_ids(self, client=None):
-        body = (client or self.client).get(reverse('swift-feed')).json()
+        body = (client or self.client).get(
+            reverse('swift-feed'), {'chrono': '1'},
+        ).json()
         return [row['id'] for row in body['results']]
 
     def test_soft_deleted_is_gone_from_the_feed_and_the_detail(self):
@@ -180,7 +182,13 @@ class AudienceTests(SwiftTestCase):
         self.friend_client.force_authenticate(self.friend)
 
     def _ids(self, client):
-        return [r['id'] for r in client.get(reverse('swift-feed')).json()['results']]
+        # The unranked path: this helper answers "may they see it", and
+        # permission is identical on both. Ranking is not — it personalises,
+        # never repeats a Swift, and leaves out the viewer's own content.
+        return [
+            r['id'] for r in
+            client.get(reverse('swift-feed'), {'chrono': '1'}).json()['results']
+        ]
 
     def test_private_swift_reaches_nobody_but_the_creator(self):
         swift = make_swift(self.creator, visibility=SwiftVideo.Visibility.PRIVATE)
@@ -276,23 +284,26 @@ class FeedShapeTests(SwiftTestCase):
         first = make_swift(self.creator, caption='older')
         second = make_swift(self.creator, caption='newer')
 
-        ids = [r['id'] for r in self.client.get(reverse('swift-feed')).json()['results']]
+        ids = [
+            r['id'] for r in
+            self.client.get(reverse('swift-feed'), {'chrono': '1'}).json()['results']
+        ]
         self.assertEqual(ids, [second.pk, first.pk])
 
     def test_paging_is_bounded(self):
         for _ in range(3):
             make_swift(self.creator)
 
-        body = self.client.get(f"{reverse('swift-feed')}?limit=2").json()
+        body = self.client.get(f"{reverse('swift-feed')}?chrono=1&limit=2").json()
         self.assertEqual(body['count'], 3)
         self.assertEqual(len(body['results']), 2)
 
     def test_limit_is_clamped_to_the_ceiling(self):
-        body = self.client.get(f"{reverse('swift-feed')}?limit=9999").json()
+        body = self.client.get(f"{reverse('swift-feed')}?chrono=1&limit=9999").json()
         self.assertEqual(body['results'], [])
 
     def test_garbage_paging_parameters_do_not_500(self):
-        response = self.client.get(f"{reverse('swift-feed')}?limit=abc&offset=-4")
+        response = self.client.get(f"{reverse('swift-feed')}?chrono=1&limit=abc&offset=-4")
         self.assertEqual(response.status_code, 200)
 
     def test_unauthenticated_access_is_refused(self):

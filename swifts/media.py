@@ -75,6 +75,70 @@ UPLOAD_FOLDER = 'swifts'
 #: mistake or an attempt to point our delivery URL at another account's asset.
 _PUBLIC_ID_RE = re.compile(r'^[A-Za-z0-9_\-/]{1,180}$')
 
+#: Hosts a Swift's media may be served from.
+#:
+#: `SwiftSerializer.get_video_url` returns `playback_url(obj) or obj.video_url`,
+#: so a row with no Cloudinary id falls back to whatever URL was posted — and
+#: that URL is handed to every viewer's device, which fetches it. Unrestricted,
+#: that is an IP and User-Agent harvester pointed at everyone who scrolls past
+#: the card, and arbitrary content rendered inside Aura's UI.
+#:
+#: There is no legitimate case for another host: the upload path is signed
+#: direct-to-Cloudinary precisely so that media lives in our account. Existing
+#: rows are untouched — this is a write-time check, and the fallback stays for
+#: the rows that predate the pipeline.
+MEDIA_HOSTS = ('res.cloudinary.com',)
+
+#: Where a music credit's artwork and preview may come from. Apple's CDN, and
+#: Cloudinary for tracks we mirror ourselves. Same argument as `MEDIA_HOSTS`,
+#: and the same failure without it — an artwork URL is fetched by every card in
+#: the preload window, which is more requests than the video.
+AUDIO_HOSTS = (
+    'res.cloudinary.com',
+    'is1-ssl.mzstatic.com', 'is2-ssl.mzstatic.com', 'is3-ssl.mzstatic.com',
+    'is4-ssl.mzstatic.com', 'is5-ssl.mzstatic.com',
+    'audio-ssl.itunes.apple.com',
+)
+
+
+def _allowed_hosts(setting, default):
+    configured = getattr(settings, setting, None)
+    return tuple(configured) if configured else default
+
+
+def valid_media_url(url, *, audio=False):
+    """Whether a client-supplied media URL may be stored and served on.
+
+    Empty is fine, and has to be: `thumbnail_url` and the two audio URLs are
+    blank-able on the model, and a Swift with no music legitimately has no
+    artwork. (`video_url` is not blank-able, so DRF rejects an empty one before
+    this ever runs — the allowlist neither loosens nor tightens that.)
+
+    Anything else must be https and on the allowlist. Scheme included: an
+    `http://` URL would be blocked by App Transport Security on iOS and by
+    cleartext policy on Android, so it cannot play anyway, and rejecting it at
+    the door beats a Swift that silently never loads.
+    """
+    from urllib.parse import urlparse
+
+    if not url:
+        return True
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme != 'https':
+        return False
+
+    hosts = _allowed_hosts(
+        'SWIFT_AUDIO_HOSTS' if audio else 'SWIFT_MEDIA_HOSTS',
+        AUDIO_HOSTS if audio else MEDIA_HOSTS,
+    )
+    # Exact host match, not a suffix test: `res.cloudinary.com.evil.test`
+    # passes `endswith('res.cloudinary.com')` on a naive check and is the
+    # classic way this kind of allowlist is defeated.
+    return parsed.hostname in hosts
+
 
 class MediaConfigError(RuntimeError):
     """Cloudinary credentials are missing. A deployment fact, not a user error."""

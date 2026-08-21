@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'friends',
     'stories',
     'swifts',
+    'recs',
 ]
 
 MIDDLEWARE = [
@@ -290,11 +291,33 @@ REST_FRAMEWORK = {
         'swift_location_reveal': config('THROTTLE_SWIFT_REVEAL', default='60/hour'),
         # Posting. A ceiling on flooding rather than on people.
         'swift_create': config('THROTTLE_SWIFT_CREATE', default='30/hour'),
+        # Commenting. The only Swift write that both creates a row *and* pushes
+        # a notification to somebody else's phone, which makes an unthrottled
+        # one a harassment tool rather than a load problem. Set well above
+        # normal conversation.
+        'swift_comment': config('THROTTLE_SWIFT_COMMENT', default='120/hour'),
         # Reporting. Low, because the only reason to report thirty things an
         # hour is to bury somebody under flags.
         'swift_report': config('THROTTLE_SWIFT_REPORT', default='20/hour'),
+        # Interaction signals. Far higher than the rest on purpose: this is one
+        # batch per browsing burst, and every card a viewer scrolls past
+        # produces a row. Throttling it the way posting is throttled would
+        # silently blind the recommender for anybody who watches a lot, which
+        # is precisely the population it most needs to learn from.
+        'swift_signals': config('THROTTLE_SWIFT_SIGNALS', default='600/hour'),
     },
 }
+
+# ─── Swift recommendations ────────────────────────────────────────────────────
+# Every tunable the recommender has, defaulted in `recs/params.py` and
+# overridable here. Left empty by default so the shipped values are the ones in
+# code and reviewable; staging sets sections to experiment without a deploy.
+#
+#   SWIFT_RECS = {'weights': {'like': 3.0}, 'diversity': {'exploration_rate': 0.25}}
+#
+# Unknown keys raise at load rather than being ignored — a typo'd weight that
+# silently does nothing is the worst failure a tuning knob can have.
+SWIFT_RECS = {}
 
 CSRF_TRUSTED_ORIGINS = config(
     'CSRF_TRUSTED_ORIGINS',

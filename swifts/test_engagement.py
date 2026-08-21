@@ -123,11 +123,15 @@ class LikeTests(SwiftTestCase):
         self.assertEqual(self.reread().like_count, 2)
 
     def test_viewer_liked_flag_reflects_the_like(self):
-        feed = self.client.get(reverse('swift-feed')).json()
+        # `?chrono=1`, because this reads the same Swift twice. The ranked feed
+        # records an impression for everything it serves and deliberately never
+        # serves it again, so the second read would be empty — correct
+        # behaviour for a feed, useless as a way to check a serializer flag.
+        feed = self.client.get(reverse('swift-feed'), {'chrono': '1'}).json()
         self.assertFalse(feed['results'][0]['viewer_liked'])
 
         self.client.post(self.url)
-        feed = self.client.get(reverse('swift-feed')).json()
+        feed = self.client.get(reverse('swift-feed'), {'chrono': '1'}).json()
         self.assertTrue(feed['results'][0]['viewer_liked'])
 
 

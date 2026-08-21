@@ -34,7 +34,7 @@ class FeedNeverLeaksCoordinatesTests(SwiftTestCase):
     def test_swift_with_no_location_reports_unavailable(self):
         """Requirement 1. A locationless Swift is a normal Swift."""
         make_swift(self.creator)
-        body = self.client.get(reverse('swift-feed')).json()
+        body = self.client.get(reverse('swift-feed'), {'chrono': '1'}).json()
 
         self.assertEqual(body['count'], 1)
         row = body['results'][0]
@@ -49,7 +49,7 @@ class FeedNeverLeaksCoordinatesTests(SwiftTestCase):
         to draw a button from, and a separate request to press it.
         """
         make_swift(self.creator, located=True, shared=True)
-        body = self.client.get(reverse('swift-feed')).json()
+        body = self.client.get(reverse('swift-feed'), {'chrono': '1'}).json()
 
         row = body['results'][0]
         self.assertTrue(row['location_available'])
@@ -65,7 +65,7 @@ class FeedNeverLeaksCoordinatesTests(SwiftTestCase):
         blob — still fails. Keys can be renamed; the number cannot.
         """
         make_swift(self.creator, located=True, shared=True)
-        raw = self.client.get(reverse('swift-feed')).content.decode()
+        raw = self.client.get(reverse('swift-feed'), {'chrono': '1'}).content.decode()
 
         self.assertNotIn(LAT, raw)
         self.assertNotIn(LON, raw)
@@ -74,7 +74,7 @@ class FeedNeverLeaksCoordinatesTests(SwiftTestCase):
     def test_location_available_is_false_when_creator_disabled_sharing(self):
         """A stored coordinate with sharing off draws no button."""
         make_swift(self.creator, located=True, shared=False)
-        body = self.client.get(reverse('swift-feed')).json()
+        body = self.client.get(reverse('swift-feed'), {'chrono': '1'}).json()
 
         self.assertFalse(body['results'][0]['location_available'])
         self.assertEqual(find_forbidden(body), [])
@@ -530,7 +530,7 @@ class EndToEndLocationJourneyTests(SwiftTestCase):
         return response.json()
 
     def feed_row(self, swift_id):
-        body = self.viewer_client.get(reverse('swift-feed')).json()
+        body = self.viewer_client.get(reverse('swift-feed'), {'chrono': '1'}).json()
         return next((r for r in body['results'] if r['id'] == swift_id), None)
 
     # ── The two publishing paths ─────────────────────────────────────────────
@@ -657,7 +657,7 @@ class EndToEndLocationJourneyTests(SwiftTestCase):
                 location_shared=bool(i % 2),
             )
 
-        response = self.viewer_client.get(reverse('swift-feed'))
+        response = self.viewer_client.get(reverse('swift-feed'), {'chrono': '1'})
         body = response.json()
 
         self.assertEqual(body['count'], 6)
@@ -668,3 +668,111 @@ class EndToEndLocationJourneyTests(SwiftTestCase):
         # Exactly half advertise a revealable location, and none carry one.
         self.assertEqual(
             sum(1 for r in body['results'] if r['location_available']), 3)
+
+
+class RankedFeedPrivacyTests(SwiftTestCase):
+    """The same guarantees, on the personalised path.
+
+    The suite above reads `?chrono=1` because it needs a stable oracle — the
+    ranked feed personalises, never serves the same Swift twice, and leaves out
+    the viewer's own content, so reading it repeatedly returns different rows.
+    That makes it the wrong instrument for "what is in a row", and it would
+    make it a *terrible* place to lose the location guarantee quietly.
+
+    So the ranked path is asserted here, separately and directly. Both feeds go
+    through one serializer and one `watchable_q`, which is exactly why this
+    should never fail — and exactly why it is worth a test, because "should
+    never" is what the guarantee rests on.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.creator = make_user('ranked_creator')
+        self.viewer = make_user('ranked_viewer')
+        self.client = APIClient()
+        self.client.force_authenticate(self.viewer)
+
+    def _publish(self, *, located):
+        return make_swift(
+            self.creator,
+            located=located,
+            shared=located,
+            caption='ranked feed row',
+        )
+
+    def test_the_ranked_feed_carries_no_coordinates(self):
+        for i in range(6):
+            self._publish(located=bool(i % 2))
+
+        response = self.client.get(reverse('swift-feed'))
+        body = response.json()
+
+        self.assertTrue(body['results'], 'ranked feed returned nothing to check')
+        self.assertEqual(find_forbidden(body), [])
+        raw = response.content.decode()
+        self.assertNotIn(LAT, raw)
+        self.assertNotIn(LON, raw)
+
+    def test_the_ranked_feed_still_advertises_availability(self):
+        """`location_available` is a boolean about this viewer, and survives.
+
+        If ranking had dropped it the reveal button would vanish; if ranking
+        had derived it from column nullity instead of the gate, it would tell
+        viewers which Swifts are hiding something from them specifically.
+        """
+        self._publish(located=True)
+        self._publish(located=False)
+
+        rows = self.client.get(reverse('swift-feed')).json()['results']
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(sum(1 for r in rows if r['location_available']), 1)
+
+    def test_the_sources_map_carries_ids_and_source_names_only(self):
+        """The one field the ranked response adds that chrono does not."""
+        self._publish(located=True)
+
+        body = self.client.get(reverse('swift-feed')).json()
+
+        self.assertEqual(find_forbidden(body.get('sources', {})), [])
+        for key, value in body.get('sources', {}).items():
+            self.assertRegex(str(key), r'^\d+$')
+            self.assertRegex(value, r'^[a-z_]*$')
+
+    def test_the_cursor_carries_no_content(self):
+        """It names a cached session, not the rows in it."""
+        for i in range(12):
+            self._publish(located=bool(i % 2))
+
+        cursor = self.client.get(reverse('swift-feed'), {'limit': 3}).json()['next_cursor']
+
+        self.assertTrue(cursor)
+        self.assertNotIn(LAT, cursor)
+        self.assertNotIn('Kok-Tobe', cursor)
+        for token in ('lat', 'lon', 'place'):
+            self.assertNotIn(token, cursor.lower())
+
+    def test_paging_through_the_whole_ranked_feed_leaks_nothing(self):
+        """Every page, not just the first.
+
+        A guarantee that holds on page one and not on page three is the kind
+        that gets shipped, because page one is what anybody checks by hand.
+        """
+        for i in range(12):
+            self._publish(located=bool(i % 2))
+
+        cursor = None
+        pages = 0
+        while pages < 10:
+            response = self.client.get(
+                reverse('swift-feed'),
+                {'limit': 3, **({'cursor': cursor} if cursor else {})},
+            )
+            body = response.json()
+            self.assertEqual(find_forbidden(body), [], f'page {pages}')
+            self.assertNotIn(LAT, response.content.decode(), f'page {pages}')
+            cursor = body['next_cursor']
+            pages += 1
+            if not cursor:
+                break
+        self.assertGreater(pages, 1, 'expected more than one page to check')
