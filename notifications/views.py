@@ -65,3 +65,11 @@ class MarkAllReadView(APIView):
     def post(self, request):
         Notification.objects.filter(recipient=request.user, is_read=False).update(is_read=True)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ClearAllNotificationsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request):
+        Notification.objects.filter(recipient=request.user).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
