@@ -1,6 +1,6 @@
 from django.db.models import Count
 from rest_framework import serializers
-from .models import SavedStory, Story, StoryReaction
+from .models import Story, StoryReaction
 from .visibility import is_placed_for
 
 
@@ -20,14 +20,14 @@ class StorySerializer(serializers.ModelSerializer):
     is_expired = serializers.SerializerMethodField()
     user_reaction = serializers.SerializerMethodField()
     reactions = serializers.SerializerMethodField()
-    is_saved = serializers.SerializerMethodField()
+    is_starred = serializers.SerializerMethodField()
 
     class Meta:
         model = Story
         fields = [
             'id', 'author', 'content', 'image', 'latitude', 'longitude',
             'place_name', 'expires_at', 'created_at', 'likes_count',
-            'is_expired', 'user_reaction', 'reactions', 'is_saved',
+            'is_expired', 'user_reaction', 'reactions', 'is_starred',
         ]
         read_only_fields = ['id', 'expires_at', 'created_at', 'likes_count']
 
@@ -68,16 +68,12 @@ class StorySerializer(serializers.ModelSerializer):
                 return r.reaction
         return None
 
-    def get_is_saved(self, obj):
+    def get_is_starred(self, obj):
+        # Only the author's own view of a story carries a meaningful star —
+        # `is_starred` records that *they* favorited *their own* post, which
+        # is not information anyone else reading the story needs to see.
         request = self.context.get('request')
-        if not request:
-            return False
-        # List views hand in the whole set at once; the per-object query only
-        # remains for single-story responses.
-        saved_ids = self.context.get('saved_ids')
-        if saved_ids is not None:
-            return obj.pk in saved_ids
-        return SavedStory.objects.filter(user=request.user, story=obj).exists()
+        return bool(request and request.user.pk == obj.user_id and obj.is_starred)
 
     def get_reactions(self, obj):
         counts = {}

@@ -23,6 +23,11 @@ class Story(models.Model):
     expires_at = models.DateTimeField(db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     likes_count = models.IntegerField(default=0)
+    # A favorite flag the author sets on their own story — a shortlist over
+    # the full "Mine" archive. Not a bookmark of someone else's content: only
+    # the author can ever star a story, so this lives directly on the row
+    # rather than in a cross-user join table.
+    is_starred = models.BooleanField(default=False)
 
     @property
     def is_placed(self):
@@ -55,21 +60,6 @@ class Story(models.Model):
 
     def __str__(self):
         return f"{self.user} — {self.created_at:%Y-%m-%d %H:%M}"
-
-
-class SavedStory(models.Model):
-    """A bookmark: `user` saved someone else's `story`. Deleting the story
-    cascades here, so saves vanish when the author deletes the original."""
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='saved_stories')
-    story = models.ForeignKey(Story, on_delete=models.CASCADE, related_name='saves')
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        unique_together = ('user', 'story')
-        ordering = ['-created_at']
-
-    def __str__(self):
-        return f"{self.user} saved story {self.story_id}"
 
 
 class StoryReaction(models.Model):

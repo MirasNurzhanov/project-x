@@ -175,6 +175,76 @@ class ReactToStoryTests(TestCase):
         self.assertEqual(self.likes(), 0)
 
 
+class StarStoryTests(TestCase):
+    """Starring: a favorites flag the author sets on their own story.
+
+    Replaces the old cross-user bookmark (`SavedStory`) — there is no longer
+    any way to save someone else's story, only to shortlist your own. See
+    Story.is_starred and the StarStoryView/StarredStoriesView pair.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.author = make_user('author', **HERE)
+        self.other = make_user('other', **NEAR)
+        befriend(self.author, self.other)
+        self.story = Story.objects.create(
+            user=self.author, content='hello', **HERE,
+            expires_at=timezone.now() + timedelta(hours=5),
+        )
+
+    def starred_ids(self):
+        return {s['id'] for s in self.client.get('/api/stories/starred/').json()['results']}
+
+    def test_author_can_star_their_own_story(self):
+        self.client.force_authenticate(self.author)
+        res = self.client.post(f'/api/stories/{self.story.pk}/star/')
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(Story.objects.get(pk=self.story.pk).is_starred)
+
+    def test_starred_story_appears_in_the_starred_list(self):
+        self.client.force_authenticate(self.author)
+        self.client.post(f'/api/stories/{self.story.pk}/star/')
+        self.assertEqual(self.starred_ids(), {self.story.pk})
+
+    def test_unstarred_story_is_not_in_the_starred_list(self):
+        self.client.force_authenticate(self.author)
+        self.assertEqual(self.starred_ids(), set())
+
+    def test_deleting_the_star_removes_it_from_the_list(self):
+        self.client.force_authenticate(self.author)
+        self.client.post(f'/api/stories/{self.story.pk}/star/')
+        res = self.client.delete(f'/api/stories/{self.story.pk}/star/')
+        self.assertEqual(res.status_code, 204)
+        self.assertEqual(self.starred_ids(), set())
+
+    def test_someone_elses_story_cannot_be_starred(self):
+        """There is no bookmarking here — starring is the author's own act."""
+        self.client.force_authenticate(self.other)
+        res = self.client.post(f'/api/stories/{self.story.pk}/star/')
+        self.assertEqual(res.status_code, 404)
+        self.assertFalse(Story.objects.get(pk=self.story.pk).is_starred)
+
+    def test_a_star_does_not_leak_to_other_viewers(self):
+        """`is_starred` is the author's own favorites marker, not public."""
+        self.client.force_authenticate(self.author)
+        self.client.post(f'/api/stories/{self.story.pk}/star/')
+
+        self.client.force_authenticate(self.other)
+        rows = self.client.get('/api/stories/friends/').json()['results']
+        self.assertEqual([r['is_starred'] for r in rows if r['id'] == self.story.pk], [False])
+
+    def test_clear_all_unstars_without_deleting_the_stories(self):
+        self.client.force_authenticate(self.author)
+        self.client.post(f'/api/stories/{self.story.pk}/star/')
+        res = self.client.delete('/api/stories/starred/')
+        self.assertEqual(res.status_code, 204)
+
+        self.assertEqual(self.starred_ids(), set())
+        # The story itself survives — only the flag is cleared.
+        self.assertTrue(Story.objects.filter(pk=self.story.pk).exists())
+
+
 class StoryCoordinateTypeTests(TestCase):
     """latitude/longitude must serialize as JSON numbers, not strings.
 
