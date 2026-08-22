@@ -7,7 +7,8 @@ from .visibility import is_placed_for
 class StorySerializer(serializers.ModelSerializer):
     author = serializers.SerializerMethodField()
     # Kept under the old key: clients read `image` whether the file went
-    # through Django or straight to Cloudinary.
+    # through Django or (for stories from before the R2 migration) straight to
+    # Cloudinary.
     image = serializers.SerializerMethodField()
     # DRF's DecimalField stringifies by default (COERCE_DECIMAL_TO_STRING),
     # which Fabric's typed view-manager props on Android refuse outright —

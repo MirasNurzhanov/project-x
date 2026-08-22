@@ -3,7 +3,6 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 from datetime import date
-from cloudinary_storage.storage import RawMediaCloudinaryStorage
 
 
 class User(AbstractUser):
@@ -73,7 +72,7 @@ class User(AbstractUser):
     ZONE_RADIUS_MIN_M = 50
     ZONE_RADIUS_MAX_M = 5000
 
-    zone_audio = models.FileField(upload_to='zones/', null=True, blank=True, storage=RawMediaCloudinaryStorage())
+    zone_audio = models.FileField(upload_to='zones/', null=True, blank=True)
     zone_type = models.CharField(
         max_length=8, choices=ZoneType.choices, default=ZoneType.CIRCLE, db_index=True,
     )

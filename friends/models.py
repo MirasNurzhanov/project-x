@@ -71,8 +71,10 @@ class Message(models.Model):
     )
     content = models.TextField(blank=True)
     image = models.FileField(upload_to='chat_images/', null=True, blank=True)
-    # Set when the client uploaded straight to Cloudinary and only the URL
-    # passed through here. Takes precedence over `image` when both exist.
+    # Legacy: set when the client uploaded straight to Cloudinary, before the
+    # R2 migration retired that path — every upload now goes through Django as
+    # `image`. Still takes precedence over `image` on rows from that era, since
+    # those never got one.
     image_url = models.URLField(max_length=500, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     is_read = models.BooleanField(default=False)

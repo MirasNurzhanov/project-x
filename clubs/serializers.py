@@ -233,7 +233,8 @@ class ClubMessageSerializer(serializers.ModelSerializer):
     sender = BasicUserSerializer(read_only=True)
     event = ClubEventSerializer(read_only=True)
     # Kept under the old key: clients read `image` whether the file went
-    # through Django or straight to Cloudinary.
+    # through Django or (for messages from before the R2 migration) straight to
+    # Cloudinary.
     image = serializers.SerializerMethodField()
 
     class Meta:

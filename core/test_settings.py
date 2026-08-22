@@ -9,9 +9,11 @@ import os
 os.environ.setdefault('SECRET_KEY', 'test-secret-key')
 os.environ.setdefault('DEBUG', 'True')
 os.environ.setdefault('DATABASE_URL', 'sqlite:///test.sqlite3')
-os.environ.setdefault('CLOUDINARY_CLOUD_NAME', 'test')
-os.environ.setdefault('CLOUDINARY_API_KEY', 'test')
-os.environ.setdefault('CLOUDINARY_API_SECRET', 'test')
+os.environ.setdefault('R2_ACCESS_KEY_ID', 'test')
+os.environ.setdefault('R2_SECRET_ACCESS_KEY', 'test')
+os.environ.setdefault('R2_BUCKET_NAME', 'test')
+os.environ.setdefault('R2_ENDPOINT_URL', 'https://test.example.com')
+os.environ.setdefault('R2_PUBLIC_URL', 'https://test.example.com')
 
 from .settings import *  # noqa: E402,F401,F403
 
@@ -34,7 +36,7 @@ CACHES = {
     'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'},
 }
 
-# Keep file fields on local disk instead of Cloudinary.
+# Keep file fields on local disk instead of R2.
 STORAGES = {
     'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
     'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},

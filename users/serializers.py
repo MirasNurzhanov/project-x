@@ -228,8 +228,9 @@ def _live_story_summaries(obj, viewer=None):
     return [
         {
             'id': s.id,
-            # `image_url` first: a photo uploaded straight to Cloudinary never
-            # touches the `image` field, and reading only that one renders
+            # `image_url` first: a photo uploaded straight to Cloudinary, before
+            # the R2 migration retired that path, never touches the `image`
+            # field, and reading only that one renders
             # every such story blank here.
             'image': s.image_url or (s.image.url if s.image else None),
             'content': s.content,

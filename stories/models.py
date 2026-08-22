@@ -8,8 +8,10 @@ class Story(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='stories')
     content = models.TextField(max_length=280)
     image = models.ImageField(upload_to='stories/', null=True, blank=True)
-    # Set when the client uploaded straight to Cloudinary and only the URL
-    # passed through here. Takes precedence over `image` when both exist.
+    # Legacy: set when the client uploaded straight to Cloudinary, before the
+    # R2 migration retired that path — every upload now goes through Django as
+    # `image`. Still takes precedence over `image` on rows from that era, since
+    # those never got one.
     image_url = models.URLField(max_length=500, blank=True, default='')
     # Null together, and null is the normal case rather than a defect: a story
     # posted while location sharing is Paused carries no position at all. The

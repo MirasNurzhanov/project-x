@@ -25,8 +25,6 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'channels',
-    'cloudinary_storage',
-    'cloudinary',
     # Our apps
     'users',
     'interests',
@@ -310,20 +308,26 @@ USE_TZ = True
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
-CLOUDINARY_STORAGE = {
-    'CLOUD_NAME': config('CLOUDINARY_CLOUD_NAME'),
-    'API_KEY': config('CLOUDINARY_API_KEY'),
-    'API_SECRET': config('CLOUDINARY_API_SECRET'),
-    'MEDIA_TAG': 'media',
-    'INVALID_VIDEO_ERROR_MESSAGE': 'Please upload a valid audio file',
-    'EXCLUDE_DELETE_ORPHANED_MEDIA_UNDER_FOLDER': False,
-}
+# Cloudflare R2, via django-storages' S3-compatible backend — R2 speaks the S3
+# API, so no R2-specific package is needed. `custom_domain` is the public
+# bucket URL (R2_PUBLIC_URL) with the scheme stripped, which is the form
+# S3Boto3Storage expects: it prefixes whatever it's given with `https://` when
+# building a file's `.url`, so passing the scheme through too would double it up.
 STORAGES = {
-    "default": {
-        "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
+    'default': {
+        'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage',
+        'OPTIONS': {
+            'access_key': config('R2_ACCESS_KEY_ID'),
+            'secret_key': config('R2_SECRET_ACCESS_KEY'),
+            'bucket_name': config('R2_BUCKET_NAME'),
+            'endpoint_url': config('R2_ENDPOINT_URL'),
+            'region_name': 'auto',
+            'default_acl': 'public-read',
+            'custom_domain': config('R2_PUBLIC_URL').replace('https://', ''),
+        },
     },
-    "staticfiles": {
-        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    'staticfiles': {
+        'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
     },
 }
 
