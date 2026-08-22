@@ -16,6 +16,10 @@ class NotificationSerializer(serializers.ModelSerializer):
     club_id = serializers.IntegerField(source='club.id', read_only=True, allow_null=True)
     club_name = serializers.CharField(source='club.name', read_only=True, allow_null=True)
     event_id = serializers.IntegerField(source='event.id', read_only=True, allow_null=True)
+    # Which Swift a swift alert opens. No caption excerpt beside it, unlike
+    # `story_excerpt`: a Swift's text is a caption on somebody else's video and
+    # the alert already names the person and the act.
+    swift_id = serializers.IntegerField(source='swift.id', read_only=True, allow_null=True)
 
     class Meta:
         model = Notification
@@ -23,6 +27,7 @@ class NotificationSerializer(serializers.ModelSerializer):
             'id', 'sender_id', 'sender_username', 'sender_avatar',
             'story_id', 'story_image', 'story_excerpt',
             'club_id', 'club_name', 'event_id',
+            'swift_id',
             'notification_type', 'message', 'is_read', 'created_at',
         )
         read_only_fields = fields

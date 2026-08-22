@@ -46,6 +46,7 @@ CATEGORIES = {
     'club_event':    ('notify_club_events', 'events'),
     'social':        ('notify_social', 'social'),
     'story':         ('notify_story_activity', 'social'),
+    'swift':         ('notify_swift_activity', 'social'),
     'zone_music':    ('music_zone_alerts', 'default'),
 }
 
@@ -109,39 +110,107 @@ def _envelope(token, title, body, data, category):
     return message
 
 
+def _queue(messages):
+    """Hand `messages` to Expo, off-thread. Returns how many were queued.
+
+    Tests must not fire real HTTPS at Expo, and a daemon thread outliving the
+    test that spawned it is how flakes get in. Under `manage.py test` the send
+    is skipped entirely and the count still comes back, so every caller's
+    decision logic stays fully covered.
+    """
+    if not messages:
+        return 0
+    if getattr(settings, 'PUSH_DISABLED', False):
+        return len(messages)
+    threading.Thread(target=_post, args=(messages,), daemon=True).start()
+    return len(messages)
+
+
+def _tokens_by_user(users):
+    """Every live push token belonging to `users`, grouped by user id.
+
+    One query for the whole set rather than one per user: this runs on the
+    fan-out path for club messages and meetup alerts, where `users` can be a
+    whole membership list.
+
+    `users.models` is imported here rather than at module scope because it
+    reaches back into notifications — the same lazy-import shape
+    `notifications.utils` already uses for `users.visibility`.
+    """
+    from users.models import Device
+
+    ids = [u.pk for u in users]
+    if not ids:
+        return {}
+    grouped = {}
+    for uid, token in (
+        Device.objects
+        .filter(user_id__in=ids)
+        .exclude(push_token='')
+        .values_list('user_id', 'push_token')
+    ):
+        grouped.setdefault(uid, []).append(token)
+    return grouped
+
+
 def push_to_users(users, title, body, *, data=None, category='default'):
-    """Push to everyone in `users` who has a token and wants this category.
+    """Push to every device of everyone in `users` who wants this category.
 
     Accepts any iterable of users, including one. Returns the number of
     messages queued, which is what the tests assert on — the send itself is
     off-thread and has no return value worth waiting for.
+
+    Every device, plural: `User.push_token` holds exactly one, so an account
+    signed in on a phone and a tablet had whichever registered last silently
+    take over the other's notifications. `users.models.Device` is the real
+    record now; the column survives only as a fallback, for clients too old to
+    register one.
     """
+    by_user = _tokens_by_user(users)
+
     seen = set()
     messages = []
     for user in users:
-        token = getattr(user, 'push_token', None)
-        # Dedupe on the token, not the user: two accounts signed in on one
-        # device share a token, and a club message that reaches both would
-        # arrive twice on the same phone.
-        if not token or token in seen:
-            continue
         if not allows(user, category):
+            continue
+        tokens = by_user.get(user.pk)
+        if not tokens:
+            legacy = getattr(user, 'push_token', None)
+            tokens = [legacy] if legacy else []
+        for token in tokens:
+            # Dedupe on the token, not the user: two accounts signed in on one
+            # device share a token, and a club message that reaches both would
+            # arrive twice on the same phone.
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            messages.append(_envelope(token, title, body, data, category))
+
+    return _queue(messages)
+
+
+def push_to_devices(devices, title, body, *, data=None, category='default'):
+    """Push to named devices rather than to whole accounts.
+
+    For the messages that are about *a* device and so must not reach the one
+    they are about: a new-sign-in alert has to land on the phones that were
+    already signed in, and nowhere else. `push_to_users` cannot express that —
+    it fans out across everything an account owns, the new device included.
+
+    No `allows` check, and none belongs here. The category preferences exist so
+    people can mute kinds of social activity; this path carries account-security
+    news, which is the one thing somebody who muted everything still needs.
+    """
+    seen = set()
+    messages = []
+    for device in devices:
+        token = device.push_token
+        if not token or token in seen:
             continue
         seen.add(token)
         messages.append(_envelope(token, title, body, data, category))
 
-    if not messages:
-        return 0
-
-    # Tests must not fire real HTTPS at Expo, and a daemon thread outliving the
-    # test that spawned it is how flakes get in. Under `manage.py test` the
-    # send is skipped entirely; `push_to_users` still returns the count, so the
-    # decision logic above stays fully covered.
-    if getattr(settings, 'PUSH_DISABLED', False):
-        return len(messages)
-
-    threading.Thread(target=_post, args=(messages,), daemon=True).start()
-    return len(messages)
+    return _queue(messages)
 
 
 def push_to_user(user, title, body, *, data=None, category='default'):

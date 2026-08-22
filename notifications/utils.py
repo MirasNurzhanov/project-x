@@ -4,7 +4,9 @@ from django.utils import timezone
 from datetime import timedelta
 
 from .models import Notification
-from .push import EXPO_PUSH_URL, push_to_user, push_to_users  # noqa: F401
+from .push import (  # noqa: F401
+    EXPO_PUSH_URL, push_to_devices, push_to_user, push_to_users,
+)
 
 NEARBY_COOLDOWN_MINUTES = 60
 
@@ -17,14 +19,6 @@ def send_push_notification(user, title, message, *, data=None, category='default
     still the common case. `data` is the deep link — see push.push_to_users.
     """
     push_to_user(user, title, message, data=data, category=category)
-
-
-REACTION_VERB = {
-    'like': 'liked',
-    'funny': 'found your story funny',
-    'helpful': 'found your story helpful',
-    'interesting': 'found your story interesting',
-}
 
 
 def _story_alert(recipient, sender, story, notification_type, message, push_title):
@@ -64,17 +58,16 @@ def _story_alert(recipient, sender, story, notification_type, message, push_titl
     return notification
 
 
-def notify_story_reaction(story, sender, reaction: str):
-    """Someone reacted to `story`.
+def notify_story_reaction(story, sender):
+    """Someone liked `story`.
 
-    A reaction toggles and can be switched, and `StoryReaction` allows one per
-    person per story — so one person is one piece of news here, however many
-    times they tap. An unread alert from the same person on the same story is
-    rewritten in place rather than joined by another: the author sees their
-    current reaction, once, and is not pushed at again for changing their mind.
+    `StoryReaction` allows one per person per story — so one person is one
+    piece of news here, however many times they tap. An unread alert from the
+    same person on the same story is rewritten in place rather than joined by
+    another: the author sees that this person liked it, once, and is not
+    pushed at again for tapping it a second time.
     """
-    verb = REACTION_VERB.get(reaction, 'reacted to your story')
-    message = f'@{sender.username} {verb}' + (' your story' if reaction == 'like' else '')
+    message = f'@{sender.username} liked your story'
 
     standing = Notification.objects.filter(
         recipient=story.user,
@@ -532,3 +525,139 @@ def notify_club_invite(club, invited_by, member):
         category='club_event',
         data={'type': 'club', 'club_id': club.pk, 'club_name': club.name},
     )
+
+
+# ─── Swifts ───────────────────────────────────────────────────────────────────
+# Same three rules as the story alerts above, for the same reasons: nothing is
+# news to you about your own Swift, a block hides both directions, and one
+# person is one piece of news however many times they tap.
+#
+# The coalescing is per (recipient, sender, swift, type), which is why the three
+# kinds are three types rather than one `swift_activity`. Folding them together
+# would mean a like from someone who had already commented silently rewrote the
+# comment alert, and the author would never learn about the comment.
+def _swift_alert(sender, swift, notification_type, message, push_title):
+    """Create — or refresh — one Swift alert.
+
+    An unread alert from the same person, on the same Swift, of the same kind
+    is rewritten in place rather than joined by another: the author sees the
+    current state once, and is not pushed at again for a change of mind.
+
+    `created_at` is `auto_now_add`, so it only moves through an explicit UPDATE
+    — which is what keeps a refreshed alert at the top of the list where it
+    belongs.
+    """
+    from users.visibility import blocked_ids_for
+
+    recipient = swift.author
+    if recipient.pk == sender.pk:
+        return None
+    if sender.pk in blocked_ids_for(recipient):
+        return None
+
+    standing = Notification.objects.filter(
+        recipient=recipient, sender=sender, swift=swift,
+        notification_type=notification_type, is_read=False,
+    )
+    if standing.update(message=message, created_at=timezone.now()):
+        return None
+
+    notification = Notification.objects.create(
+        recipient=recipient, sender=sender, swift=swift,
+        notification_type=notification_type, message=message,
+    )
+    try:
+        send_push_notification(
+            recipient, push_title, message,
+            data={
+                'type': 'swift',
+                'swift_id': swift.pk,
+                'user_id': sender.pk,
+                'username': sender.username,
+            },
+            category='swift',
+        )
+    except Exception as exc:  # noqa: BLE001 — push is never worth a 500
+        print(f'[Push] swift alert failed: {exc}')
+    return notification
+
+
+def notify_swift_like(swift, sender):
+    return _swift_alert(
+        sender=sender,
+        swift=swift,
+        notification_type=Notification.Type.SWIFT_LIKE,
+        message=f'@{sender.username} liked your Swift',
+        push_title='❤️ Swift like',
+    )
+
+
+def notify_swift_comment(swift, sender, text):
+    """Someone commented. The excerpt is what makes the alert worth opening."""
+    excerpt = (text or '').strip()
+    if len(excerpt) > 80:
+        excerpt = excerpt[:80].rstrip() + '…'
+    message = f'@{sender.username} commented on your Swift'
+    if excerpt:
+        message = f'{message}: {excerpt}'
+    return _swift_alert(
+        sender=sender,
+        swift=swift,
+        notification_type=Notification.Type.SWIFT_COMMENT,
+        message=message,
+        push_title='💬 Swift comment',
+    )
+
+
+def notify_swift_repost(swift, sender):
+    return _swift_alert(
+        sender=sender,
+        swift=swift,
+        notification_type=Notification.Type.SWIFT_REPOST,
+        message=f'@{sender.username} reposted your Swift',
+        push_title='🔁 Swift repost',
+    )
+
+
+def notify_new_device(device):
+    """This account was just signed in to on a device it had not been seen on.
+
+    Goes to the account's *other* devices and to its alerts feed — never to the
+    one that triggered it. Whoever is holding the new phone already knows they
+    signed in; the whole value of this is reaching the phone in someone else's
+    pocket, so `push_to_devices` is given an explicit list rather than letting
+    `push_to_users` fan out across everything the account owns.
+
+    Sole alert with a null `sender`: it is about the account rather than about
+    something a person did, and there is no profile to open from it.
+
+    Silent when this is the only device, which is the ordinary case — a first
+    sign-in has nobody to warn, and telling someone about their own only phone
+    is noise that teaches them to ignore the one that matters.
+    """
+    from users.models import Device
+
+    others = list(
+        Device.objects.filter(user=device.user).exclude(pk=device.pk)
+    )
+    if not others:
+        return None
+
+    message = f'Your account was signed in to on a new device ({device.label}).'
+    notification = Notification.objects.create(
+        recipient=device.user,
+        sender=None,
+        notification_type=Notification.Type.NEW_DEVICE,
+        message=message,
+    )
+    try:
+        push_to_devices(
+            others,
+            '🔐 New sign-in',
+            message,
+            data={'type': 'new_device', 'device_id': device.pk},
+            category='security',
+        )
+    except Exception as exc:  # noqa: BLE001 — push is never worth a 500
+        print(f'[Push] new-device alert failed: {exc}')
+    return notification

@@ -21,6 +21,18 @@ class Notification(models.Model):
         CLUB_EVENT = 'club_event', 'Club Event'
         CLUB_EVENT_STATUS = 'club_event_status', 'Club Event Decision'
         CLUB_INVITE = 'club_invite', 'Club Invite'
+        # Engagement on your own Swift. Three types rather than one because
+        # they open different things — a like opens the Swift, a comment opens
+        # its thread — and because `notifications.utils` coalesces repeats per
+        # (sender, subject, type) and a like must not overwrite a comment.
+        SWIFT_LIKE = 'swift_like', 'Swift Like'
+        SWIFT_COMMENT = 'swift_comment', 'Swift Comment'
+        SWIFT_REPOST = 'swift_repost', 'Swift Repost'
+        # This account was signed in to on a device it had not been seen on
+        # before. The one alert here with no sender — it is about the account
+        # itself rather than about something a person did to you, so `sender`
+        # stays null and the message names the device instead.
+        NEW_DEVICE = 'new_device', 'New Device Sign-In'
 
     recipient = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -58,6 +70,17 @@ class Notification(models.Model):
     )
     event = models.ForeignKey(
         'clubs.ClubEvent',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='notifications',
+    )
+    # What the notification is about, when that is a Swift. Same job `story`
+    # does above and the same cascade — though a Swift is soft-deleted rather
+    # than removed, so in practice these outlive the Swift going away and the
+    # alert list filters them out by joining to a live row.
+    swift = models.ForeignKey(
+        'swifts.SwiftVideo',
         on_delete=models.CASCADE,
         null=True,
         blank=True,

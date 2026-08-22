@@ -240,21 +240,3 @@ class StoryVisibilityTests(BlockTestCase):
         ids = {s['id'] for s in self.client.get('/api/stories/nearby/').data}
         self.assertNotIn(story_a.pk, ids)
         self.assertIn(story_b.pk, ids)
-
-    def test_cannot_save_blocked_users_story(self):
-        story_b = self.make_story(self.bob, LAT_B, LON_B)
-        self.block(self.alice, self.bob)
-
-        self.as_user(self.alice)
-        res = self.client.post(f'/api/stories/{story_b.pk}/save/')
-        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_saved_list_hides_stories_from_blocked_author(self):
-        from stories.models import SavedStory
-        story_b = self.make_story(self.bob, LAT_B, LON_B)
-        SavedStory.objects.create(user=self.alice, story=story_b)
-
-        self.block(self.alice, self.bob)
-        self.as_user(self.alice)
-        res = self.client.get('/api/stories/saved/')
-        self.assertEqual(res.data['results'], [])

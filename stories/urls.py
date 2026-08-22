@@ -6,8 +6,8 @@ from .views import (
     MyStoriesView,
     NearbyStoriesView,
     ReactToStoryView,
-    SavedStoriesView,
-    SaveStoryView,
+    StarredStoriesView,
+    StarStoryView,
 )
 
 urlpatterns = [
@@ -18,8 +18,8 @@ urlpatterns = [
     path('nearby/', NearbyStoriesView.as_view(), name='story-nearby'),
     path('friends/', FriendStoriesView.as_view(), name='story-friends'),
     path('mine/', MyStoriesView.as_view(), name='story-mine'),
-    path('saved/', SavedStoriesView.as_view(), name='story-saved'),
+    path('starred/', StarredStoriesView.as_view(), name='story-starred'),
     path('<int:pk>/react/', ReactToStoryView.as_view(), name='story-react'),
-    path('<int:pk>/save/', SaveStoryView.as_view(), name='story-save'),
+    path('<int:pk>/star/', StarStoryView.as_view(), name='story-star'),
     path('<int:pk>/', DeleteStoryView.as_view(), name='story-delete'),
 ]

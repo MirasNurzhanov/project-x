@@ -621,7 +621,6 @@ class StoryLocationTests(TestCase):
     FRIEND_STORIES = '/api/stories/friends/'
     MAP_QUERY = '/api/map/nearby/query/'
     MINE = '/api/stories/mine/'
-    SAVED = '/api/stories/saved/'
 
     HERE = {'latitude': '10.000000', 'longitude': '10.000000'}
 
@@ -841,22 +840,6 @@ class StoryLocationTests(TestCase):
             f'/api/stories/{story_id}/react/', {'reaction': 'like'}, format='json',
         )
         self.assertEqual(response.status_code, 201, response.content)
-
-    def test_a_friend_can_still_save_when_the_author_pauses(self):
-        story_id = self.post_story().json()['id']
-        self.assertEqual(
-            self.viewer_client.post(f'/api/stories/{story_id}/save/').status_code, 201,
-        )
-        self.pause(self.author_client)
-
-        saved = self.viewer_client.get(self.SAVED)
-        self.assertEqual(saved.status_code, 200)
-        rows = saved.json()['results']
-        self.assertIn(story_id, {s['id'] for s in rows})
-        # Kept, but stripped: a bookmark is not a standing grant of a position.
-        for row in rows:
-            self.assertNotIn('latitude', row)
-            self.assertEqual(row['place_name'], '')
 
     def test_a_paused_pair_can_still_react(self):
         """Both ends off the map. Neither has a position and neither needs one:

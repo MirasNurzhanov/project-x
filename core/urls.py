@@ -32,4 +32,7 @@ urlpatterns = [
     path("api/clubs/", include("clubs.urls")),
     path("api/friends/", include("friends.urls")),
     path("api/stories/", include("stories.urls")),
+    path("api/swifts/", include("swifts.urls")),
+    # The recommender rides the same prefix as the feed it ranks — see recs/urls.
+    path("api/swifts/", include("recs.urls")),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -15,7 +15,7 @@ class NotificationListView(generics.ListAPIView):
     def get_queryset(self):
         user = self.request.user
         qs = Notification.objects.filter(recipient=user).select_related(
-            'sender', 'story', 'club', 'event',
+            'sender', 'story', 'club', 'event', 'swift',
         )
 
         # Filtered on read, not only on write: a notification names its sender,
@@ -64,4 +64,12 @@ class MarkAllReadView(APIView):
 
     def post(self, request):
         Notification.objects.filter(recipient=request.user, is_read=False).update(is_read=True)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ClearAllNotificationsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request):
+        Notification.objects.filter(recipient=request.user).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

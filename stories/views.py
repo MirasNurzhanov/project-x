@@ -12,7 +12,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from notifications.utils import notify_story_reaction
 from users import visibility
 from . import visibility as story_visibility
-from .models import SavedStory, Story, StoryReaction
+from .models import Story, StoryReaction
 from .serializers import (
     SocialStorySerializer,
     StorySerializer,
@@ -36,10 +36,10 @@ def _visible_story(user, pk):
 
     Blocked authors and stories hidden by their author's Stories setting are
     indistinguishable from a story that does not exist. Location sharing is
-    *not* consulted: a friend may read, react to and bookmark a story whose
-    author is paused. What that author's setting withholds is the pin, and only
-    the pin — see `stories.visibility` for the two questions and why they are
-    not the same one.
+    *not* consulted: a friend may read and react to a story whose author is
+    paused. What that author's setting withholds is the pin, and only the
+    pin — see `stories.visibility` for the two questions and why they are not
+    the same one.
     """
     return (
         Story.objects
@@ -201,8 +201,8 @@ def nearby_stories(user, lat, lon, request):
     ).filter(
         # The map's rule, which is the strict one: friendship and the author's
         # Stories setting *and* a position to draw *and* an author who is on
-        # the map right now. `readable_q` on its own - what the chat and saved
-        # surfaces use - would put a paused author's old pin back on the map.
+        # the map right now. `readable_q` on its own - what the chat surface
+        # uses - would put a paused author's old pin back on the map.
         story_visibility.placed_q(user)
     ).select_related('user').prefetch_related('reactions')
 
@@ -211,14 +211,7 @@ def nearby_stories(user, lat, lon, request):
         if s.user_id == user.pk or haversine(lat, lon, float(s.latitude), float(s.longitude)) <= NEARBY_RADIUS_KM
     ]
 
-    saved_ids = set(
-        SavedStory.objects.filter(
-            user=user, story_id__in=[s.pk for s in stories],
-        ).values_list('story_id', flat=True)
-    )
-    serializer = StorySerializer(
-        stories, many=True, context={'request': request, 'saved_ids': saved_ids},
-    )
+    serializer = StorySerializer(stories, many=True, context={'request': request})
     return serializer.data
 
 
@@ -284,14 +277,8 @@ class FriendStoriesView(APIView):
             .prefetch_related('reactions')
             .order_by('-created_at')[:FRIEND_FEED_MAX]
         )
-        saved_ids = set(
-            SavedStory.objects.filter(
-                user=user, story_id__in=[s.pk for s in stories],
-            ).values_list('story_id', flat=True)
-        )
         serializer = SocialStorySerializer(
-            stories, many=True,
-            context={'request': request, 'saved_ids': saved_ids},
+            stories, many=True, context={'request': request},
         )
         return Response({'count': len(stories), 'results': serializer.data})
 
@@ -348,34 +335,19 @@ class ReactToStoryView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        reaction_type = serializer.validated_data['reaction']
         existing = StoryReaction.objects.filter(user=user, story=story).first()
-
         if existing:
-            was_like = existing.reaction == StoryReaction.ReactionType.LIKE
-            if existing.reaction == reaction_type:
-                # Toggle off
-                existing.delete()
-                if was_like:
-                    _adjust_likes(story, -1)
-                return Response({'detail': 'Reaction removed.', 'user_reaction': None}, status=status.HTTP_200_OK)
-            else:
-                old_type = existing.reaction
-                existing.reaction = reaction_type
-                existing.save(update_fields=['reaction'])
-                # Adjust likes_count
-                if old_type == StoryReaction.ReactionType.LIKE:
-                    _adjust_likes(story, -1)
-                elif reaction_type == StoryReaction.ReactionType.LIKE:
-                    _adjust_likes(story, 1)
-                notify_story_reaction(story, user, reaction_type)
-                return Response({'detail': 'Reaction updated.', 'user_reaction': reaction_type}, status=status.HTTP_200_OK)
-        else:
-            StoryReaction.objects.create(user=user, story=story, reaction=reaction_type)
-            if reaction_type == StoryReaction.ReactionType.LIKE:
-                _adjust_likes(story, 1)
-            notify_story_reaction(story, user, reaction_type)
-            return Response({'detail': 'Reaction added.', 'user_reaction': reaction_type}, status=status.HTTP_201_CREATED)
+            existing.delete()
+            _adjust_likes(story, -1)
+            return Response({'detail': 'Reaction removed.', 'user_reaction': None}, status=status.HTTP_200_OK)
+
+        StoryReaction.objects.create(user=user, story=story, reaction=StoryReaction.ReactionType.LIKE)
+        _adjust_likes(story, 1)
+        notify_story_reaction(story, user)
+        return Response(
+            {'detail': 'Reaction added.', 'user_reaction': StoryReaction.ReactionType.LIKE},
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class MyStoriesView(APIView):
@@ -388,14 +360,7 @@ class MyStoriesView(APIView):
         qs = Story.objects.filter(user=request.user).select_related('user').prefetch_related('reactions')
         count = qs.count()
         page = list(qs[offset:offset + limit])
-        saved_ids = set(
-            SavedStory.objects.filter(
-                user=request.user, story_id__in=[s.pk for s in page],
-            ).values_list('story_id', flat=True)
-        )
-        serializer = StorySerializer(
-            page, many=True, context={'request': request, 'saved_ids': saved_ids},
-        )
+        serializer = StorySerializer(page, many=True, context={'request': request})
         return Response({'count': count, 'results': serializer.data})
 
     def delete(self, request):
@@ -404,65 +369,47 @@ class MyStoriesView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class SavedStoriesView(APIView):
-    """Stories the user bookmarked, most recently saved first. Stories deleted
-    by their author disappear automatically (FK cascade).
-
-    A reading surface, so it keeps working when an author pauses - the bookmark
-    was of the story, not of where they were standing. What it stops carrying
-    at that point is the position: `SocialStorySerializer` has no coordinate
-    fields at all, and withholds the place name once the story is no longer a
-    pin the viewer could see anyway.
-    """
+class StarredStoriesView(APIView):
+    """The user's starred stories — a favorites shortlist over the full
+    "Mine" archive. There is no cross-user bookmarking: `is_starred` lives
+    directly on `Story`, so this can only ever be a subset of the caller's
+    own posts (see `stories.models.Story.is_starred`)."""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         limit, offset = _page_params(request)
-        # A bookmark is not a permanent grant: if the author has since
-        # restricted who can see their stories, the saved copy goes too.
-        qs = SavedStory.objects.filter(user=request.user).exclude(
-            story__user_id__in=_blocked_ids_for(request.user)
-        ).filter(
-            story_visibility.readable_q(request.user, prefix='story__user')
-        ).select_related('story__user').prefetch_related('story__reactions')
+        qs = Story.objects.filter(
+            user=request.user, is_starred=True,
+        ).select_related('user').prefetch_related('reactions')
         count = qs.count()
         page = list(qs[offset:offset + limit])
-        # Everything on this page is by definition saved — skip the per-story
-        # existence checks the serializer would otherwise run.
-        saved_ids = {saved.story_id for saved in page}
-        results = []
-        for saved in page:
-            data = SocialStorySerializer(
-                saved.story, context={'request': request, 'saved_ids': saved_ids},
-            ).data
-            data['saved_at'] = saved.created_at.isoformat()
-            results.append(data)
-        return Response({'count': count, 'results': results})
+        serializer = StorySerializer(page, many=True, context={'request': request})
+        return Response({'count': count, 'results': serializer.data})
 
     def delete(self, request):
-        """Clear all bookmarks. Original stories are untouched."""
-        SavedStory.objects.filter(user=request.user).delete()
+        """Unstar everything. The stories themselves are untouched."""
+        Story.objects.filter(user=request.user, is_starred=True).update(is_starred=False)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class SaveStoryView(APIView):
-    """POST = bookmark a story, DELETE = remove the bookmark. Removing a
-    bookmark never touches the original story."""
+class StarStoryView(APIView):
+    """POST = star one of your own stories, DELETE = unstar it. Only the
+    author may star a story — unlike the old bookmark feature this replaces,
+    there is nothing here for anyone else's posts to hook into."""
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        story = _visible_story(request.user, pk)
-        if story is None:
-            return Response({'detail': 'Story not found.'}, status=status.HTTP_404_NOT_FOUND)
-        if story.user_id == request.user.pk:
-            return Response({'detail': 'Your own stories are archived automatically.'},
-                            status=status.HTTP_400_BAD_REQUEST)
-        _, created = SavedStory.objects.get_or_create(user=request.user, story=story)
-        return Response({'detail': 'Saved.'},
-                        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+        try:
+            story = Story.objects.get(pk=pk, user=request.user)
+        except Story.DoesNotExist:
+            return Response({'detail': 'Story not found or not yours.'}, status=status.HTTP_404_NOT_FOUND)
+        if not story.is_starred:
+            story.is_starred = True
+            story.save(update_fields=['is_starred'])
+        return Response({'detail': 'Starred.'}, status=status.HTTP_200_OK)
 
     def delete(self, request, pk):
-        SavedStory.objects.filter(user=request.user, story_id=pk).delete()
+        Story.objects.filter(pk=pk, user=request.user).update(is_starred=False)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

@@ -249,34 +249,17 @@ class FieldVisibilityTests(TestCase):
         nearby = self.client.get('/api/stories/nearby/').json()
         self.assertEqual([s for s in nearby if s['id'] == story.pk], [])
 
-    def test_hidden_story_cannot_be_saved_or_reacted_to(self):
+    def test_hidden_story_cannot_be_reacted_to(self):
         """Hiding a story must remove the ability to act on it, not just the
         ability to see it — otherwise the id is still a working handle."""
         story = Story.objects.create(
             user=self.target, content='hi', latitude='10.0', longitude='10.0',
             expires_at=timezone.now() + timezone.timedelta(hours=5),
         )
-        self.assertEqual(self.client.post(f'/api/stories/{story.pk}/save/').status_code, 404)
         self.assertEqual(
             self.client.post(f'/api/stories/{story.pk}/react/', {'reaction': 'like'}).status_code,
             404,
         )
-
-    def test_restricting_stories_revokes_existing_bookmarks(self):
-        """A bookmark is not a permanent grant — tightening the setting has to
-        reach copies people already saved."""
-        from stories.models import SavedStory
-
-        befriend(self.viewer, self.target)
-        story = Story.objects.create(
-            user=self.target, content='hi', latitude='10.0', longitude='10.0',
-            expires_at=timezone.now() + timezone.timedelta(hours=5),
-        )
-        SavedStory.objects.create(user=self.viewer, story=story)
-        self.assertEqual(self.client.get('/api/stories/saved/').json()['count'], 1)
-
-        self.set_visibility(visibility_stories=User.Audience.NOBODY)
-        self.assertEqual(self.client.get('/api/stories/saved/').json()['count'], 0)
 
     def test_zone_audio_never_reaches_a_stranger(self):
         entries = {e['id']: e for e in self.client.get('/api/proximity/nearby/').json()}

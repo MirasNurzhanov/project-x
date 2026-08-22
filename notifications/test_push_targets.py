@@ -17,7 +17,7 @@ from datetime import date, timedelta
 from unittest.mock import patch
 
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from clubs.models import Club, ClubEvent, ClubMember
@@ -83,7 +83,7 @@ class PushTransportTests(PushTargetTestCase):
 
     def test_large_audience_is_chunked_into_expo_sized_requests(self):
         crowd = [make_user(f'p{i}', token=f'tok{i}') for i in range(5)]
-        with patch('notifications.push.settings.PUSH_DISABLED', False), \
+        with override_settings(PUSH_DISABLED=False), \
                 patch('notifications.push.requests.post') as post, \
                 patch('notifications.push.MAX_PER_REQUEST', 2):
             push_to_users(crowd, 'T', 'B')
@@ -96,7 +96,7 @@ class PushTransportTests(PushTargetTestCase):
 
     def test_payload_carries_the_deep_link(self):
         user = make_user('a')
-        with patch('notifications.push.settings.PUSH_DISABLED', False), \
+        with override_settings(PUSH_DISABLED=False), \
                 patch('notifications.push.requests.post') as post:
             push_to_users([user], 'T', 'B', data={'type': 'message', 'user_id': 7})
             import threading

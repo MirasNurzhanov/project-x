@@ -401,6 +401,7 @@ class NotificationSettingsSerializer(serializers.ModelSerializer):
             'notify_club_events',
             'notify_social',
             'notify_story_activity',
+            'notify_swift_activity',
             'music_zone_alerts',
         )
 
