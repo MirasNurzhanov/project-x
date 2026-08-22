@@ -124,11 +124,34 @@ class StoryCreateSerializer(serializers.ModelSerializer):
     normal story, and the pair the client sends is a proposal rather than the
     stored value - CreateStoryView runs it through the author's location
     sharing mode, which may fuzz it or drop it entirely.
+
+    `content` is optional too, since 0009 - a photo posted without commentary
+    is the commonest story there is. What is *not* optional is having one or
+    the other, which `validate` below is what enforces.
     """
 
     class Meta:
         model = Story
         fields = ['content', 'image', 'image_url', 'latitude', 'longitude', 'place_name']
+
+    def validate(self, attrs):
+        """A story needs a caption or a picture. Neither is an empty post.
+
+        Checked across the three fields rather than on any one of them: this is
+        a rule about the pair, and `content` and `image` each have a perfectly
+        good reason to be blank on their own. `image_url` counts because rows
+        from before the R2 migration carry their picture there - see
+        `Story.image_url` - and a client still posting that way is posting a
+        picture.
+        """
+        has_text = bool((attrs.get('content') or '').strip())
+        has_image = bool(attrs.get('image') or (attrs.get('image_url') or '').strip())
+        if not has_text and not has_image:
+            raise serializers.ValidationError(
+                {'detail': 'A story needs a photo or some text.',
+                 'code': 'story_empty'},
+            )
+        return attrs
 
 
 class StoryReactionSerializer(serializers.Serializer):

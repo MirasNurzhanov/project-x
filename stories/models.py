@@ -6,7 +6,13 @@ from datetime import timedelta
 
 class Story(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='stories')
-    content = models.TextField(max_length=280)
+    # Optional, and the commonest story of all is the one without it: a photo
+    # posted without commentary. This was required until 0009, which made a
+    # picture-only story impossible to post at all — the client had to invent a
+    # caption or refuse. A story with *neither* a caption nor an image is the
+    # only thing that is not a story; CreateStoryView is what enforces that,
+    # since it is a rule about the pair rather than about either field.
+    content = models.TextField(max_length=280, blank=True, default='')
     image = models.ImageField(upload_to='stories/', null=True, blank=True)
     # Legacy: set when the client uploaded straight to Cloudinary, before the
     # R2 migration retired that path — every upload now goes through Django as
