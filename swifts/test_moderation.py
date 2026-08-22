@@ -15,7 +15,7 @@ from rest_framework.throttling import ScopedRateThrottle, SimpleRateThrottle
 from notifications.models import Notification
 
 from .models import SwiftReport, SwiftVideo
-from .testing import SwiftTestCase, block, make_swift, make_user
+from .testing import SwiftTestCase, block, fake_video, make_swift, make_user
 
 
 def slow_rates(**rates):
@@ -125,18 +125,22 @@ class RevealThrottleTests(SwiftTestCase):
 
     @slow_rates(swift_location_reveal='3/hour', swift_create='3/hour')
     def test_posting_is_throttled(self):
-        payload = {'video_url': 'https://cdn.example.com/v/x.mp4', 'duration_ms': 1000}
         client = APIClient()
         client.force_authenticate(self.creator)
 
+        def post():
+            # A fresh file each time: a SimpleUploadedFile is read once during
+            # encoding, so reusing one instance across requests would post an
+            # already-exhausted stream on the second call.
+            return client.post(
+                reverse('swift-create'),
+                {'video': fake_video(), 'duration_ms': 1000},
+                format='multipart',
+            ).status_code
+
         for _ in range(3):
-            self.assertEqual(
-                client.post(reverse('swift-create'), payload, format='json').status_code,
-                201,
-            )
-        self.assertEqual(
-            client.post(reverse('swift-create'), payload, format='json').status_code, 429,
-        )
+            self.assertEqual(post(), 201)
+        self.assertEqual(post(), 429)
 
 
 class ReportTests(SwiftTestCase):

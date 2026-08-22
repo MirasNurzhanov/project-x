@@ -7,6 +7,7 @@ how two suites end up disagreeing about what a default is.
 from datetime import date
 
 from django.core.cache import cache
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 
 from friends.models import BlockedUser, FriendRequest, HiRequest
@@ -71,6 +72,16 @@ def connect(a, b):
 
 def block(a, b):
     BlockedUser.objects.create(blocker=a, blocked=b)
+
+
+def fake_video(name='clip.mp4', content=b'not a real video, just enough bytes'):
+    """A file upload for `POST /api/swifts/`, which requires one since the R2
+    migration — see `swifts.serializers.SwiftCreateSerializer.video`."""
+    return SimpleUploadedFile(name, content, content_type='video/mp4')
+
+
+def fake_image(name='cover.jpg', content=b'not a real jpeg either'):
+    return SimpleUploadedFile(name, content, content_type='image/jpeg')
 
 
 def make_swift(author, *, located=False, shared=False, **extra):

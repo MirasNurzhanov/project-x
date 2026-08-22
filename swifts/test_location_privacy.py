@@ -17,7 +17,7 @@ from users.models import User
 from .models import SwiftLocationReveal, SwiftVideo, SwiftView
 from .testing import (
     SwiftTestCase,
-    LAT, LON, befriend, block, find_forbidden, make_swift, make_user,
+    LAT, LON, befriend, block, fake_video, find_forbidden, make_swift, make_user,
 )
 
 
@@ -347,14 +347,18 @@ class WriteTimeLocationPolicyTests(SwiftTestCase):
         client = APIClient()
         client.force_authenticate(user)
         payload = {
-            'video_url': 'https://cdn.example.com/v/x.mp4',
+            'video': fake_video(),
             'duration_ms': 10_000,
             'latitude': LAT, 'longitude': LON,
             'place_name': 'Kok-Tobe Park',
             'location_shared': True,
         }
         payload.update(extra)
-        return client.post(reverse('swift-create'), payload, format='json')
+        # `None` means "the caller wants this not sent at all" — multipart,
+        # unlike the JSON this suite used before requiring a file, has no way
+        # to encode a null, so the key has to be dropped rather than passed.
+        payload = {k: v for k, v in payload.items() if v is not None}
+        return client.post(reverse('swift-create'), payload, format='multipart')
 
     def test_paused_creator_stores_no_location_at_all(self):
         """Not the coordinate, not the place name, not the flag."""
@@ -520,12 +524,15 @@ class EndToEndLocationJourneyTests(SwiftTestCase):
 
     def publish(self, **extra):
         payload = {
-            'video_url': 'https://cdn.example.com/v/x.mp4',
+            'video': fake_video(),
             'duration_ms': 12_000,
         }
         payload.update(extra)
+        # See the identical line in WriteTimeLocationPolicyTests._post: `None`
+        # means "omit", and multipart cannot encode a null to say that itself.
+        payload = {k: v for k, v in payload.items() if v is not None}
         response = self.creator_client.post(
-            reverse('swift-create'), payload, format='json')
+            reverse('swift-create'), payload, format='multipart')
         self.assertEqual(response.status_code, 201, response.content)
         return response.json()
 

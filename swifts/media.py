@@ -1,61 +1,44 @@
-"""Where a Swift's video actually gets composited, and why it is not the phone.
+"""Where a Swift's media lives, after the R2 migration.
 
-## The decision
+## What used to be here
 
-A Swift is a trimmed clip, possibly with a music bed at one volume and its own
-sound at another, possibly with a line of text over it, and a poster frame.
-Producing that file means re-encoding video. There are three places that could
-happen and only one of them is a good idea here:
+A Swift used to be a raw recording uploaded straight to Cloudinary, plus a set
+of edit parameters (trim, volume, a music bed, a text overlay, a poster
+timestamp) that this module turned into a Cloudinary delivery-transformation
+URL — rendered lazily on first request, CDN-cached after. That existed because
+none of the three places that could actually produce the composited file were
+workable: not the phone (`ffmpeg-kit-react-native` is retired), not Django on
+Railway (no task queue, no worker to run `ffmpeg` in), and Cloudinary's
+URL-addressed transformations needed no infrastructure at all.
 
-**On the phone, natively.** The library everyone reaches for is
-`ffmpeg-kit-react-native`, and it is *retired* — the project was archived in
-January 2025 and its prebuilt binaries were pulled from the public
-repositories. What remains are unmaintained forks and a handful of narrower
-trimming modules, each a native dependency with its own New Architecture
-compatibility question. On top of that, re-encoding a 60-second 1080×1920 clip
-on a mid-range Android device costs battery, thermal budget and thirty seconds
-of the creator staring at a progress bar.
+R2 is a plain object store. It cannot decode, mix or re-encode video, so it
+cannot stand in for that transformation service — only for the "store the
+bytes, serve the bytes" half of what Cloudinary was doing. Moving to it means
+the composite has to stop being a server-side render:
 
-**On our own server.** Django on Railway with no task queue — no Celery, no
-worker process. Video encoding inside a request cycle would hold one of the
-twelve pooled database connections for the duration and starve the map poll.
-Adding a worker to run ffmpeg is a real option and a large one; it is the right
-answer at a scale Aura is nowhere near.
+* **Trim and the original-audio volume** are applied by the player, at
+  playback, the same way the editor already previewed them — the file on disk
+  is never touched.
+* **The music bed is gone.** Mixing a second audio track into a video is a
+  real encode, not a parameter; there is nowhere left to run it. `SwiftVideo`
+  still carries `track`/`music_volume` for a Swift that predates this, but
+  nothing attaches one to a new post — see `swifts.serializers`.
+* **The text overlay is drawn as a layer over the video by the client**,
+  rather than burned into the file — which is exactly how the editor already
+  rendered its own preview, so this is the first time the "preview" and the
+  real thing are the same code path.
+* **The poster frame is captured on the phone** at export time and uploaded
+  as an ordinary image, rather than asked for as a timestamp Cloudinary would
+  decode the video to extract.
 
-**On Cloudinary, which is already the media pipeline.** Cloudinary video
-delivery transformations are URL-addressed and lazy: the transformation is
-*described* in the path, rendered the first time somebody asks for it, and
-served from the CDN edge every time after. So the composite costs one URL
-string here and no infrastructure anywhere.
+## What is still here
 
-That is what this module builds. The editor on the phone manipulates
-parameters and previews them with the local player; the columns on
-`SwiftVideo` record what was chosen; and `playback_url` turns those columns
-into the address of the finished video.
-
-## What follows from it
-
-* **The upload is the raw recording.** Editing never destroys it, so a trim is
-  reversible and a bad render is a rebuilt URL rather than a lost video.
-* **There is no processing state machine and no webhook.** A transformation URL
-  is valid the moment the source exists. `eager_async` is requested at upload
-  time purely to warm the cache, and nothing depends on it having finished.
-* **Every render parameter is validated here**, not trusted from the client. A
-  transformation is a path segment, so an unescaped string is a path injection.
-
-## Signing
-
-Video uploads are signed. The image path in `services/cloudinary.ts` uses an
-unsigned preset, which is a defensible trade for images bounded at 1920px; for
-video it is not. An unsigned video preset is an open door to anyone who reads
-the JS bundle, and video is the expensive asset in both storage and egress.
+`video_url`/`thumbnail_url`/`media_id` are untouched on the model, and a row
+that already has them (posted under the old pipeline) still needs a way to
+resolve to something playable — `playback_url`/`poster_url` below fall back to
+them. Nothing new writes them: see `SwiftCreateSerializer`, which accepts
+`video`/`thumbnail` file uploads instead.
 """
-import hashlib
-import re
-import time
-from urllib.parse import quote
-
-from django.conf import settings
 
 #: Hard ceiling on a Swift, in milliseconds. Enforced on the client for a
 #: decent error and again on the server because the client is not trusted.
@@ -68,301 +51,27 @@ MIN_DURATION_MS = 1_000
 #: default bitrate, tight enough that a mis-set camera cannot post a gigabyte.
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
-#: The folder every Swift source lands in.
-UPLOAD_FOLDER = 'swifts'
-
-#: Cloudinary public ids we will build a URL for. Anything else is either a
-#: mistake or an attempt to point our delivery URL at another account's asset.
-_PUBLIC_ID_RE = re.compile(r'^[A-Za-z0-9_\-/]{1,180}$')
-
-#: Hosts a Swift's media may be served from.
-#:
-#: `SwiftSerializer.get_video_url` returns `playback_url(obj) or obj.video_url`,
-#: so a row with no Cloudinary id falls back to whatever URL was posted — and
-#: that URL is handed to every viewer's device, which fetches it. Unrestricted,
-#: that is an IP and User-Agent harvester pointed at everyone who scrolls past
-#: the card, and arbitrary content rendered inside Aura's UI.
-#:
-#: There is no legitimate case for another host: the upload path is signed
-#: direct-to-Cloudinary precisely so that media lives in our account. Existing
-#: rows are untouched — this is a write-time check, and the fallback stays for
-#: the rows that predate the pipeline.
-MEDIA_HOSTS = ('res.cloudinary.com',)
-
-#: Where a music credit's artwork and preview may come from. Apple's CDN, and
-#: Cloudinary for tracks we mirror ourselves. Same argument as `MEDIA_HOSTS`,
-#: and the same failure without it — an artwork URL is fetched by every card in
-#: the preload window, which is more requests than the video.
-AUDIO_HOSTS = (
-    'res.cloudinary.com',
-    'is1-ssl.mzstatic.com', 'is2-ssl.mzstatic.com', 'is3-ssl.mzstatic.com',
-    'is4-ssl.mzstatic.com', 'is5-ssl.mzstatic.com',
-    'audio-ssl.itunes.apple.com',
-)
-
-
-def _allowed_hosts(setting, default):
-    configured = getattr(settings, setting, None)
-    return tuple(configured) if configured else default
-
-
-def valid_media_url(url, *, audio=False):
-    """Whether a client-supplied media URL may be stored and served on.
-
-    Empty is fine, and has to be: `thumbnail_url` and the two audio URLs are
-    blank-able on the model, and a Swift with no music legitimately has no
-    artwork. (`video_url` is not blank-able, so DRF rejects an empty one before
-    this ever runs — the allowlist neither loosens nor tightens that.)
-
-    Anything else must be https and on the allowlist. Scheme included: an
-    `http://` URL would be blocked by App Transport Security on iOS and by
-    cleartext policy on Android, so it cannot play anyway, and rejecting it at
-    the door beats a Swift that silently never loads.
-    """
-    from urllib.parse import urlparse
-
-    if not url:
-        return True
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return False
-    if parsed.scheme != 'https':
-        return False
-
-    hosts = _allowed_hosts(
-        'SWIFT_AUDIO_HOSTS' if audio else 'SWIFT_MEDIA_HOSTS',
-        AUDIO_HOSTS if audio else MEDIA_HOSTS,
-    )
-    # Exact host match, not a suffix test: `res.cloudinary.com.evil.test`
-    # passes `endswith('res.cloudinary.com')` on a naive check and is the
-    # classic way this kind of allowlist is defeated.
-    return parsed.hostname in hosts
-
-
-class MediaConfigError(RuntimeError):
-    """Cloudinary credentials are missing. A deployment fact, not a user error."""
-
-
-def _config():
-    store = getattr(settings, 'CLOUDINARY_STORAGE', {}) or {}
-    cloud = store.get('CLOUD_NAME')
-    key = store.get('API_KEY')
-    secret = store.get('API_SECRET')
-    if not (cloud and key and secret):
-        raise MediaConfigError('Cloudinary is not configured on this server.')
-    return cloud, key, secret
-
-
-def is_configured():
-    try:
-        _config()
-    except MediaConfigError:
-        return False
-    return True
-
-
-def valid_public_id(public_id):
-    return bool(public_id) and bool(_PUBLIC_ID_RE.match(public_id))
-
-
-# ─── Signing an upload ────────────────────────────────────────────────────────
-def sign_upload(user, *, timestamp=None):
-    """Parameters the phone needs to upload one video directly to Cloudinary.
-
-    The signature covers every parameter it constrains, which is what stops the
-    client widening its own permissions: the destination is fixed and the
-    resource type is video. A client that alters any of them invalidates the
-    signature.
-
-    The public id embeds the uploader so that an asset can always be traced
-    back to an account without a database round trip, and a random component so
-    that two uploads from one person in the same second cannot collide. It
-    carries the `swifts/` prefix, and that prefix *is* the folder — see the
-    note below for why there is no longer a separate `folder` parameter.
-
-    `params` is returned as its own dict and the client posts it back
-    key-for-key, rather than composing the form from a list of its own. The two
-    ends drifting apart is the failure that prevents, and it is a bad one:
-    Cloudinary recomputes the signature over whatever it receives, so a form
-    carrying one parameter too many or too few is a 401 that names no
-    parameter at all.
-    """
-    import secrets
-
-    cloud, key, secret = _config()
-    timestamp = timestamp or int(time.time())
-    public_id = f'{UPLOAD_FOLDER}/u{user.pk}_{timestamp}_{secrets.token_hex(6)}'
-
-    # Two parameters used to sit in here and both were wrong.
-    #
-    # `folder='swifts'` went alongside a `public_id` that already begins
-    # `swifts/`. Under Cloudinary's fixed-folder mode that stores the asset at
-    # `swifts/swifts/...`; under the dynamic-folder mode every account created
-    # since 2023 gets by default, a slashed `public_id` combined with `folder`
-    # is a conflict and the upload is refused outright.
-    #
-    # `image_metadata='false'` was there to strip the GPS coordinates phone
-    # cameras write into a video container. It never did that. Cloudinary's
-    # `image_metadata` controls whether metadata is *returned in the upload
-    # response*, 'false' is already its default, and the spelling is the
-    # image-only one — deprecated in favour of `media_metadata` — being posted
-    # to the /video/upload endpoint.
-    #
-    # What actually keeps container metadata away from viewers is delivery:
-    # `playback_url` and `poster_url` both end in `q_auto,f_auto`, so every
-    # byte anyone is served is transcoded and carries none of the source
-    # container. The raw original keeps its metadata and is reachable only by
-    # someone who already knows the public id — 48 bits of randomness handed
-    # out from an authenticated endpoint.
-    params = {
-        'timestamp': str(timestamp),
-        'public_id': public_id,
-    }
-    signature = _sign(params, secret)
-
-    return {
-        'cloud_name': cloud,
-        'api_key': key,
-        'signature': signature,
-        'params': params,
-        # Also flat: the client reads `public_id` back when it saves the Swift,
-        # and `timestamp` to judge whether a held signature is still fresh.
-        'timestamp': timestamp,
-        'public_id': public_id,
-        'upload_url': f'https://api.cloudinary.com/v1_1/{cloud}/video/upload',
-        'max_bytes': MAX_UPLOAD_BYTES,
-        'max_duration_ms': MAX_DURATION_MS,
-    }
-
-
-def _sign(params, secret):
-    """Cloudinary's scheme: sorted `k=v` pairs, joined by `&`, secret appended,
-    SHA-1 of the result."""
-    payload = '&'.join(f'{k}={params[k]}' for k in sorted(params))
-    return hashlib.sha1(f'{payload}{secret}'.encode()).hexdigest()
-
-
-# ─── Building the delivery URL ────────────────────────────────────────────────
-def _ms_to_s(ms):
-    """Cloudinary offsets are seconds with up to 3 decimals."""
-    return f'{ms / 1000:.3f}'.rstrip('0').rstrip('.')
-
-
-def _escape_text(value):
-    """Make a caption safe to sit inside a transformation path segment.
-
-    Three separate hazards, and the third is the one that bites: `,` ends a
-    transformation parameter, `/` ends a path component, and a literal `%`
-    breaks the percent-encoding of everything after it. Cloudinary's own
-    guidance is to double-encode text overlays, which is what `quote` twice
-    amounts to here.
-    """
-    cleaned = (value or '').replace('\n', ' ').strip()
-    if not cleaned:
-        return ''
-    return quote(quote(cleaned, safe=''), safe='')
-
-
-#: The font a text overlay is drawn in. A Cloudinary-hosted family rather than
-#: Aura's own Space Grotesk, because a custom font has to be uploaded to the
-#: account before it can be named here — worth doing, and a deployment step
-#: rather than a code one. Tracked in the report as a known gap.
-OVERLAY_FONT = 'Arial'
-OVERLAY_SIZE = 56
-
-_OVERLAY_GRAVITY = {
-    'top': 'north',
-    'middle': 'center',
-    'bottom': 'south',
-}
-
-
-def transformation_chain(swift):
-    """The ordered list of transformation components for one Swift.
-
-    Order matters and is not arbitrary:
-
-      1. **trim** first, so everything after it operates on the clip the
-         creator actually kept rather than the whole recording,
-      2. **original volume**, which applies to the source's own audio,
-      3. **the music layer**, added over the result with its own volume,
-      4. **the text overlay**, last, so it is never scaled by an earlier crop,
-      5. **format and quality**, which Cloudinary applies at delivery.
-    """
-    parts = []
-
-    # 1 — trim
-    if swift.trim_start_ms:
-        parts.append(f'so_{_ms_to_s(swift.trim_start_ms)}')
-    if swift.trim_end_ms:
-        parts.append(f'eo_{_ms_to_s(swift.trim_end_ms)}')
-
-    # 2 — the source's own sound. `e_volume:0` is a mute; there is deliberately
-    # no separate boolean, so the two cannot disagree.
-    if swift.original_volume != 100:
-        parts.append(f'e_volume:{int(swift.original_volume)}')
-
-    # 3 — the music bed, when there is one and it is audible.
-    track = swift.track
-    if track and track.cloudinary_id and swift.music_volume > 0:
-        layer = f'l_video:{track.cloudinary_id}'
-        parts.append(layer)
-        parts.append(f'e_volume:{int(swift.music_volume)}')
-        parts.append('fl_layer_apply')
-
-    # 4 — one line of text.
-    text = _escape_text(swift.overlay_text)
-    if text:
-        gravity = _OVERLAY_GRAVITY.get(swift.overlay_position, 'center')
-        parts.append(f'l_text:{OVERLAY_FONT}_{OVERLAY_SIZE}_bold:{text},co_white')
-        parts.append(f'g_{gravity},y_120,fl_layer_apply')
-
-    # 5 — let Cloudinary pick the codec and bitrate for the requesting client.
-    parts.append('q_auto')
-    parts.append('f_auto')
-    return parts
-
 
 def playback_url(swift):
-    """The address of the finished, composited video.
+    """The address of this Swift's video.
 
-    Returns '' when there is no source to build from, which is a real state:
-    a row can exist before its upload has been confirmed.
+    The uploaded file when there is one — every Swift posted since the R2
+    migration has one. Falls back to the legacy `video_url` for a row that
+    predates it, which is the only case that column is ever read for.
     """
-    if not valid_public_id(swift.media_id):
-        return ''
-    try:
-        cloud, _, _ = _config()
-    except MediaConfigError:
-        return ''
-    chain = ','.join(transformation_chain(swift))
-    return f'https://res.cloudinary.com/{cloud}/video/upload/{chain}/{swift.media_id}.mp4'
+    if swift.video:
+        return swift.video.url
+    return swift.video_url or ''
 
 
 def poster_url(swift):
-    """The still frame that shows before playback starts.
+    """The still frame shown before playback starts.
 
-    Taken from the composited clip at `cover_ms`, so the poster is a frame the
-    viewer will actually see rather than something from a trimmed-off head.
-    Defaults to the first frame of the kept range.
+    The client-captured `thumbnail` when there is one; the legacy
+    `thumbnail_url` otherwise. Neither is derived from `cover_ms` any more —
+    that column described a timestamp for Cloudinary to extract a frame from,
+    and R2 cannot decode video to do the equivalent.
     """
-    if not valid_public_id(swift.media_id):
-        return ''
-    try:
-        cloud, _, _ = _config()
-    except MediaConfigError:
-        return ''
-
-    cover = swift.cover_ms if swift.cover_ms is not None else swift.trim_start_ms
-    # Clamp into the kept range: a cover time outside it would render a frame
-    # from footage the creator cut.
-    lower = swift.trim_start_ms or 0
-    upper = swift.trim_end_ms or (swift.duration_ms or 0)
-    if upper and cover > upper:
-        cover = upper
-    if cover < lower:
-        cover = lower
-
-    parts = [f'so_{_ms_to_s(cover)}', 'q_auto', 'f_auto']
-    return f'https://res.cloudinary.com/{cloud}/video/upload/{",".join(parts)}/{swift.media_id}.jpg'
+    if swift.thumbnail:
+        return swift.thumbnail.url
+    return swift.thumbnail_url or ''

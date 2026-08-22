@@ -309,6 +309,16 @@ class UnwatchableSwiftTests(SwiftTestCase):
         self.assertNotIn(LAT, response.content.decode())
 
 
+# `MediaHostTests` used to live here: a Swift posted with an attacker-chosen
+# `video_url`/`thumbnail_url`/`audio_artwork_url` served that URL verbatim to
+# every viewer's device. The R2 migration removed the vulnerability along with
+# the feature that carried it — `SwiftCreateSerializer` no longer accepts any
+# of those three fields at all, so there is no longer a client-supplied URL for
+# an attacker to point anywhere. See `swifts.test_media.PlaybackUrlTests` for
+# what replaced this: a legacy row's stored URL still has to resolve, but
+# nothing writes one going forward.
+
+
 class RecommenderBypassTests(SwiftTestCase):
     """The recommender as an attack surface.
 
@@ -383,125 +393,6 @@ class RecommenderBypassTests(SwiftTestCase):
         self.assertIn(located.id, ids)
         self.assertIn(plain.id, ids)
 
-
-class MediaHostTests(SwiftTestCase):
-    """A Swift may not point a viewer's device at an arbitrary host.
-
-    Found by probing rather than by reading: `SwiftSerializer.get_video_url`
-    returns `playback_url(obj) or obj.video_url`, so a Swift posted with no
-    Cloudinary id served its raw `video_url` verbatim to every viewer. That is
-    an IP and User-Agent harvester pointed at everybody who scrolls past the
-    card — the request is made by the viewer's device, not by the server, so
-    nothing on our side ever sees it happen.
-
-    The thumbnail is the worse of the two: a poster is fetched for every card
-    in the preload window, so one hostile Swift collects several requests per
-    viewer instead of one.
-    """
-
-    def setUp(self):
-        super().setUp()
-        self.creator = make_user('host_creator')
-        self.viewer = make_user('host_viewer')
-        self.client = APIClient()
-        self.client.force_authenticate(self.creator)
-
-    def post(self, **fields):
-        payload = {'duration_ms': 5000, **fields}
-        return self.client.post(reverse('swift-create'), payload, format='json')
-
-    def test_an_arbitrary_video_host_is_refused(self):
-        response = self.post(video_url='https://attacker.example/beacon.mp4')
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn('video_url', response.json())
-
-    def test_an_arbitrary_thumbnail_host_is_refused(self):
-        response = self.post(
-            video_url='https://res.cloudinary.com/demo/video/upload/a.mp4',
-            thumbnail_url='https://attacker.example/beacon.jpg',
-        )
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn('thumbnail_url', response.json())
-
-    def test_a_lookalike_host_is_refused(self):
-        """`res.cloudinary.com.evil.test` defeats a suffix check.
-
-        The allowlist matches the whole hostname for exactly this reason, and
-        this is the case that would pass if somebody rewrote it as `endswith`.
-        """
-        response = self.post(
-            video_url='https://res.cloudinary.com.evil.test/video/upload/a.mp4',
-        )
-
-        self.assertEqual(response.status_code, 400)
-
-    def test_a_userinfo_prefix_does_not_smuggle_a_host_through(self):
-        """`https://res.cloudinary.com@evil.test/…` — the host is `evil.test`."""
-        response = self.post(
-            video_url='https://res.cloudinary.com@evil.test/a.mp4',
-        )
-
-        self.assertEqual(response.status_code, 400)
-
-    def test_cleartext_is_refused(self):
-        response = self.post(video_url='http://res.cloudinary.com/demo/a.mp4')
-
-        self.assertEqual(response.status_code, 400)
-
-    def test_an_arbitrary_audio_host_is_refused(self):
-        response = self.post(
-            video_url='https://res.cloudinary.com/demo/video/upload/a.mp4',
-            audio_artwork_url='https://attacker.example/art.jpg',
-        )
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn('audio_artwork_url', response.json())
-
-    def test_the_real_cdn_is_accepted(self):
-        """The control. A rule that refuses everything is an outage."""
-        response = self.post(
-            video_url='https://res.cloudinary.com/demo/video/upload/swifts/a.mp4',
-            thumbnail_url='https://res.cloudinary.com/demo/video/upload/swifts/a.jpg',
-        )
-
-        self.assertEqual(response.status_code, 201, response.content)
-
-    def test_apple_artwork_is_accepted(self):
-        response = self.post(
-            video_url='https://res.cloudinary.com/demo/video/upload/a.mp4',
-            audio_artwork_url='https://is1-ssl.mzstatic.com/image/thumb/a.jpg',
-            audio_preview_url='https://audio-ssl.itunes.apple.com/preview/a.m4a',
-        )
-
-        self.assertEqual(response.status_code, 201, response.content)
-
-    def test_an_empty_optional_url_is_accepted(self):
-        """The blank-able fields stay blank-able.
-
-        `video_url` is *not* one of them — the model requires it, so DRF
-        rejects a blank one and always did. The optional media fields are the
-        ones the allowlist must not accidentally make mandatory: a Swift with
-        no music has no artwork URL, and refusing that would refuse most Swifts.
-        """
-        response = self.post(
-            video_url='https://res.cloudinary.com/demo/video/upload/a.mp4',
-            thumbnail_url='',
-            audio_artwork_url='',
-            audio_preview_url='',
-        )
-        self.assertEqual(response.status_code, 201, response.content)
-
-    def test_a_hostile_url_never_reaches_a_viewer(self):
-        """End to end, which is where the impact actually was."""
-        self.post(video_url='https://attacker.example/beacon.mp4')
-
-        viewer = APIClient()
-        viewer.force_authenticate(self.viewer)
-        raw = viewer.get(reverse('swift-feed'), {'chrono': '1'}).content.decode()
-
-        self.assertNotIn('attacker.example', raw)
 
 
 class StaleSessionTests(SwiftTestCase):

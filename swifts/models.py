@@ -72,15 +72,21 @@ class SwiftVideo(models.Model):
     caption = models.CharField(max_length=300, blank=True)
 
     # ── Media ─────────────────────────────────────────────────────────────────
-    # URLs rather than FileFields, matching the direct-to-Cloudinary path the
-    # app already uses for story images and chat photos (see
-    # services/cloudinary.ts): the phone uploads straight to the CDN and only
-    # the resulting URL passes through Django. A FileField here would put every
-    # video through a Railway worker twice.
-    video_url = models.URLField(max_length=500)
+    # `video`/`thumbnail` are the live fields: the phone posts the raw file
+    # (and, since export-time compositing has nowhere to run — see the R2
+    # migration note on `swifts.media` — a client-captured poster frame)
+    # straight to Django, which stores both on R2 via the project's default
+    # STORAGES backend. Same shape as Story.image / ClubMessage.image.
+    #
+    # `video_url`/`thumbnail_url`/`media_id` are legacy: this app's earlier
+    # design uploaded straight to Cloudinary and had Cloudinary composite trim,
+    # volume, a music bed and a text overlay into the delivered file from these
+    # URLs/id. No client writes them any more — see `swifts.media` — but they
+    # stay so any row created under that design keeps resolving.
+    video = models.FileField(upload_to='swifts/', null=True, blank=True)
+    thumbnail = models.ImageField(upload_to='swifts/posters/', null=True, blank=True)
+    video_url = models.URLField(max_length=500, blank=True)
     thumbnail_url = models.URLField(max_length=500, blank=True)
-    #: The CDN's own identifier, kept so a later transcode callback, a
-    #: transformation or a delete can find the asset without parsing a URL.
     media_id = models.CharField(max_length=200, blank=True, db_index=True)
 
     duration_ms = models.PositiveIntegerField(default=0)
@@ -119,6 +125,13 @@ class SwiftVideo(models.Model):
     #: strip the credit from every Swift that used it, and must not rewrite the
     #: credit either if the row is later edited. The FK says "which row"; the
     #: strings say "what this Swift claims", and only the first can go stale.
+    #:
+    #: Not attachable to a new Swift any more: mixing a track into the video
+    #: was Cloudinary's job (see `swifts.media`), and there is nowhere for that
+    #: mix to happen against R2. Left on the model, unused by
+    #: `SwiftCreateSerializer`, rather than dropped — a Swift created before
+    #: this change may still carry one, and `get_track`'s attribution-survives
+    #: -withdrawal behaviour still depends on the column existing.
     track = models.ForeignKey(
         'swifts.SwiftTrack', on_delete=models.SET_NULL,
         null=True, blank=True, related_name='swifts',
@@ -126,34 +139,35 @@ class SwiftVideo(models.Model):
 
     # ── The edit ──────────────────────────────────────────────────────────────
     # What the creator chose in the editor, stored as *parameters* rather than
-    # applied to the file. Nothing on the phone re-encodes video: the composite
-    # is a Cloudinary delivery transformation built from these columns by
-    # `swifts.media.playback_url`, rendered on first request and CDN-cached
-    # after. See that module for why this is the architecture rather than a
-    # convenience.
-    #
-    # Consequence worth knowing: the original upload is never destroyed by an
-    # edit, so a trim is reversible and a bad render is a URL rebuild rather
-    # than a lost video.
+    # applied to the file — a holdover from when the composite was a Cloudinary
+    # delivery transformation built from these columns, rendered on first
+    # request. `swifts.media.playback_url`/`poster_url` no longer build one:
+    # trim and volume are applied by the player at playback time (the editor
+    # already previewed them this way), and the text overlay is drawn as a
+    # client-side layer over the video rather than baked into the file. Kept as
+    # parameters rather than migrated to real edits because nothing on the
+    # phone re-encodes video either — see that module.
     #: Milliseconds into the source. `trim_end_ms` null means "to the end".
     trim_start_ms = models.PositiveIntegerField(default=0)
     trim_end_ms = models.PositiveIntegerField(null=True, blank=True)
     #: Which frame becomes the poster, in ms from the *start of the source*.
-    #: Null means the first frame of the trimmed range.
+    #: Null means the first frame of the trimmed range. Superseded by
+    #: `thumbnail` for anything uploaded after the R2 migration — the phone
+    #: captures the frame itself and posts it as a real image rather than
+    #: asking the server to extract one from a timestamp.
     cover_ms = models.PositiveIntegerField(null=True, blank=True)
-    #: 0–100 each. The original is the camera's own sound; the music is the
-    #: attached track. Muting the original is `original_volume = 0` rather than
-    #: a separate boolean — one number with an off position, not two controls
-    #: that can disagree.
+    #: 0–100. The camera's own sound; playback applies it as the player volume.
     original_volume = models.PositiveSmallIntegerField(
         default=100, validators=[MaxValueValidator(100)],
     )
+    #: Unused since a music bed can no longer be mixed in (see `track` above).
+    #: Left in place for the same reason.
     music_volume = models.PositiveSmallIntegerField(
         default=70, validators=[MaxValueValidator(100)],
     )
-    #: A single line burned into the render. Kept deliberately small — one
-    #: string and a vertical position, not a layer system. A general overlay
-    #: editor is a different feature and would need its own model.
+    #: A single line drawn over the video at playback. Kept deliberately small
+    #: — one string and a vertical position, not a layer system. A general
+    #: overlay editor is a different feature and would need its own model.
     overlay_text = models.CharField(max_length=80, blank=True)
 
     class OverlayPosition(models.TextChoices):

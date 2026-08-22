@@ -116,20 +116,18 @@ class SwiftSerializer(serializers.ModelSerializer):
         return self._flag(obj, 'viewed_ids', SwiftView)
 
     def get_video_url(self, obj):
-        """The composited clip, or the raw source if nothing was edited.
-
-        Falls back to the stored `video_url` when there is no Cloudinary id —
-        which covers rows created before this pipeline existed and any future
-        source that is not Cloudinary-hosted.
-        """
+        """The uploaded file, or the legacy `video_url` for a row that predates
+        it — see `swifts.media.playback_url`."""
         from . import media
 
-        return media.playback_url(obj) or obj.video_url
+        return media.playback_url(obj)
 
     def get_thumbnail_url(self, obj):
+        """The captured poster frame, or the legacy `thumbnail_url` — see
+        `swifts.media.poster_url`."""
         from . import media
 
-        return media.poster_url(obj) or obj.thumbnail_url
+        return media.poster_url(obj)
 
     def get_track(self, obj):
         """The music credit.
@@ -195,30 +193,30 @@ class SwiftCreateSerializer(serializers.ModelSerializer):
     reason: the client is not the party making the promise.
     """
 
+    #: `blank=True` on the model is for the legacy Cloudinary-era rows that
+    #: never populate this column at all — a new post always carries the file.
+    video = serializers.FileField(required=True)
+
     class Meta:
         model = SwiftVideo
         fields = [
-            'video_url', 'thumbnail_url', 'media_id',
+            'video', 'thumbnail',
             'duration_ms', 'width', 'height', 'status',
             'caption',
-            'audio_title', 'audio_artist', 'audio_apple_id',
-            'audio_artwork_url', 'audio_preview_url', 'uses_original_audio',
+            'uses_original_audio',
             'latitude', 'longitude', 'place_name', 'location_shared',
             'visibility', 'allow_comments', 'allow_reposts',
-            'track', 'trim_start_ms', 'trim_end_ms', 'cover_ms',
-            'original_volume', 'music_volume',
+            'trim_start_ms', 'trim_end_ms',
+            'original_volume',
             'overlay_text', 'overlay_position',
         ]
 
-    def validate_track(self, value):
-        """Only a published track may be attached.
+    def validate_video(self, value):
+        from .media import MAX_UPLOAD_BYTES
 
-        `is_active` is off by default and turning it on is a deliberate act by
-        somebody who checked the licence — see `SwiftTrack`. A client that
-        knows an inactive row's id must not be able to route around that.
-        """
-        if value is not None and not value.is_active:
-            raise serializers.ValidationError('That track is not available.')
+        if value.size > MAX_UPLOAD_BYTES:
+            raise serializers.ValidationError(
+                f'That file is too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)}MB).')
         return value
 
     def validate_duration_ms(self, value):
@@ -229,52 +227,6 @@ class SwiftCreateSerializer(serializers.ModelSerializer):
                 f'A Swift can be at most {MAX_DURATION_MS // 1000} seconds.')
         if value and value < MIN_DURATION_MS:
             raise serializers.ValidationError('That video is too short.')
-        return value
-
-    def _check_host(self, value, *, audio=False):
-        from .media import valid_media_url
-
-        if not valid_media_url(value, audio=audio):
-            raise serializers.ValidationError(
-                "That media must be served from Aura's own CDN.")
-        return value
-
-    def validate_video_url(self, value):
-        """Media has to come from our CDN, not from wherever the client says.
-
-        `SwiftSerializer.get_video_url` falls back to this column when there is
-        no Cloudinary id, and hands the result to every viewer's device, which
-        fetches it. An unrestricted URL here is therefore an IP and
-        User-Agent harvester aimed at everybody who scrolls past the card, and
-        arbitrary content rendered inside Aura's UI.
-
-        There is no legitimate case for another host: the upload path is signed
-        direct-to-Cloudinary precisely so media lives in our account.
-        """
-        return self._check_host(value)
-
-    def validate_thumbnail_url(self, value):
-        """Same rule, and the more requested of the two — a poster is fetched
-        for every card in the preload window, not just the one playing."""
-        return self._check_host(value)
-
-    def validate_audio_artwork_url(self, value):
-        return self._check_host(value, audio=True)
-
-    def validate_audio_preview_url(self, value):
-        return self._check_host(value, audio=True)
-
-    def validate_media_id(self, value):
-        """A public id becomes a path segment in a delivery URL.
-
-        Which makes an unchecked one a path injection — `../` or a slash-laden
-        string would build a URL pointing at another folder, or another
-        account's asset, under our cloud name.
-        """
-        from .media import valid_public_id
-
-        if value and not valid_public_id(value):
-            raise serializers.ValidationError('Invalid media reference.')
         return value
 
     def validate(self, attrs):
@@ -297,9 +249,9 @@ class SwiftCreateSerializer(serializers.ModelSerializer):
                 'location_shared': 'A location must be provided to share one.',
             })
 
-        # A trim that ends before it starts renders an empty video, and
-        # Cloudinary answers that with a broken asset rather than an error —
-        # so it has to be caught here or it becomes a Swift that never plays.
+        # A trim that ends before it starts describes an empty clip — nothing
+        # plays it, but nothing renders it either any more (playback just
+        # seeks within the range), so this is the one place it gets caught.
         start = attrs.get('trim_start_ms', 0) or 0
         end = attrs.get('trim_end_ms')
         if end is not None and end <= start:

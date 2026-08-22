@@ -16,7 +16,6 @@ from .views import (
     SwiftMusicProviderStatusView,
     SwiftTrackGenresView,
     SwiftTrackListView,
-    SwiftUploadSignatureView,
 )
 
 urlpatterns = [
@@ -25,10 +24,9 @@ urlpatterns = [
     # audience gate; `mine/` is the only surface that shows a creator a row the
     # feed would withhold — their own private and still-processing ones.
     path('feed/', SwiftFeedView.as_view(), name='swift-feed'),
-    # The composer's two supporting endpoints. Above `<int:pk>/` so neither
-    # path is read as a Swift id.
-    path('upload-signature/', SwiftUploadSignatureView.as_view(),
-         name='swift-upload-signature'),
+    # The composer's supporting endpoints. Above `<int:pk>/` so neither path is
+    # read as a Swift id. There is no upload-signature route any more — the
+    # video goes straight into the POST below as a normal multipart file.
     path('tracks/', SwiftTrackListView.as_view(), name='swift-tracks'),
     path('tracks/genres/', SwiftTrackGenresView.as_view(), name='swift-track-genres'),
     path('tracks/providers/', SwiftMusicProviderStatusView.as_view(),

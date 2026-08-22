@@ -1,28 +1,26 @@
-"""The render pipeline: signing, transformation URLs, and the catalogue.
+"""The media pipeline after the R2 migration.
 
-The transformation tests matter more than they look. A Cloudinary
-transformation is a *path segment*, so every value that reaches one is
-concatenated into a URL — which makes an unvalidated public id or an unescaped
-caption a path injection under our own cloud name.
+There is no transformation grammar to test any more — `playback_url` and
+`poster_url` are a straight choice between the uploaded file and a legacy
+fallback column (see `swifts.media`). What is still worth testing here: that
+choice, the multipart create path that replaced the signed-upload endpoint,
+and the track catalogue (browsing only — attaching a track to a Swift is
+gone with the compositing that used to mix it in).
 """
-from django.test import override_settings
+from unittest.mock import patch
+
 from django.urls import reverse
 from rest_framework.test import APIClient
 
 from . import media
 from .models import SwiftTrack, SwiftVideo
-from .testing import SwiftTestCase, make_swift, make_user
-
-CLOUD = {
-    'CLOUD_NAME': 'testcloud', 'API_KEY': '123', 'API_SECRET': 'shh',
-}
+from .testing import SwiftTestCase, fake_image, fake_video, make_swift, make_user
 
 
 def make_track(**extra):
     fields = {
         'title': 'Night Drive', 'artist': 'Aura Sounds', 'genre': 'Lo-fi',
         'audio_url': 'https://cdn.example.com/a/night.mp3',
-        'cloudinary_id': 'tracks/night',
         'duration_ms': 120_000,
         'source': SwiftTrack.Source.OWNED,
         'licence': 'Commissioned 2026-01, contract A-441',
@@ -32,252 +30,78 @@ def make_track(**extra):
     return SwiftTrack.objects.create(**fields)
 
 
-@override_settings(CLOUDINARY_STORAGE=CLOUD)
-class TransformationTests(SwiftTestCase):
-    """What the editor's parameters turn into."""
+class PlaybackUrlTests(SwiftTestCase):
+    """The uploaded file wins; the legacy URL is the fallback for a row that
+    predates it."""
 
     def setUp(self):
         super().setUp()
         self.creator = make_user('creator')
 
-    def build(self, **extra):
-        return make_swift(self.creator, media_id='swifts/u1_abc', **extra)
+    def test_an_uploaded_video_resolves_to_its_own_url(self):
+        swift = make_swift(self.creator, video=fake_video())
+        self.assertTrue(media.playback_url(swift))
+        self.assertNotEqual(media.playback_url(swift), swift.video_url)
 
-    def test_an_unedited_swift_still_gets_quality_and_format(self):
-        url = media.playback_url(self.build())
-        self.assertIn('q_auto', url)
-        self.assertIn('f_auto', url)
-        self.assertTrue(url.endswith('/swifts/u1_abc.mp4'))
+    def test_a_legacy_row_falls_back_to_video_url(self):
+        """`make_swift` gives every row a `video_url` by default — this is the
+        shape a row from before the migration actually has."""
+        swift = make_swift(self.creator)
+        self.assertEqual(media.playback_url(swift), swift.video_url)
 
-    def test_trim_becomes_start_and_end_offsets(self):
-        url = media.playback_url(self.build(trim_start_ms=2500, trim_end_ms=15_000))
-        self.assertIn('so_2.5', url)
-        self.assertIn('eo_15', url)
+    def test_a_captured_thumbnail_resolves_to_its_own_url(self):
+        swift = make_swift(self.creator, thumbnail=fake_image())
+        self.assertTrue(media.poster_url(swift))
+        self.assertNotEqual(media.poster_url(swift), swift.thumbnail_url)
 
-    def test_a_zero_start_is_omitted_rather_than_sent_as_zero(self):
-        """Shorter URLs cache better and `so_0` is a no-op."""
-        self.assertNotIn('so_', media.playback_url(self.build(trim_start_ms=0)))
+    def test_a_legacy_row_falls_back_to_thumbnail_url(self):
+        swift = make_swift(self.creator)
+        self.assertEqual(media.poster_url(swift), swift.thumbnail_url)
 
-    def test_muting_the_original_is_volume_zero(self):
-        url = media.playback_url(self.build(original_volume=0))
-        self.assertIn('e_volume:0', url)
-
-    def test_full_original_volume_adds_nothing(self):
-        self.assertNotIn('e_volume', media.playback_url(self.build(original_volume=100)))
-
-    def test_a_track_becomes_an_audio_layer_with_its_own_volume(self):
-        url = media.playback_url(
-            self.build(track=make_track(), music_volume=40, original_volume=20))
-
-        self.assertIn('l_video:tracks/night', url)
-        self.assertIn('e_volume:40', url)
-        self.assertIn('e_volume:20', url)
-        self.assertIn('fl_layer_apply', url)
-
-    def test_a_silenced_track_is_not_mixed_in_at_all(self):
-        """Zero music volume means no layer, not a layer at zero — the layer
-        costs a fetch and a mix for something nobody can hear."""
-        url = media.playback_url(self.build(track=make_track(), music_volume=0))
-        self.assertNotIn('l_video:', url)
-
-    def test_a_track_with_no_cloudinary_id_is_not_mixed_in(self):
-        """Auditionable, not usable. Better than a URL that renders nothing."""
-        url = media.playback_url(
-            self.build(track=make_track(cloudinary_id=''), music_volume=80))
-        self.assertNotIn('l_video:', url)
-
-    def test_overlay_text_is_double_encoded(self):
-        url = media.playback_url(self.build(overlay_text='hello world'))
-        self.assertIn('l_text:', url)
-        # Once for the space, again because Cloudinary decodes the segment.
-        self.assertIn('hello%2520world', url)
-
-    def test_overlay_text_cannot_break_out_of_the_path(self):
-        """The injection this escaping exists for.
-
-        A raw `/` would end the transformation component and let the rest of
-        the caption become path segments of its own.
-        """
-        url = media.playback_url(
-            self.build(overlay_text='a/../../evil,co_red'))
-
-        self.assertNotIn('a/../', url)
-        self.assertEqual(url.count('/video/upload/'), 1)
-        # Everything after the cloud name and before the id is one component.
-        tail = url.split('/video/upload/')[1]
-        self.assertEqual(tail.count('/'), 2, tail)  # chain / swifts / id
-
-    def test_overlay_position_maps_to_gravity(self):
-        for position, gravity in (('top', 'north'), ('middle', 'center'),
-                                  ('bottom', 'south')):
-            with self.subTest(position=position):
-                url = media.playback_url(
-                    self.build(overlay_text='hi', overlay_position=position))
-                self.assertIn(f'g_{gravity}', url)
-
-    def test_empty_overlay_adds_no_layer(self):
-        self.assertNotIn('l_text', media.playback_url(self.build(overlay_text='   ')))
-
-    def test_transformation_order_is_trim_then_volume_then_music_then_text(self):
-        """Order is not cosmetic — see `transformation_chain`."""
-        chain = media.transformation_chain(self.build(
-            trim_start_ms=1000, original_volume=30,
-            track=make_track(), music_volume=50, overlay_text='hi',
-        ))
-        joined = ' '.join(chain)
-        self.assertLess(joined.index('so_1'), joined.index('e_volume:30'))
-        self.assertLess(joined.index('e_volume:30'), joined.index('l_video'))
-        self.assertLess(joined.index('l_video'), joined.index('l_text'))
+    def test_a_row_with_neither_has_no_poster(self):
+        swift = make_swift(self.creator, thumbnail_url='')
+        self.assertEqual(media.poster_url(swift), '')
 
 
-@override_settings(CLOUDINARY_STORAGE=CLOUD)
-class PosterTests(SwiftTestCase):
+class CreateUploadTests(SwiftTestCase):
+    """The multipart create path that replaced the signed-upload endpoint."""
+
     def setUp(self):
         super().setUp()
-        self.creator = make_user('creator')
-
-    def test_cover_defaults_to_the_start_of_the_trim(self):
-        swift = make_swift(self.creator, media_id='swifts/x', trim_start_ms=3000)
-        self.assertIn('so_3', media.poster_url(swift))
-
-    def test_cover_is_clamped_into_the_kept_range(self):
-        """A cover outside the trim would show a frame the creator cut."""
-        swift = make_swift(
-            self.creator, media_id='swifts/x',
-            trim_start_ms=2000, trim_end_ms=8000, cover_ms=30_000,
-        )
-        self.assertIn('so_8', media.poster_url(swift))
-
-    def test_poster_is_a_jpg(self):
-        swift = make_swift(self.creator, media_id='swifts/x')
-        self.assertTrue(media.poster_url(swift).endswith('.jpg'))
-
-
-class PublicIdValidationTests(SwiftTestCase):
-    """The path-injection guard on the id itself."""
-
-    def test_traversal_and_schemes_are_refused(self):
-        for bad in ('../../etc/passwd', 'a b', 'x?y', 'http://evil/x',
-                    'a,b', 'a;b', '', 'x' * 300):
-            with self.subTest(bad=bad):
-                self.assertFalse(media.valid_public_id(bad))
-
-    def test_normal_ids_pass(self):
-        for good in ('swifts/u1_1700000000_abc123', 'tracks/night', 'a-b_c/d'):
-            with self.subTest(good=good):
-                self.assertTrue(media.valid_public_id(good))
-
-    def test_the_create_endpoint_refuses_a_bad_media_id(self):
-        client = APIClient()
-        client.force_authenticate(make_user('creator'))
-        response = client.post(reverse('swift-create'), {
-            'video_url': 'https://cdn.example.com/v/x.mp4',
-            'media_id': '../../../secrets',
-            'duration_ms': 5000,
-        }, format='json')
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn('media_id', response.json())
-
-
-@override_settings(CLOUDINARY_STORAGE=CLOUD)
-class UploadSignatureTests(SwiftTestCase):
-    def setUp(self):
-        super().setUp()
-        self.user = make_user('creator')
         self.client = APIClient()
-        self.client.force_authenticate(self.user)
+        self.client.force_authenticate(make_user('creator'))
 
-    def test_returns_everything_the_client_needs(self):
-        body = self.client.get(reverse('swift-upload-signature')).json()
+    def post(self, **extra):
+        payload = {'video': fake_video(), 'duration_ms': 10_000}
+        payload.update(extra)
+        return self.client.post(reverse('swift-create'), payload, format='multipart')
 
-        for key in ('cloud_name', 'api_key', 'timestamp', 'signature', 'params',
-                    'public_id', 'upload_url', 'max_bytes', 'max_duration_ms'):
-            self.assertIn(key, body)
-        self.assertTrue(body['upload_url'].endswith('/video/upload'))
-
-    def test_the_public_id_is_scoped_to_the_uploader(self):
-        body = self.client.get(reverse('swift-upload-signature')).json()
-        self.assertTrue(body['public_id'].startswith(f'swifts/u{self.user.pk}_'))
-
-    def test_two_signatures_do_not_collide(self):
-        first = self.client.get(reverse('swift-upload-signature')).json()
-        second = self.client.get(reverse('swift-upload-signature')).json()
-        self.assertNotEqual(first['public_id'], second['public_id'])
-
-    def test_the_signed_set_is_exactly_what_cloudinary_will_recompute(self):
-        """The upload form is `params`, plus api_key, signature and the file.
-
-        Cloudinary recomputes the signature over every field it receives bar
-        those three, so this dict has to *be* the form — one key too many or
-        too few and the upload comes back 401 without naming the parameter.
-        That is what a client composing its own field list kept getting wrong,
-        and why the server now hands over the set instead of describing it.
-        """
-        body = self.client.get(reverse('swift-upload-signature')).json()
-        self.assertEqual(
-            set(body['params']),
-            {'timestamp', 'public_id'},
+    def test_a_video_file_is_required(self):
+        response = self.client.post(
+            reverse('swift-create'), {'duration_ms': 10_000}, format='multipart',
         )
-        self.assertEqual(body['params']['public_id'], body['public_id'])
-        self.assertEqual(body['params']['timestamp'], str(body['timestamp']))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('video', response.json())
 
-    def test_no_folder_parameter_beside_a_folder_prefixed_public_id(self):
-        """Sending both is a conflict, not a duplication.
+    def test_a_video_within_the_ceiling_is_accepted(self):
+        response = self.post()
+        self.assertEqual(response.status_code, 201, response.content)
 
-        The public id already begins `swifts/`. A `folder` parameter on top of
-        it nests the asset at `swifts/swifts/...` under fixed-folder accounts
-        and is refused outright under dynamic-folder ones, which is the default
-        for every account created since 2023.
-        """
-        body = self.client.get(reverse('swift-upload-signature')).json()
-        self.assertNotIn('folder', body['params'])
-        self.assertTrue(body['public_id'].startswith('swifts/'))
+    def test_an_oversized_video_is_refused(self):
+        with patch.object(media, 'MAX_UPLOAD_BYTES', 10):
+            response = self.post(video=fake_video(content=b'more than ten bytes'))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('video', response.json())
 
-    def test_no_image_only_parameters_on_the_video_endpoint(self):
-        """`image_metadata` used to be signed in here as a metadata strip.
-
-        It was not one. Cloudinary's `image_metadata` says whether metadata
-        comes back in the *response*, 'false' is its default, and the spelling
-        is the deprecated image-only one being posted to /video/upload. What
-        keeps container metadata away from viewers is that delivery always
-        transcodes — see the tests around `playback_url`, which is never built
-        without `q_auto,f_auto`.
-        """
-        body = self.client.get(reverse('swift-upload-signature')).json()
-        self.assertNotIn('image_metadata', body['params'])
-        self.assertNotIn('media_metadata', body['params'])
-
-    def test_signature_is_reproducible_from_the_signed_parameters(self):
-        body = self.client.get(reverse('swift-upload-signature')).json()
-        expected = media._sign(body['params'], CLOUD['API_SECRET'])
-        self.assertEqual(body['signature'], expected)
-
-    def test_an_extra_form_field_breaks_the_signature(self):
-        """The property the whole scheme rests on, stated once.
-
-        A client cannot quietly widen what it is allowed to upload, because
-        anything it adds to the form changes what Cloudinary recomputes.
-        """
-        body = self.client.get(reverse('swift-upload-signature')).json()
-        widened = dict(body['params'], folder='somewhere-else')
-        self.assertNotEqual(
-            media._sign(widened, CLOUD['API_SECRET']),
-            body['signature'],
-        )
-
-    def test_requires_authentication(self):
-        self.assertEqual(
-            APIClient().get(reverse('swift-upload-signature')).status_code, 401)
-
-    @override_settings(CLOUDINARY_STORAGE={})
-    def test_missing_credentials_answer_503_with_a_code(self):
-        response = self.client.get(reverse('swift-upload-signature'))
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()['code'], 'not_configured')
+    def test_there_is_no_upload_signature_route_any_more(self):
+        with self.assertRaises(Exception):
+            reverse('swift-upload-signature')
 
 
 class TrackCatalogueTests(SwiftTestCase):
+    """Browsing the catalogue. Attaching a track to a Swift is gone with the
+    server-side mixing that used to make it audible — see `swifts.media`."""
+
     def setUp(self):
         super().setUp()
         self.user = make_user('creator')
@@ -334,34 +158,10 @@ class TrackCatalogueTests(SwiftTestCase):
         self.assertIn('Lo-fi', body['results'])
         self.assertNotIn('Secret', body['results'])
 
-    def test_an_inactive_track_cannot_be_attached_to_a_swift(self):
-        """The publish gate, enforced where it can be routed around."""
-        draft = make_track(is_active=False)
-        response = self.client.post(reverse('swift-create'), {
-            'video_url': 'https://cdn.example.com/v/x.mp4',
-            'duration_ms': 5000,
-            'track': draft.pk,
-        }, format='json')
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn('track', response.json())
-
-    def test_an_active_track_can_be_attached(self):
-        track = make_track()
-        response = self.client.post(reverse('swift-create'), {
-            'video_url': 'https://cdn.example.com/v/x.mp4',
-            'duration_ms': 5000,
-            'track': track.pk,
-            'audio_title': track.title,
-            'audio_artist': track.artist,
-            'uses_original_audio': False,
-        }, format='json')
-
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()['track']['title'], 'Night Drive')
-
     def test_the_credit_survives_the_track_being_withdrawn(self):
-        """A licence lapses; the Swifts that used it keep their attribution."""
+        """A licence lapses; a Swift that predates the mixing removal — and so
+        still carries a `track` FK — keeps its attribution. Exercised at the
+        model level: nothing writes `track` through the API any more."""
         track = make_track()
         swift = make_swift(
             self.user, track=track,
@@ -385,9 +185,9 @@ class DurationAndTrimValidationTests(SwiftTestCase):
         self.client.force_authenticate(make_user('creator'))
 
     def post(self, **extra):
-        payload = {'video_url': 'https://cdn.example.com/v/x.mp4', 'duration_ms': 10_000}
+        payload = {'video': fake_video(), 'duration_ms': 10_000}
         payload.update(extra)
-        return self.client.post(reverse('swift-create'), payload, format='json')
+        return self.client.post(reverse('swift-create'), payload, format='multipart')
 
     def test_over_the_ceiling_is_refused(self):
         response = self.post(duration_ms=media.MAX_DURATION_MS + 1)
@@ -409,34 +209,31 @@ class DurationAndTrimValidationTests(SwiftTestCase):
 
     def test_a_sane_trim_is_accepted_and_stored(self):
         response = self.post(trim_start_ms=1000, trim_end_ms=9000)
-        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.status_code, 201, response.content)
 
         swift = SwiftVideo.objects.get(pk=response.json()['id'])
         self.assertEqual(swift.trim_start_ms, 1000)
         self.assertEqual(swift.trim_end_ms, 9000)
 
-    def test_volumes_are_capped_at_100(self):
-        response = self.post(music_volume=400)
+    def test_original_volume_is_capped_at_100(self):
+        response = self.post(original_volume=400)
         self.assertEqual(response.status_code, 400)
 
 
-@override_settings(CLOUDINARY_STORAGE=CLOUD)
 class FeedStillHidesLocationWithRenderUrlsTests(SwiftTestCase):
-    """The render pipeline must not reopen the location rule.
+    """The media pipeline must not reopen the location rule.
 
-    Worth its own test because `video_url` is now *computed*, and a computed
-    URL is exactly the kind of field that could start carrying a coordinate if
-    somebody ever decided to name the place in the file path.
+    Worth its own test because `video_url` is served through
+    `get_video_url`/`media.playback_url` rather than as a stored column
+    directly, and a computed value is exactly the kind of field that could
+    start carrying a coordinate if somebody ever named the place in a path.
     """
 
     def test_no_coordinate_reaches_the_feed_through_a_render_url(self):
         from .testing import find_forbidden
 
         creator = make_user('creator')
-        make_swift(
-            creator, located=True, shared=True,
-            media_id='swifts/x', overlay_text='at the park',
-        )
+        make_swift(creator, located=True, shared=True, overlay_text='at the park')
 
         client = APIClient()
         client.force_authenticate(make_user('viewer'))

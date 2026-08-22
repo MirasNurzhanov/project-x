@@ -883,40 +883,6 @@ class SwiftTrackGenresView(APIView):
         return Response({'results': list(genres)})
 
 
-# ─── Upload ───────────────────────────────────────────────────────────────────
-class SwiftUploadSignatureView(APIView):
-    """Parameters for one direct-to-Cloudinary video upload.
-
-    The phone uploads straight to the CDN and Django only ever sees the
-    resulting id — the same arrangement `services/cloudinary.ts` already uses
-    for images, so a video never crosses our network twice or holds a Railway
-    worker for the length of a transfer.
-
-    Signed rather than unsigned, unlike the image path. An unsigned preset is a
-    reasonable trade for images bounded at 1920px; for video it is an open door
-    to anyone who reads the JS bundle, and video is the expensive asset in both
-    storage and egress. The signature pins the folder, the resource type and
-    the metadata stripping, so a client cannot widen any of them.
-    """
-
-    permission_classes = [permissions.IsAuthenticated]
-    throttle_scope = 'swift_create'
-
-    def get(self, request):
-        from . import media
-
-        try:
-            return Response(media.sign_upload(request.user))
-        except media.MediaConfigError as exc:
-            # A deployment fact, mirrored the way `users.applemusic` mirrors
-            # missing credentials: 503 and a code, so the app can say
-            # "unavailable" rather than "your video failed".
-            return Response(
-                {'detail': str(exc), 'code': 'not_configured'},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-
-
 class SwiftMusicProviderStatusView(APIView):
     """Which music providers are wired up, and what is missing if not.
 
