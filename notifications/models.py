@@ -28,6 +28,11 @@ class Notification(models.Model):
         SWIFT_LIKE = 'swift_like', 'Swift Like'
         SWIFT_COMMENT = 'swift_comment', 'Swift Comment'
         SWIFT_REPOST = 'swift_repost', 'Swift Repost'
+        # This account was signed in to on a device it had not been seen on
+        # before. The one alert here with no sender — it is about the account
+        # itself rather than about something a person did to you, so `sender`
+        # stays null and the message names the device instead.
+        NEW_DEVICE = 'new_device', 'New Device Sign-In'
 
     recipient = models.ForeignKey(
         settings.AUTH_USER_MODEL,

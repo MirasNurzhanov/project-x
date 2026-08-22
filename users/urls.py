@@ -6,6 +6,7 @@ from .views import (
     ProfileLinksView, ProfileLinkDetailView, UserSearchView, ZoneView,
     DeleteAccountView, MeView, SocialLoginView, SocialLinkView, SafeTokenRefreshView,
     AppleMusicSearchView, AppleMusicStatusView, ZoneAppleMusicView,
+    DeviceRegisterView,
 )
 
 urlpatterns = [
@@ -16,6 +17,7 @@ urlpatterns = [
     path('logout/', LogoutView.as_view(), name='logout'),
     path('token/refresh/', SafeTokenRefreshView.as_view(), name='token_refresh'),
     path('me/', MeView.as_view(), name='me'),
+    path('devices/', DeviceRegisterView.as_view(), name='device-register'),
     path('profile/', ProfileView.as_view(), name='profile'),
     path('privacy/', PrivacySettingsView.as_view(), name='privacy'),
     path('notification-settings/', NotificationSettingsView.as_view(),

@@ -145,7 +145,7 @@ def _get(path, params=None):
             timeout=TIMEOUT_S,
         )
     except requests.RequestException as exc:
-        raise AppleMusicError(f'Could not reach Apple Music: {exc}') from exc
+        raise AppleMusicError(f'Could not reach the music catalogue: {exc}') from exc
 
     if response.status_code == 401 or response.status_code == 403:
         # Almost always an expired key or a team/kid mismatch, and retrying with
@@ -160,14 +160,14 @@ def _get(path, params=None):
             code='rejected',
         )
     if response.status_code == 404:
-        raise AppleMusicError('That track is not in the Apple Music catalogue.', status=404)
+        raise AppleMusicError('That track is no longer in the catalogue.', status=404)
     if response.status_code >= 400:
-        raise AppleMusicError(f'Apple Music returned {response.status_code}.')
+        raise AppleMusicError(f'The music catalogue returned an error ({response.status_code}).')
 
     try:
         return response.json()
     except ValueError as exc:
-        raise AppleMusicError('Apple Music sent something that is not JSON.') from exc
+        raise AppleMusicError('The music catalogue sent back something unexpected.') from exc
 
 
 # ─── Shaping ──────────────────────────────────────────────────────────────────

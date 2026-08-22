@@ -559,3 +559,61 @@ class SocialAccount(models.Model):
 
     def __str__(self):
         return f'{self.get_provider_display()} → {self.user_id}'
+
+
+class Device(models.Model):
+    """One installation of the app, signed in to one account.
+
+    Replaces the single `User.push_token`, which could only ever hold one
+    device: signing in on a second phone overwrote the first's token, and the
+    first silently stopped receiving notifications with nothing to show that
+    anything had happened. Push now fans out across these rows (see
+    `notifications.push.push_to_users`), and a new one appearing is what the
+    "new sign-in" alert is raised from.
+
+    Keyed on `install_id`, a value the app generates once per installation and
+    keeps in device storage. Not the push token: that is reissued by Expo on
+    its own schedule, so keying on it would make one phone look like a stream
+    of new devices — and each reissue would fire a sign-in alert. The token is
+    a column here, free to change without changing the identity of the row it
+    sits on.
+    """
+
+    class Platform(models.TextChoices):
+        IOS = 'ios', 'iOS'
+        ANDROID = 'android', 'Android'
+        UNKNOWN = 'unknown', 'Unknown'
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='devices')
+    install_id = models.CharField(max_length=64)
+    #: Blank whenever the device has no *current* token — push permission was
+    #: never granted, or it signed out. The row stays either way, so the device
+    #: keeps its identity and does not re-announce itself on the next sign-in.
+    push_token = models.CharField(max_length=200, blank=True, default='')
+    #: What the alert calls it — "Pixel 8". Supplied by the client and shown
+    #: back to the account's owner, never to anyone else.
+    name = models.CharField(max_length=120, blank=True, default='')
+    platform = models.CharField(
+        max_length=10, choices=Platform.choices, default=Platform.UNKNOWN,
+    )
+    last_seen = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-last_seen']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'install_id'], name='unique_install_per_user'),
+        ]
+        indexes = [
+            # The push fan-out: every device belonging to these users.
+            models.Index(fields=['user', 'push_token'], name='device_push_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.name or self.install_id} → {self.user_id}'
+
+    @property
+    def label(self):
+        """What to call this device in a sentence, when it has no name."""
+        return self.name or self.get_platform_display()

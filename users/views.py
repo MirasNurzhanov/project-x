@@ -10,6 +10,7 @@ from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.views import TokenRefreshView
 from friends.models import FriendRequest
+from notifications.utils import notify_new_device
 from . import applemusic, socialauth, visibility
 from .links import LinkError, MAX_LINKS_PER_USER, normalize_link
 from .serializers import (
@@ -18,7 +19,7 @@ from .serializers import (
     PrivacySettingsSerializer, ProfileLinkSerializer,
     UserSearchSerializer, ZoneUpdateSerializer, serialize_links,
 )
-from .models import ProfileLink, User
+from .models import Device, ProfileLink, User
 
 
 class SafeTokenRefreshSerializer(TokenRefreshSerializer):
@@ -165,6 +166,19 @@ class LogoutView(APIView):
         # Unconditionally, and before the token work: a signed-out device must
         # stop receiving pushes even when the refresh token it sent is already
         # expired or malformed — which is exactly the offline-retry case.
+        #
+        # The device row is emptied rather than deleted, and only this one:
+        # signing out of a phone must not silence the tablet that is still
+        # signed in, and keeping the row means signing back in on this phone
+        # is recognised rather than announced as a new device. A client too old
+        # to send `install_id` falls through to the column below, which is the
+        # only thing it ever registered.
+        install_id = str(request.data.get('install_id') or '').strip()
+        if install_id:
+            Device.objects.filter(
+                user=request.user, install_id=install_id,
+            ).update(push_token='')
+
         # Updated by pk so a stale in-memory user object cannot write it back.
         User.objects.filter(pk=request.user.pk).update(
             push_token=None,
@@ -183,6 +197,72 @@ class LogoutView(APIView):
             return Response({'detail': 'Refresh token required.'}, status=status.HTTP_400_BAD_REQUEST)
         except TokenError:
             return Response({'detail': 'Token is invalid or expired.'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class DeviceRegisterView(APIView):
+    """Announce this installation, and its current push token.
+
+    Called on every launch once signed in, not only on the sign-in itself: the
+    push token is reissued by Expo on its own schedule, and `last_seen` is what
+    makes a device list readable.
+
+    The account's own security notice comes from here (see
+    `notifications.utils.notify_new_device`) — a row appearing for an account
+    that already had devices means this account was just signed in to somewhere
+    new. `get_or_create` is what draws that line: an install that has been seen
+    before updates in place and says nothing, so a token reissue or a relaunch
+    is silent and only a genuinely new device is announced.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        install_id = str(request.data.get('install_id') or '').strip()
+        if not install_id:
+            return Response(
+                {'detail': 'install_id is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # The client generates this and it is never shown to anyone, so the
+        # only thing worth enforcing is that it fits the column.
+        install_id = install_id[:64]
+
+        platform = str(request.data.get('platform') or '').strip().lower()
+        if platform not in Device.Platform.values:
+            platform = Device.Platform.UNKNOWN
+
+        device, created = Device.objects.get_or_create(
+            user=request.user,
+            install_id=install_id,
+            defaults={
+                'push_token': str(request.data.get('push_token') or '')[:200],
+                'name': str(request.data.get('name') or '')[:120],
+                'platform': platform,
+            },
+        )
+
+        if not created:
+            # A name or token that arrives empty is "unchanged", not "cleared":
+            # push permission may simply not have been granted this launch, and
+            # dropping a token we already hold would silence a working device.
+            token = str(request.data.get('push_token') or '')[:200]
+            name = str(request.data.get('name') or '')[:120]
+            if token:
+                device.push_token = token
+            if name:
+                device.name = name
+            if platform != Device.Platform.UNKNOWN:
+                device.platform = platform
+            # `last_seen` is auto_now, so saving at all moves it.
+            device.save(update_fields=['push_token', 'name', 'platform', 'last_seen'])
+
+        if created:
+            notify_new_device(device)
+
+        return Response(
+            {'install_id': device.install_id, 'created': created},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
 
 class PublicProfileView(APIView):

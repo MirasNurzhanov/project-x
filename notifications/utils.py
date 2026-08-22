@@ -4,7 +4,9 @@ from django.utils import timezone
 from datetime import timedelta
 
 from .models import Notification
-from .push import EXPO_PUSH_URL, push_to_user, push_to_users  # noqa: F401
+from .push import (  # noqa: F401
+    EXPO_PUSH_URL, push_to_devices, push_to_user, push_to_users,
+)
 
 NEARBY_COOLDOWN_MINUTES = 60
 
@@ -615,3 +617,47 @@ def notify_swift_repost(swift, sender):
         message=f'@{sender.username} reposted your Swift',
         push_title='🔁 Swift repost',
     )
+
+
+def notify_new_device(device):
+    """This account was just signed in to on a device it had not been seen on.
+
+    Goes to the account's *other* devices and to its alerts feed — never to the
+    one that triggered it. Whoever is holding the new phone already knows they
+    signed in; the whole value of this is reaching the phone in someone else's
+    pocket, so `push_to_devices` is given an explicit list rather than letting
+    `push_to_users` fan out across everything the account owns.
+
+    Sole alert with a null `sender`: it is about the account rather than about
+    something a person did, and there is no profile to open from it.
+
+    Silent when this is the only device, which is the ordinary case — a first
+    sign-in has nobody to warn, and telling someone about their own only phone
+    is noise that teaches them to ignore the one that matters.
+    """
+    from users.models import Device
+
+    others = list(
+        Device.objects.filter(user=device.user).exclude(pk=device.pk)
+    )
+    if not others:
+        return None
+
+    message = f'Your account was signed in to on a new device ({device.label}).'
+    notification = Notification.objects.create(
+        recipient=device.user,
+        sender=None,
+        notification_type=Notification.Type.NEW_DEVICE,
+        message=message,
+    )
+    try:
+        push_to_devices(
+            others,
+            '🔐 New sign-in',
+            message,
+            data={'type': 'new_device', 'device_id': device.pk},
+            category='security',
+        )
+    except Exception as exc:  # noqa: BLE001 — push is never worth a 500
+        print(f'[Push] new-device alert failed: {exc}')
+    return notification
