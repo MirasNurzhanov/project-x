@@ -1,9 +1,10 @@
 from datetime import date
 from django.db.models import Q
+from moderation.drf import ScreenedTextMixin
 from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
 from friends.models import FriendRequest, HiRequest
-from . import visibility, zones
+from . import terms, visibility, zones
 from .models import ProfileLink, User
 from interests.models import Interest
 from interests.serializers import InterestSerializer
@@ -32,13 +33,31 @@ def validate_min_age(dob):
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, validators=[validate_password])
     password2 = serializers.CharField(write_only=True)
+    #: Agreement to the Terms of Use, Community Guidelines and Privacy Policy.
+    #: Required, and required to be *true* — a registration that does not carry
+    #: it is refused rather than created-and-gated, because there is no reason
+    #: to make an account for somebody who has not agreed to the rules it is
+    #: held to. `terms_version` is not accepted from the client: the server
+    #: decides which version was in force, so a client cannot claim agreement
+    #: to a document it invented.
+    accept_terms = serializers.BooleanField(write_only=True)
 
     class Meta:
         model = User
-        fields = ('username', 'email', 'password', 'password2', 'date_of_birth')
+        fields = (
+            'username', 'email', 'password', 'password2', 'date_of_birth',
+            'accept_terms',
+        )
 
     def validate_date_of_birth(self, value):
         return validate_min_age(value)
+
+    def validate_accept_terms(self, value):
+        if not value:
+            raise serializers.ValidationError(
+                'You must agree to the Terms of Use and Community Guidelines.'
+            )
+        return value
 
     def validate(self, attrs):
         if attrs['password'] != attrs['password2']:
@@ -47,7 +66,12 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data.pop('password2')
-        return User.objects.create_user(**validated_data)
+        validated_data.pop('accept_terms')
+        user = User.objects.create_user(**validated_data)
+        # Stamped after creation rather than passed into create_user, so the
+        # version comes from `users.terms` on the server in every path.
+        terms.record_acceptance(user)
+        return user
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
@@ -58,6 +82,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
     # to show the name of the city it already chose.
     zone_region_detail = RegionSummarySerializer(source='zone_region', read_only=True)
     connected_providers = serializers.SerializerMethodField()
+    #: The answer the app's terms gate reads. A *derived* boolean rather than
+    #: the raw columns, so the "is this version still current" rule lives on the
+    #: server and an old build cannot get it wrong by comparing strings itself.
+    needs_terms = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -73,10 +101,20 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'zone_audio', 'zone_audio_url', 'zone_active',
             'zone_type', 'zone_radius', 'zone_region', 'zone_region_detail',
             'push_token', 'connected_providers',
+            'terms_version', 'terms_accepted_at', 'needs_terms',
         )
         # `privacy_mode` is the legacy active/ghost/invisible view of
         # `location_sharing`, kept so app builds predating the split keep working.
-        read_only_fields = ('id', 'email', 'age_tier', 'date_joined', 'privacy_mode')
+        read_only_fields = (
+            'id', 'email', 'age_tier', 'date_joined', 'privacy_mode',
+            # Acceptance is recorded by the server on the paths that actually
+            # showed somebody the document. A PATCH must never be able to claim
+            # it — that would make the gate bypassable from the client.
+            'terms_version', 'terms_accepted_at',
+        )
+
+    def get_needs_terms(self, obj):
+        return not terms.has_accepted(obj)
 
     def get_links(self, obj):
         # Your own profile always shows your own links.
@@ -608,12 +646,20 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class EditProfileSerializer(serializers.ModelSerializer):
+class EditProfileSerializer(ScreenedTextMixin, serializers.ModelSerializer):
     interests = serializers.PrimaryKeyRelatedField(
         queryset=Interest.objects.all(),
         many=True,
         required=False,
     )
+
+    #: A profile is public text and takes the same screening a caption does.
+    #: There is no quarantine state for a profile, so a flagged bio saves
+    #: normally and lands in the queue via the report `validate` files below -
+    #: hiding somebody's account on a maybe would be a heavier answer than the
+    #: signal deserves, and the account itself is still reportable and blockable
+    #: in the meantime.
+    screened_fields = ('bio', 'username', 'profession')
 
     class Meta:
         model = User
@@ -627,6 +673,24 @@ class EditProfileSerializer(serializers.ModelSerializer):
     # registration — otherwise the social buttons are a way around it.
     def validate_date_of_birth(self, value):
         return validate_min_age(value)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        # A flagged bio is saved, but somebody should look at it. Filed against
+        # the account rather than a piece of content because that is what a bio
+        # is - there is no separate row to quarantine.
+        verdict = self.moderation_verdict
+        if verdict.flagged and self.instance is not None:
+            from moderation import services as moderation_services
+            from moderation.models import ContentReport
+
+            moderation_services.file_report(
+                self.instance, ContentReport.Target.USER, self.instance.pk,
+                reason=verdict.reason,
+                note=f'Automated filter on profile text: {", ".join(verdict.matched)}',
+                source=ContentReport.Source.AUTOMATED,
+            )
+        return attrs
 
     def validate_username(self, value):
         # The model's own uniqueness (via ModelSerializer's auto UniqueValidator)

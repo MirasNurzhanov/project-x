@@ -29,6 +29,7 @@ confirm that a Swift exists and has a location worth hiding.
 """
 from django.db.models import Q
 
+from moderation.reasons import HIDDEN_STATES
 from users import visibility
 
 #: Why a reveal was refused. The endpoint answers 404 for every one of these —
@@ -55,7 +56,10 @@ def live_q():
     return (
         Q(deleted_at__isnull=True)
         & Q(status=SwiftVideo.Status.READY)
-        & ~Q(moderation=SwiftVideo.Moderation.REMOVED)
+        # Both hidden states, not only REMOVED. QUARANTINED is content the
+        # filter or a report threshold held back before a human reached it; it
+        # is invisible for the same reason and by the same rule.
+        & ~Q(moderation__in=HIDDEN_STATES)
     )
 
 

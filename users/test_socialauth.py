@@ -16,7 +16,7 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from users import socialauth
+from users import socialauth, terms
 from users.models import SocialAccount, User
 
 GOOGLE_AUD = 'client-web.apps.googleusercontent.com'
@@ -242,12 +242,72 @@ class SocialLoginEndpointTests(SocialAuthTestCase):
         return APIClient().post('/api/users/social/', body, format='json')
 
     def test_returns_tokens_and_flags_a_new_account(self):
-        res = self.post(provider='google', id_token=make_token(email='fresh@example.com'))
+        # `accept_terms` is required to *create* an account - the app puts the
+        # agreement above the Google and Apple buttons, so a first-time sign-in
+        # always carries it. See the refusal test below.
+        res = self.post(
+            provider='google', id_token=make_token(email='fresh@example.com'),
+            accept_terms=True)
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.data['created'])
         self.assertTrue(res.data['needs_date_of_birth'])
+        self.assertFalse(res.data['needs_terms'])
         self.assertTrue(res.data['tokens']['access'])
         self.assertTrue(res.data['tokens']['refresh'])
+
+    def test_a_new_account_without_agreement_is_refused_and_not_created(self):
+        """The account is undone, not gated.
+
+        An existing account signing in without `accept_terms` is let through
+        and answers `needs_terms` - locking those out would break every install
+        that predates the gate. A brand-new one has no such claim: there is no
+        reason to create a row for somebody who has not agreed to the rules it
+        is held to, and leaving one behind would mean a second attempt found an
+        "existing" account and sailed past the check.
+        """
+        res = self.post(
+            provider='google', id_token=make_token(email='norules@example.com'))
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data['code'], 'terms_required')
+        self.assertFalse(User.objects.filter(email='norules@example.com').exists())
+
+    def test_an_existing_account_signs_in_and_is_told_it_owes_an_agreement(self):
+        user = User.objects.create_user(
+            username='legacy', email='legacy@example.com', password='pw-123456',
+            date_of_birth=date(1995, 5, 5))
+        SocialAccount.objects.create(provider='google', subject='sub-1', user=user)
+
+        res = self.post(provider='google', id_token=make_token())
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data['created'])
+        self.assertTrue(res.data['needs_terms'])
+
+    def test_agreement_sent_by_an_existing_account_is_recorded(self):
+        user = User.objects.create_user(
+            username='legacy2', email='legacy2@example.com', password='pw-123456',
+            date_of_birth=date(1995, 5, 5))
+        SocialAccount.objects.create(provider='google', subject='sub-1', user=user)
+
+        res = self.post(provider='google', id_token=make_token(), accept_terms=True)
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data['needs_terms'])
+        user.refresh_from_db()
+        self.assertEqual(user.terms_version, terms.CURRENT_VERSION)
+        self.assertIsNotNone(user.terms_accepted_at)
+
+    def test_a_suspended_account_cannot_sign_in_with_a_provider(self):
+        user = User.objects.create_user(
+            username='banned', email='banned@example.com', password='pw-123456',
+            date_of_birth=date(1995, 5, 5))
+        SocialAccount.objects.create(provider='google', subject='sub-1', user=user)
+        user.suspended_at = timezone.now()
+        user.suspension_reason = 'Hate or harassment'
+        user.save(update_fields=['suspended_at', 'suspension_reason'])
+
+        res = self.post(provider='google', id_token=make_token())
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.data['code'], 'account_suspended')
+        self.assertTrue(res.data['permanent'])
 
     def test_returning_account_with_a_birthday_needs_nothing(self):
         user = User.objects.create_user(

@@ -23,6 +23,9 @@ from decimal import ROUND_HALF_EVEN, Decimal
 from django.db import IntegrityError, transaction
 from django.db.models import Count, F, Q
 from django.utils import timezone
+from moderation import services as moderation_services
+from moderation.models import ContentReport
+from moderation.reasons import VISIBLE_STATES
 from rest_framework import permissions, status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
@@ -330,10 +333,21 @@ class SwiftListCreateView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+        # Blocked captions never reach here - `ScreenedTextMixin` refused
+        # them during `is_valid()`. A flagged one is stored quarantined, which
+        # `swifts.visibility.live_q` keeps out of every feed until a moderator
+        # has looked at it.
+        verdict = serializer.moderation_verdict
         swift = serializer.save(
             author=request.user,
+            moderation=moderation_services.moderation_for(verdict),
             **_position_for(request.user, serializer.validated_data),
         )
+        # No `ContentReport` row for this one, unlike a story or a comment:
+        # Swifts have their own report table and their own admin, and
+        # `SwiftVideoAdmin` already filters on `moderation`. A quarantined
+        # Swift is therefore already in front of a moderator, and inventing a
+        # report with no reporter would put it in a second queue as well.
         return Response(
             SwiftSerializer(swift, context=_verified(request)).data,
             status=status.HTTP_201_CREATED,
@@ -685,6 +699,12 @@ class SwiftCommentsView(APIView):
         qs = (
             SwiftComment.objects.filter(swift=swift, deleted_at__isnull=True)
             .exclude(author_id__in=blocked)
+            # Quarantined and removed comments are out of the thread for
+            # everybody except the person who wrote them, who keeps seeing
+            # their own so the app does not look like it silently dropped it.
+            .filter(
+                Q(moderation__in=VISIBLE_STATES) | Q(author_id=request.user.pk),
+            )
             .select_related('author')
             .order_by('-created_at')
         )
@@ -734,7 +754,22 @@ class SwiftCommentsView(APIView):
             if parent.parent_id is not None:
                 serializer.validated_data['parent'] = parent.parent
 
-        comment = serializer.save(swift=swift, author=request.user)
+        verdict = serializer.moderation_verdict
+        comment = serializer.save(
+            swift=swift, author=request.user,
+            moderation=moderation_services.moderation_for(verdict),
+        )
+        if verdict.flagged:
+            moderation_services.record_automated_flag(
+                comment, ContentReport.Target.COMMENT, verdict, author=request.user,
+            )
+            # A quarantined comment is not in the thread, so it does not move
+            # the counter and it does not wake the creator's phone. Both would
+            # be the app announcing something nobody can see.
+            return Response(
+                SwiftCommentSerializer(comment, context={'request': request}).data,
+                status=status.HTTP_201_CREATED,
+            )
         counters.adjust(swift.pk, 'comment_count', 1)
         notify_swift_comment(swift, request.user, comment.text)
         return Response(

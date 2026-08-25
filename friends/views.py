@@ -5,6 +5,9 @@ from channels.layers import get_channel_layer
 from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from moderation import services as moderation_services
+from moderation.models import ContentReport
+from moderation.reasons import Reason
 from rest_framework import permissions, status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
@@ -271,6 +274,18 @@ class MessagesView(APIView):
         if not content and not image and not image_url:
             return Response({'detail': 'content or image is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        # A direct message has exactly one reader, who already has Block,
+        # Report and Delete - so unlike a story or a club message it is not
+        # quarantined on a flag, and a moderator does not read it unprompted.
+        # What is refused is the block tier: threats and material involving
+        # minors do not become acceptable for being sent privately.
+        verdict = moderation_services.screen(content, raise_on_block=False)
+        if verdict.blocked:
+            return Response(
+                {'detail': verdict.message(), 'code': 'objectionable_content'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         message = Message.objects.create(
             sender=request.user,
             receiver=other,
@@ -396,6 +411,28 @@ class BlockUserView(APIView):
         ).filter(
             Q(sender=request.user, receiver=other) | Q(sender=other, receiver=request.user)
         ).delete()
+
+        # App Review asked that blocking notify us, so a block raises a report.
+        # Two things keep it from drowning the queue:
+        #
+        #   * `source=BLOCK` marks it as the weaker signal it is, so a moderator
+        #     can tell it from somebody who pressed Report and chose a category.
+        #   * `file_report` is idempotent per (reporter, target), so blocking
+        #     and unblocking the same account repeatedly files one row.
+        #
+        # `reason` comes from the client when the block was raised from an
+        # abusive-content context - a Swift's overflow menu, a profile - and
+        # falls back to OTHER for an ordinary "I don't want to see this person"
+        # block from the chat list, which is not an accusation of anything.
+        reason = str(request.data.get('reason') or '').strip()
+        if reason not in Reason.values:
+            reason = Reason.OTHER
+        moderation_services.report_user(
+            request.user, other,
+            reason=reason,
+            note=str(request.data.get('note') or '')[:500],
+            source=ContentReport.Source.BLOCK,
+        )
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 

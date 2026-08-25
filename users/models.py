@@ -448,6 +448,32 @@ class User(AbstractUser):
         max_length=10, choices=MotionClass.choices, default=MotionClass.STATIONARY)
     motion_updated_at = models.DateTimeField(null=True, blank=True)
 
+    # ── The agreement ─────────────────────────────────────────────────────────
+    # Which version of the Terms this account agreed to, and when. Two columns
+    # rather than a boolean because "has agreed" is not a durable fact — the
+    # text changes, and consent to the old text is not consent to the new one.
+    # `users.terms.has_accepted` is the only thing that should read these; it
+    # requires both to be set *and* the version to be current.
+    #
+    # Blank/null is the honest state for every account that predates this, and
+    # it is what puts them in front of the gate on next launch rather than
+    # locking them out — see `TermsAcceptView`.
+    terms_version = models.CharField(max_length=20, blank=True, default='')
+    terms_accepted_at = models.DateTimeField(null=True, blank=True)
+
+    # ── Enforcement ───────────────────────────────────────────────────────────
+    # A moderator's verdict on this account, and the reason a token stops
+    # working. Deliberately not Django's `is_active`: that flag is checked only
+    # at login, so flipping it leaves an already-issued access token working
+    # until it expires. `users.middleware.SuspensionMiddleware` reads these on
+    # every authenticated request instead, which is what makes a suspension
+    # take effect at once.
+    #
+    # Null `suspended_until` on a suspended account means permanent — a ban.
+    suspended_at = models.DateTimeField(null=True, blank=True)
+    suspended_until = models.DateTimeField(null=True, blank=True)
+    suspension_reason = models.CharField(max_length=200, blank=True, default='')
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -480,6 +506,40 @@ class User(AbstractUser):
     @property
     def privacy_mode(self):
         return self.LEGACY_PRIVACY_MODE.get(self.location_sharing, 'active')
+
+    # ── Enforcement ───────────────────────────────────────────────────────────
+    def is_suspended(self, now=None):
+        """Whether a moderator's verdict is currently in force.
+
+        A lapsed suspension answers False without needing anything to sweep the
+        table — the row keeps its history, and the account simply works again
+        the moment `suspended_until` passes. `suspended_until is None` on a
+        suspended account is permanent, which is what a ban is here.
+        """
+        if self.suspended_at is None:
+            return False
+        if self.suspended_until is None:
+            return True
+        from django.utils import timezone
+
+        return (now or timezone.now()) < self.suspended_until
+
+    def suspension_detail(self, now=None):
+        """What to tell a suspended account, or None when it is in good standing.
+
+        The reason is included deliberately. An account told only "suspended"
+        cannot tell a mistake from a verdict, and the appeal address is the
+        thing App Review asks be reachable.
+        """
+        if not self.is_suspended(now):
+            return None
+        return {
+            'detail': 'This account is suspended for breaking the Aura Terms of Use.',
+            'code': 'account_suspended',
+            'reason': self.suspension_reason or 'Violation of the Aura Terms of Use.',
+            'until': self.suspended_until.isoformat() if self.suspended_until else None,
+            'permanent': self.suspended_until is None,
+        }
 
     def __str__(self):
         return self.email

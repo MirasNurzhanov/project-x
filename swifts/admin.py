@@ -12,7 +12,12 @@ class SwiftVideoAdmin(admin.ModelAdmin):
         'id', 'author', 'status', 'visibility', 'moderation',
         'location_shared', 'like_count', 'comment_count', 'view_count', 'created_at',
     )
-    list_filter = ('status', 'visibility', 'moderation', 'location_shared', 'created_at')
+    list_filter = ('moderation', 'status', 'visibility', 'location_shared', 'created_at')
+    # `moderation` leads the filter list because "show me everything waiting on
+    # a decision" is the question this screen is opened to answer. Quarantined
+    # Swifts have no report row - the filter is what surfaces them, so it has
+    # to be the first thing on the page.
+    list_editable = ('moderation',)
     search_fields = ('author__username', 'caption', 'media_id')
     # Coordinates are deliberately absent from `list_display` and
     # `search_fields`: the admin is a legitimate place to see one while
@@ -68,11 +73,104 @@ class SwiftReportAdmin(admin.ModelAdmin):
     first quietly buries its own backlog.
     """
 
-    list_display = ('id', 'swift', 'reporter', 'reason', 'state', 'created_at')
-    list_filter = ('state', 'reason', 'created_at')
+    list_display = (
+        'id', 'swift', 'reporter', 'reason', 'state', 'action_taken', 'created_at',
+    )
+    list_filter = ('state', 'reason', 'action_taken', 'created_at')
     search_fields = ('reporter__username', 'note')
     ordering = ('state', 'created_at')
-    readonly_fields = ('swift', 'reporter', 'reason', 'note', 'created_at')
+    readonly_fields = (
+        'swift', 'reporter', 'reason', 'note', 'created_at',
+        'reviewed_at', 'reviewed_by',
+    )
+    actions = ('action_remove_swift', 'action_restore_swift',
+               'action_suspend_author_7d', 'action_ban_author', 'action_dismiss')
+
+    def _close(self, request, report, state, action):
+        from moderation import services as moderation_services
+
+        moderation_services.resolve_report(
+            report, request.user, state=state, action=action)
+
+    @admin.action(description='Take the Swift down')
+    def action_remove_swift(self, request, queryset):
+        from moderation.models import ModerationAction
+        from moderation.reasons import Action, State
+
+        for report in queryset.select_related('swift'):
+            SwiftVideo.objects.filter(pk=report.swift_id).update(
+                moderation=SwiftVideo.Moderation.REMOVED)
+            ModerationAction.objects.create(
+                kind=ModerationAction.Kind.CONTENT_REMOVED,
+                subject=report.swift.author, moderator=request.user,
+                detail=f'Swift #{report.swift_id} via report #{report.pk}',
+            )
+            self._close(request, report, State.ACTIONED, Action.CONTENT_REMOVED)
+        self.message_user(request, f'Removed {queryset.count()} Swift(s).')
+
+    @admin.action(description='Restore the Swift (report rejected)')
+    def action_restore_swift(self, request, queryset):
+        from moderation.models import ModerationAction
+        from moderation.reasons import Action, State
+
+        for report in queryset.select_related('swift'):
+            SwiftVideo.objects.filter(pk=report.swift_id).update(
+                moderation=SwiftVideo.Moderation.OK)
+            ModerationAction.objects.create(
+                kind=ModerationAction.Kind.CONTENT_RESTORED,
+                subject=report.swift.author, moderator=request.user,
+                detail=f'Swift #{report.swift_id} via report #{report.pk}',
+            )
+            self._close(request, report, State.REVIEWED, Action.CONTENT_RESTORED)
+        self.message_user(request, f'Restored {queryset.count()} Swift(s).')
+
+    def _suspend(self, request, queryset, days, action, kind, verb):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from moderation.models import ModerationAction
+        from moderation.reasons import State
+
+        for report in queryset.select_related('swift__author'):
+            author = report.swift.author
+            author.suspended_at = timezone.now()
+            author.suspended_until = (
+                timezone.now() + timedelta(days=days) if days else None)
+            author.suspension_reason = (
+                f'{report.get_reason_display()} (Swift report #{report.pk})')[:200]
+            author.save(update_fields=[
+                'suspended_at', 'suspended_until', 'suspension_reason'])
+            ModerationAction.objects.create(
+                kind=kind, subject=author, moderator=request.user,
+                detail=f'{verb} via Swift report #{report.pk}',
+            )
+            self._close(request, report, State.ACTIONED, action)
+        self.message_user(request, f'{verb} {queryset.count()} account(s).')
+
+    @admin.action(description='Suspend the author for 7 days')
+    def action_suspend_author_7d(self, request, queryset):
+        from moderation.models import ModerationAction
+        from moderation.reasons import Action
+
+        self._suspend(request, queryset, 7, Action.USER_SUSPENDED,
+                      ModerationAction.Kind.USER_SUSPENDED, 'Suspended')
+
+    @admin.action(description='Ban the author permanently')
+    def action_ban_author(self, request, queryset):
+        from moderation.models import ModerationAction
+        from moderation.reasons import Action
+
+        self._suspend(request, queryset, None, Action.USER_BANNED,
+                      ModerationAction.Kind.USER_BANNED, 'Banned')
+
+    @admin.action(description='Dismiss - nothing wrong here')
+    def action_dismiss(self, request, queryset):
+        from moderation.reasons import Action, State
+
+        for report in queryset:
+            self._close(request, report, State.REVIEWED, Action.NONE)
+        self.message_user(request, f'Dismissed {queryset.count()} report(s).')
 
 
 @admin.register(SwiftTrack)

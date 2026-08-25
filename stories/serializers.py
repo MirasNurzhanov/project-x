@@ -1,4 +1,5 @@
 from django.db.models import Count
+from moderation.drf import ScreenedTextMixin
 from rest_framework import serializers
 from .models import Story, StoryReaction
 from .visibility import is_placed_for
@@ -117,7 +118,7 @@ class SocialStorySerializer(StorySerializer):
         return obj.place_name if is_placed_for(request.user, obj) else ''
 
 
-class StoryCreateSerializer(serializers.ModelSerializer):
+class StoryCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
     """Note what is *not* here: `user`, and the final say over the position.
 
     Latitude and longitude are optional because a locationless story is a
@@ -129,6 +130,10 @@ class StoryCreateSerializer(serializers.ModelSerializer):
     is the commonest story there is. What is *not* optional is having one or
     the other, which `validate` below is what enforces.
     """
+
+    #: The caption, and the place label the author typed alongside it. Both
+    #: are things a person wrote and both are published, so both are screened.
+    screened_fields = ('content', 'place_name')
 
     class Meta:
         model = Story

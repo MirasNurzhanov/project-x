@@ -1,17 +1,20 @@
 from django.db.models import Max, Q
 from django.utils import timezone
 from rest_framework import generics, permissions, status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
-from rest_framework_simplejwt.serializers import TokenRefreshSerializer
-from rest_framework_simplejwt.views import TokenRefreshView
+from rest_framework_simplejwt.serializers import (
+    TokenObtainPairSerializer, TokenRefreshSerializer,
+)
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from friends.models import FriendRequest
+from moderation.views import ReportUserView
 from notifications.utils import notify_new_device
-from . import applemusic, socialauth, visibility
+from . import applemusic, socialauth, terms, visibility
 from .links import LinkError, MAX_LINKS_PER_USER, normalize_link
 from .serializers import (
     RegisterSerializer, UserProfileSerializer, EditProfileSerializer,
@@ -41,6 +44,28 @@ class SafeTokenRefreshSerializer(TokenRefreshSerializer):
 
 class SafeTokenRefreshView(TokenRefreshView):
     serializer_class = SafeTokenRefreshSerializer
+
+
+class SuspensionAwareTokenObtainPairSerializer(TokenObtainPairSerializer):
+    """Password login, refused for a suspended account with the reason attached.
+
+    `users.authentication` would stop them a moment later anyway - every
+    authenticated request re-reads the suspension - but a token that is issued
+    and then rejected on first use looks to the app like a broken session
+    rather than a ban. Saying so at the door is the honest version, and it is
+    the only place the reason and the end date can be shown.
+    """
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        detail = self.user.suspension_detail()
+        if detail is not None:
+            raise PermissionDenied(detail)
+        return data
+
+
+class SuspensionAwareTokenObtainPairView(TokenObtainPairView):
+    serializer_class = SuspensionAwareTokenObtainPairSerializer
 
 
 class RegisterView(generics.CreateAPIView):
@@ -102,6 +127,13 @@ class SocialLoginView(APIView):
         provider = str(request.data.get('provider', '')).lower().strip()
         token = request.data.get('id_token') or request.data.get('identity_token')
         full_name = str(request.data.get('full_name', ''))[:100]
+        # The app puts the agreement in front of the Google and Apple buttons,
+        # not after them, so a first-time sign-in arrives already carrying it.
+        # Absent is not refused here the way it is on `RegisterView`: this same
+        # endpoint is how *existing* accounts sign in, and refusing them would
+        # lock out everyone who predates the gate. They come back with
+        # `needs_terms` instead and meet it on the next screen.
+        accepted = bool(request.data.get('accept_terms'))
 
         try:
             claims = socialauth.verify_identity_token(provider, token)
@@ -110,6 +142,26 @@ class SocialLoginView(APIView):
             return Response(
                 {'detail': str(exc), 'code': exc.code}, status=exc.status
             )
+
+        # A brand-new account that did not carry agreement has no business
+        # existing, so this is the one case that is undone rather than gated.
+        if created and not accepted:
+            user.delete()
+            return Response(
+                {
+                    'detail': 'You must agree to the Terms of Use and '
+                              'Community Guidelines to create an account.',
+                    'code': 'terms_required',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if accepted and not terms.has_accepted(user):
+            terms.record_acceptance(user)
+
+        suspended = user.suspension_detail()
+        if suspended is not None:
+            return Response(suspended, status=status.HTTP_403_FORBIDDEN)
 
         refresh = RefreshToken.for_user(user)
         return Response({
@@ -124,6 +176,8 @@ class SocialLoginView(APIView):
             # first sign-in was interrupted before they answered comes back as
             # an existing account that still owes us the answer.
             'needs_date_of_birth': user.date_of_birth is None,
+            # Same shape, same reason, for the agreement.
+            'needs_terms': not terms.has_accepted(user),
         })
 
 
@@ -665,6 +719,55 @@ class MeView(generics.RetrieveAPIView):
 
     def get_object(self):
         return self.request.user
+
+
+# `POST /api/users/<id>/report/` is the same view `moderation.urls` serves at
+# `/api/moderation/report/user/<id>/`, not a second implementation. It lives at
+# both paths because the app already had the users-prefixed one wired into the
+# profile menu (against nothing - see the audit), and because a report route
+# next to the profile route is where the next person will look for it.
+UserReportView = ReportUserView
+
+
+class TermsView(APIView):
+    """What the sign-up gate renders: the current version, and where to read it.
+
+    Unauthenticated on purpose — the gate is shown *before* anybody has an
+    account, so it cannot be behind one. Serving the URLs from here rather than
+    baking them into the app means a change of hosting is a deploy, not an App
+    Store release.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        return Response(terms.current_terms())
+
+
+class TermsAcceptView(APIView):
+    """Record that the signed-in account agreed to the agreement as it stands.
+
+    This is the path for accounts that already existed when the gate landed,
+    and for anybody meeting a new version of the text. It never accepts a
+    version from the client — `users.terms` decides which document was in force
+    at the moment of the tap, so an old build cannot record agreement to a
+    document nobody was shown.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        if not request.data.get('accept'):
+            return Response(
+                {'detail': 'You must agree to continue.', 'code': 'terms_required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        terms.record_acceptance(request.user)
+        return Response({
+            'terms_version': request.user.terms_version,
+            'terms_accepted_at': request.user.terms_accepted_at.isoformat(),
+            'needs_terms': False,
+        })
 
 
 class DeleteAccountView(APIView):

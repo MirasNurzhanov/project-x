@@ -1,5 +1,7 @@
 from django.conf import settings
 from django.db import models
+
+from moderation.reasons import Moderation
 from django.utils import timezone
 from datetime import timedelta
 
@@ -28,6 +30,12 @@ class Story(models.Model):
     latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     place_name = models.CharField(max_length=200, blank=True)
+    #: Screening state. Written by `moderation.services` - never by a view
+    #: directly - so the rule about what is publishable lives in one place.
+    #: `stories.visibility.readable_q` is what enforces it on read.
+    moderation = models.CharField(
+        max_length=11, choices=Moderation.choices, default=Moderation.OK, db_index=True,
+    )
     expires_at = models.DateTimeField(db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     likes_count = models.IntegerField(default=0)

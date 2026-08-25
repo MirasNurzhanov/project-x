@@ -27,6 +27,12 @@ from django.conf import settings
 from django.core.validators import MaxValueValidator
 from django.db import models
 
+from moderation.reasons import (
+    HIDDEN_STATES,
+    Action as SharedAction,
+    Moderation as SharedModeration,
+)
+
 
 class SwiftVideo(models.Model):
     """One vertical short video."""
@@ -56,15 +62,12 @@ class SwiftVideo(models.Model):
         FRIENDS = 'friends', 'Friends'
         PRIVATE = 'private', 'Only me'
 
-    class Moderation(models.TextChoices):
-        OK = 'ok', 'OK'
-        #: Reported and awaiting review. Still visible — flagging is not a
-        #: verdict, and hiding on report alone hands any user a mute button
-        #: pointed at anyone.
-        FLAGGED = 'flagged', 'Flagged'
-        #: Taken down. Invisible to everyone including the author, and
-        #: indistinguishable from deleted to every reader.
-        REMOVED = 'removed', 'Removed'
+    #: Aliased to the project-wide vocabulary rather than redeclared, so
+    #: `SwiftVideo.Moderation.REMOVED` and `Story.moderation` REMOVED are the
+    #: same string and one admin filter spans both. The values here are the
+    #: ones this column already held; `QUARANTINED` is the addition, and no
+    #: existing row is in it.
+    Moderation = SharedModeration
 
     author = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='swifts',
@@ -204,7 +207,8 @@ class SwiftVideo(models.Model):
         db_index=True,
     )
     moderation = models.CharField(
-        max_length=8, choices=Moderation.choices, default=Moderation.OK, db_index=True,
+        # 11, not 8: `QUARANTINED` is the longest value in the shared vocabulary.
+        max_length=11, choices=Moderation.choices, default=Moderation.OK, db_index=True,
     )
     allow_comments = models.BooleanField(default=True)
     allow_reposts = models.BooleanField(default=True)
@@ -266,7 +270,7 @@ class SwiftVideo(models.Model):
         return (
             self.deleted_at is None
             and self.status == self.Status.READY
-            and self.moderation != self.Moderation.REMOVED
+            and self.moderation not in HIDDEN_STATES
         )
 
     @property
@@ -379,6 +383,13 @@ class SwiftComment(models.Model):
         'self', on_delete=models.CASCADE, null=True, blank=True, related_name='replies',
     )
     text = models.TextField(max_length=500)
+    #: Screening state, same vocabulary as `SwiftVideo.moderation` but drawn
+    #: from `moderation.reasons` so a story, a comment and a Swift all mean the
+    #: same thing by "quarantined". Written only by `moderation.services`.
+    moderation = models.CharField(
+        max_length=11, choices=SharedModeration.choices, default=SharedModeration.OK,
+        db_index=True,
+    )
     #: Soft delete, matching SwiftVideo: a deleted comment with live replies
     #: hanging off it still has to hold their place in the thread.
     deleted_at = models.DateTimeField(null=True, blank=True)
@@ -543,6 +554,18 @@ class SwiftReport(models.Model):
     state = models.CharField(
         max_length=8, choices=State.choices, default=State.OPEN, db_index=True,
     )
+    #: Who closed it, when, and what they did. Same three columns as
+    #: `moderation.ContentReport`, so the unified queue in
+    #: `moderation/admin.py` can show one table for both.
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='swift_reports_reviewed',
+    )
+    action_taken = models.CharField(
+        max_length=17, choices=SharedAction.choices, blank=True, default='',
+    )
+    moderator_note = models.CharField(max_length=500, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

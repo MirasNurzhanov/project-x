@@ -28,6 +28,7 @@ own map are not a publication to anybody else.
 """
 from django.db.models import Q
 
+from moderation.reasons import HIDDEN_STATES
 from users import visibility
 
 
@@ -40,13 +41,31 @@ def can_read(viewer, story):
     caller's to apply — the archive and the reaction endpoint want different
     answers about an expired story.
     """
+    if story.moderation in HIDDEN_STATES and story.user_id != viewer.pk:
+        return False
     return visibility.can_view(viewer, story.user, 'stories')
 
 
 def readable_q(viewer, prefix='user'):
     """The SQL half of `can_read`. `prefix` is the path from the row to the
-    story's author (`'user'`, or `'story__user'` from a bookmark)."""
-    return visibility.visible_field_q(viewer, 'stories', prefix=prefix)
+    story's author (`'user'`, or `'story__user'` from a bookmark).
+
+    The moderation clause is prefix-aware for the same reason the audience one
+    is: read from a bookmark the row is a `SavedStory`, so the column lives at
+    `story__moderation` rather than `moderation`.
+    """
+    owner = 'user_id' if prefix == 'user' else f'{prefix}_id'
+    moderation_field = 'moderation' if prefix == 'user' else (
+        prefix.rsplit('__', 1)[0] + '__moderation'
+    )
+    # Quarantined and removed stories are gone for everybody but their author,
+    # who keeps seeing their own - the same rule comments take, and for the
+    # same reason: content that vanishes without explanation reads as a bug.
+    not_hidden = (
+        ~Q(**{f'{moderation_field}__in': HIDDEN_STATES})
+        | Q(**{owner: viewer.pk})
+    )
+    return visibility.visible_field_q(viewer, 'stories', prefix=prefix) & not_hidden
 
 
 # ─── Placing a story on the map ───────────────────────────────────────────────

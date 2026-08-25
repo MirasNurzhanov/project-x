@@ -17,6 +17,7 @@ cannot be widened by `fields = '__all__'`, and is imported by exactly one view.
 
 `swifts/test_location_privacy.py` asserts this rather than trusting it.
 """
+from moderation.drf import ScreenedTextMixin
 from rest_framework import serializers
 
 from . import visibility as swift_visibility
@@ -180,7 +181,7 @@ class SwiftSerializer(serializers.ModelSerializer):
         return swift_visibility.location_available_for(viewer, obj)
 
 
-class SwiftCreateSerializer(serializers.ModelSerializer):
+class SwiftCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
     """Posting a Swift.
 
     Note what is *not* here: `author`, every counter, `moderation`,
@@ -196,6 +197,11 @@ class SwiftCreateSerializer(serializers.ModelSerializer):
     #: `blank=True` on the model is for the legacy Cloudinary-era rows that
     #: never populate this column at all — a new post always carries the file.
     video = serializers.FileField(required=True)
+
+    #: The two pieces of a Swift a person writes. The video itself is not
+    #: screened by anything here and this module does not pretend otherwise —
+    #: see `SwiftVideo.moderation` and the note in `swifts/media.py`.
+    screened_fields = ('caption', 'place_name')
 
     class Meta:
         model = SwiftVideo
@@ -378,7 +384,9 @@ class SwiftCommentSerializer(serializers.ModelSerializer):
         return counts.get(obj.pk, 0)
 
 
-class SwiftCommentCreateSerializer(serializers.ModelSerializer):
+class SwiftCommentCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
+    screened_fields = ('text',)
+
     class Meta:
         model = SwiftComment
         fields = ['text', 'parent']

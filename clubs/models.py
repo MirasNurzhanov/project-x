@@ -1,4 +1,6 @@
 from django.db import models
+
+from moderation.reasons import Moderation
 from django.conf import settings
 
 
@@ -219,6 +221,12 @@ class ClubMessage(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name='proposal_messages',
+    )
+    #: Screening state. A club is semi-public - anyone who joins reads the
+    #: whole history - so club messages take the same gate story text and
+    #: comments do. Written only by `moderation.services`.
+    moderation = models.CharField(
+        max_length=11, choices=Moderation.choices, default=Moderation.OK, db_index=True,
     )
     created_at = models.DateTimeField(auto_now_add=True)
 

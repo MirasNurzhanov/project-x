@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'stories',
     'swifts',
     'recs',
+    'moderation',
 ]
 
 MIDDLEWARE = [
@@ -243,8 +244,12 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 REST_FRAMEWORK = {
+    # Not simplejwt's own class. This subclass re-reads the suspension columns
+    # on every request, which is what makes a ban take effect at once instead
+    # of whenever the current access token happens to expire. See
+    # users/authentication.py.
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'users.authentication.SuspensionAwareJWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
@@ -297,6 +302,11 @@ REST_FRAMEWORK = {
         # Reporting. Low, because the only reason to report thirty things an
         # hour is to bury somebody under flags.
         'swift_report': config('THROTTLE_SWIFT_REPORT', default='20/hour'),
+        # Every non-Swift report route shares this. Twenty an hour is
+        # twenty an hour however they are spread across content types -
+        # a client that finds the ceiling on one surface should find the
+        # same ceiling on the next.
+        'content_report': config('THROTTLE_CONTENT_REPORT', default='20/hour'),
         # Interaction signals. Far higher than the rest on purpose: this is one
         # batch per browsing burst, and every card a viewer scrolls past
         # produces a row. Throttling it the way posting is throttled would
@@ -385,6 +395,12 @@ STORAGES = {
         'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
     },
 }
+
+# ── Legal ─────────────────────────────────────────────────────────────────────
+# Where the Terms of Use, Community Guidelines and Privacy Policy are published.
+# Served to the app by `GET /api/users/terms/` rather than compiled into it, so
+# moving the documents is a deploy instead of an App Store release.
+LEGAL_BASE_URL = config('LEGAL_BASE_URL', default='https://auraapp.io')
 
 STATIC_URL = "static/"
 

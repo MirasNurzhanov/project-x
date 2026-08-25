@@ -2,8 +2,12 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from datetime import timedelta
 from django.db import transaction
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from moderation import services as moderation_services
+from moderation.models import ContentReport
+from moderation.reasons import VISIBLE_STATES
 from rest_framework import permissions, status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
@@ -552,7 +556,17 @@ class ClubMessageListView(APIView):
         if not club.members.filter(user=request.user).exists():
             return Response({'detail': 'Members only.'}, status=status.HTTP_403_FORBIDDEN)
 
-        qs = ClubMessage.objects.filter(club=club).select_related('sender').order_by('-created_at')
+        # Quarantined and removed messages leave the history for everybody but
+        # the person who wrote them, who keeps seeing their own so the app does
+        # not look like it silently dropped the message.
+        qs = (
+            ClubMessage.objects.filter(club=club)
+            .filter(
+                Q(moderation__in=VISIBLE_STATES) | Q(sender_id=request.user.pk),
+            )
+            .select_related('sender')
+            .order_by('-created_at')
+        )
         before_id = request.query_params.get('before')
         if before_id:
             qs = qs.filter(id__lt=before_id)
@@ -577,6 +591,15 @@ class ClubMessageListView(APIView):
         if message_type not in ClubMessage.MessageType.values:
             message_type = ClubMessage.MessageType.TEXT
 
+        # A club is semi-public - anyone who joins reads the whole history -
+        # so club text takes the same screening story captions and comments do.
+        verdict = moderation_services.screen(content, raise_on_block=False)
+        if verdict.blocked:
+            return Response(
+                {'detail': verdict.message(), 'code': 'objectionable_content'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         message = ClubMessage.objects.create(
             club=club,
             sender=request.user,
@@ -584,7 +607,12 @@ class ClubMessageListView(APIView):
             image=image,
             image_url=image_url,
             message_type=message_type,
+            moderation=moderation_services.moderation_for(verdict),
         )
+        if verdict.flagged:
+            moderation_services.record_automated_flag(
+                message, ContentReport.Target.CLUB_MESSAGE, verdict, author=request.user,
+            )
 
         # The consumer pushes for socket-sent messages; this is the same
         # announcement for the ones that come this way. `notify_club_message`

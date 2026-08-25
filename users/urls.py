@@ -1,22 +1,26 @@
 from django.urls import path
-from rest_framework_simplejwt.views import TokenObtainPairView
 from .views import (
     RegisterView, LogoutView, ProfileView, NotificationSettingsView,
     PrivacySettingsView, PublicProfileView,
     ProfileLinksView, ProfileLinkDetailView, UserSearchView, ZoneView,
     DeleteAccountView, MeView, SocialLoginView, SocialLinkView, SafeTokenRefreshView,
+    TermsView, TermsAcceptView, UserReportView,
+    SuspensionAwareTokenObtainPairView,
     AppleMusicSearchView, AppleMusicStatusView, ZoneAppleMusicView,
     DeviceRegisterView,
 )
 
 urlpatterns = [
     path('register/', RegisterView.as_view(), name='register'),
-    path('login/', TokenObtainPairView.as_view(), name='login'),
+    path('login/', SuspensionAwareTokenObtainPairView.as_view(), name='login'),
     path('social/', SocialLoginView.as_view(), name='social-login'),
     path('social/link/', SocialLinkView.as_view(), name='social-link'),
     path('logout/', LogoutView.as_view(), name='logout'),
     path('token/refresh/', SafeTokenRefreshView.as_view(), name='token_refresh'),
     path('me/', MeView.as_view(), name='me'),
+    # Public: the gate is shown before anybody has an account.
+    path('terms/', TermsView.as_view(), name='terms'),
+    path('terms/accept/', TermsAcceptView.as_view(), name='terms-accept'),
     path('devices/', DeviceRegisterView.as_view(), name='device-register'),
     path('profile/', ProfileView.as_view(), name='profile'),
     path('privacy/', PrivacySettingsView.as_view(), name='privacy'),
@@ -30,6 +34,9 @@ urlpatterns = [
     path('zone/', ZoneView.as_view(), name='zone'),
     path('<int:user_id>/profile/', PublicProfileView.as_view(), name='public-profile'),
     path('profile/<int:user_id>/', PublicProfileView.as_view(), name='public-profile-v2'),
+    # Sits with the other per-user actions for readability; the prefixes
+    # differ, so ordering against the profile routes above does not matter.
+    path('<int:user_id>/report/', UserReportView.as_view(), name='user-report'),
     path('search/', UserSearchView.as_view(), name='user-search'),
     path('delete/', DeleteAccountView.as_view(), name='delete-account'),
 ]

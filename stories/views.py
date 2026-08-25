@@ -4,6 +4,8 @@ from decimal import ROUND_HALF_EVEN, Decimal
 from django.db.models import F, Q, Value
 from django.db.models.functions import Greatest
 from django.utils import timezone
+from moderation import services as moderation_services
+from moderation.models import ContentReport
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -162,7 +164,19 @@ class CreateStoryView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        story = serializer.save(user=user, **_position_for(user, serializer))
+        # Blocked text never reaches here - `ScreenedTextMixin` refused it
+        # during `is_valid()` above. What survives is either clean or flagged,
+        # and a flagged story is stored quarantined rather than published.
+        verdict = serializer.moderation_verdict
+        story = serializer.save(
+            user=user,
+            moderation=moderation_services.moderation_for(verdict),
+            **_position_for(user, serializer),
+        )
+        if verdict.flagged:
+            moderation_services.record_automated_flag(
+                story, ContentReport.Target.STORY, verdict, author=user,
+            )
         return Response(
             StorySerializer(story, context={'request': request}).data,
             status=status.HTTP_201_CREATED,
