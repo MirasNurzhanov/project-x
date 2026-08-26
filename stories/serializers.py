@@ -148,7 +148,14 @@ class StoryCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
         from before the R2 migration carry their picture there - see
         `Story.image_url` - and a client still posting that way is posting a
         picture.
+
+        `super()` first, and it is load-bearing: `ScreenedTextMixin.validate` is
+        where the caption is screened, and an override that does not call up the
+        chain silently turns the content filter off for this serializer. That is
+        exactly what happened when this was written without it, and the only
+        symptom was a test.
         """
+        attrs = super().validate(attrs)
         has_text = bool((attrs.get('content') or '').strip())
         has_image = bool(attrs.get('image') or (attrs.get('image_url') or '').strip())
         if not has_text and not has_image:

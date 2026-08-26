@@ -22,22 +22,31 @@ from django.conf import settings
 #: Bump when the substance of the agreement changes. ISO date of publication.
 CURRENT_VERSION = '2026-08-25'
 
-#: Where the documents live. Overridable per-deployment so a staging site can
-#: point at its own copies without editing code.
-_DEFAULT_BASE = 'https://auraapp.io'
+#: Where the documents live. This backend serves them itself at /legal/ - see
+#: moderation/legal_views.py for why - so the default is its own origin, and
+#: `LEGAL_BASE_URL` is what a marketing domain would later change.
+_DEFAULT_BASE = 'https://project-x-production-3261.up.railway.app'
 
 
 def _base():
-    return getattr(settings, 'LEGAL_BASE_URL', _DEFAULT_BASE).rstrip('/')
+    return (getattr(settings, 'LEGAL_BASE_URL', '') or _DEFAULT_BASE).rstrip('/')
 
 
 def document_urls():
-    """The three documents the sign-up gate links, in the order it shows them."""
+    """The three documents the sign-up gate links, in the order it shows them.
+
+    `privacy_url` is separately overridable because the privacy policy is the
+    one document that may already be published elsewhere - it is the URL App
+    Store Connect holds, and moving it would break that listing. The other two
+    are new and have no such history.
+    """
     base = _base()
     return {
-        'terms_url': f'{base}/terms',
-        'guidelines_url': f'{base}/guidelines',
-        'privacy_url': f'{base}/policy',
+        'terms_url': f'{base}/legal/terms/',
+        'guidelines_url': f'{base}/legal/guidelines/',
+        'privacy_url': (
+            getattr(settings, 'LEGAL_PRIVACY_URL', '') or f'{base}/legal/privacy/'
+        ),
     }
 
 

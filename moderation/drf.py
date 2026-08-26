@@ -14,9 +14,35 @@ much easier thing to catch in review than an absent method.
     story = serializer.save(moderation=services.moderation_for(verdict))
 """
 from rest_framework import serializers
+from rest_framework.exceptions import APIException
 
 from . import services
 from .text import Verdict
+
+
+class ObjectionableContent(APIException):
+    """400, with a body a client can actually branch on.
+
+    Deliberately **not** `serializers.ValidationError`. DRF funnels any
+    ValidationError raised inside `validate()` through `as_serializer_error`,
+    which forces every value into a list - so `{'code': 'objectionable_content'}`
+    ships as `{'code': ['objectionable_content']}` and the app has to know to
+    index it. A plain `APIException` skips that machinery and the dict arrives
+    the shape it was written in.
+
+    The message is deliberately vague about *which* rule fired. A precise error
+    is a free oracle for tuning around the filter, and somebody posting this
+    material does not need help finding the wording that gets through.
+    """
+
+    status_code = 400
+    default_code = 'objectionable_content'
+
+    def __init__(self, verdict):
+        super().__init__({
+            'detail': verdict.message(),
+            'code': 'objectionable_content',
+        })
 
 
 class ScreenedTextMixin:
@@ -43,14 +69,6 @@ class ScreenedTextMixin:
         values = [attrs.get(name) for name in self.screened_fields]
         verdict = services.screen(*values, raise_on_block=False)
         if verdict.blocked:
-            raise serializers.ValidationError(
-                {
-                    'detail': verdict.message(),
-                    # Stable, machine-readable, and the thing the app switches
-                    # on to show its own copy rather than echoing ours.
-                    'code': 'objectionable_content',
-                },
-                code='objectionable_content',
-            )
+            raise ObjectionableContent(verdict)
         self.moderation_verdict = verdict
         return attrs

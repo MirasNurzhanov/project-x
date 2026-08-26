@@ -12,11 +12,11 @@ assertion three files away:
 """
 from datetime import date, timedelta
 
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from friends.models import BlockedUser, FriendRequest, Message
+from friends.models import BlockedUser, FriendRequest, HiRequest, Message
 from stories.models import Story
 from swifts.models import SwiftComment, SwiftVideo
 from users import terms
@@ -168,9 +168,11 @@ class FilterIntegrationTests(TestCase):
 
     def test_a_blocked_direct_message_is_refused(self):
         other = accepted(make_user('other'))
-        FriendRequest.objects.create(
+        # A *Hi*, not a friendship: `friends.views._are_connected` is what gates
+        # messaging and it reads HiRequest.
+        HiRequest.objects.create(
             sender=self.author, receiver=other,
-            status=FriendRequest.Status.ACCEPTED)
+            status=HiRequest.Status.ACCEPTED)
         res = self.client.post(
             f'/api/friends/messages/{other.pk}/',
             {'content': 'i will kill you'}, format='json')
@@ -292,9 +294,9 @@ class ReportEndpointTests(TestCase):
         self.assertEqual(res.status_code, 404)
 
     def test_only_the_recipient_may_report_a_direct_message(self):
-        FriendRequest.objects.create(
+        HiRequest.objects.create(
             sender=self.reporter, receiver=self.subject,
-            status=FriendRequest.Status.ACCEPTED)
+            status=HiRequest.Status.ACCEPTED)
         mine = Message.objects.create(
             sender=self.reporter, receiver=self.subject, content='mine')
         theirs = Message.objects.create(
@@ -661,3 +663,69 @@ class CommentModerationTests(TestCase):
             {'reason': 'hate'}, format='json')
         self.assertEqual(res.status_code, 202)
         self.assertEqual(ContentReport.objects.get().target_user, self.author)
+
+# ─── The socket, which is the path messages actually take ─────────────────────
+class WebSocketFilterTests(TransactionTestCase):
+    """Screening on the WebSocket consumers, not only the REST views.
+
+    `TransactionTestCase`, not `TestCase`: the consumers reach the database
+    through `database_sync_to_async`, which runs on a worker thread, and
+    `TestCase` holds the whole test inside one atomic block on a connection
+    that thread cannot share. On SQLite that surfaces as
+    "database table is locked" rather than anything about threads.
+
+    This is the test that would have caught the hole. The app sends chat over a
+    socket and falls back to HTTP only when it is not connected, so a filter
+    wired into the REST view alone would have screened almost nothing while
+    looking, from the outside, entirely present.
+
+    Driven through `ChannelsLiveServerTestCase`-free plumbing: the consumers'
+    `receive` is an ordinary coroutine, so it is exercised directly rather than
+    over a real socket. What is being asserted is that the screening step is on
+    the path at all.
+    """
+
+    def setUp(self):
+        self.sender = accepted(make_user('wssender'))
+        self.receiver = accepted(make_user('wsreceiver'))
+        HiRequest.objects.create(
+            sender=self.sender, receiver=self.receiver,
+            status=HiRequest.Status.ACCEPTED)
+
+    def _dm_consumer(self):
+        from friends.consumers import ChatConsumer
+
+        consumer = ChatConsumer()
+        consumer.user = self.sender
+        consumer.other = self.receiver
+        consumer.room_group = 'test'
+        consumer.scope = {'user': self.sender}
+        return consumer
+
+    def test_a_blocked_direct_message_never_becomes_a_row(self):
+        import asyncio
+        import json
+        from unittest.mock import AsyncMock, patch
+
+        consumer = self._dm_consumer()
+        with patch.object(consumer, 'send', new=AsyncMock()) as send:
+            asyncio.run(consumer.receive(json.dumps({'content': 'i will kill you'})))
+
+        self.assertFalse(Message.objects.exists())
+        # And the sender is told why, rather than watching a bubble hang.
+        payload = json.loads(send.await_args[0][0])
+        self.assertEqual(payload['type'], 'error')
+        self.assertIn('Community Guidelines', payload['detail'])
+
+    def test_an_ordinary_direct_message_still_goes_through(self):
+        import asyncio
+        import json
+        from unittest.mock import AsyncMock, patch
+
+        consumer = self._dm_consumer()
+        with patch.object(consumer, 'send', new=AsyncMock()),                 patch.object(type(consumer), 'channel_layer', create=True) as layer:
+            layer.group_send = AsyncMock()
+            asyncio.run(consumer.receive(json.dumps({'content': 'coffee at 3?'})))
+
+        self.assertEqual(Message.objects.count(), 1)
+        self.assertEqual(Message.objects.get().content, 'coffee at 3?')

@@ -1,0 +1,128 @@
+{% extends "legal/base.html" %}
+{% block title %}Aura — Community Guidelines{% endblock %}
+{% block heading %}Community Guidelines{% endblock %}
+{% block content %}
+
+<p>
+  Aura puts you in touch with people who are physically near you. That makes it
+  more useful than an app where everyone is a continent away, and it makes the
+  rules matter more. These Guidelines are part of the
+  <a href="{% url 'legal-terms' %}">Terms of Use</a>.
+</p>
+
+<div class="callout">
+  <h3>Zero tolerance</h3>
+  <p>
+    <strong>Objectionable content and abusive users are not tolerated on
+    Aura.</strong> We remove content that breaks these Guidelines and we suspend
+    or ban the accounts behind it. Serious violations are permanent on the first
+    offence.
+  </p>
+</div>
+
+<h2>Not allowed, ever</h2>
+
+<h3>Sexual content involving minors</h3>
+<p>
+  Any sexual content involving a person under 18, in any form, real or drawn.
+  Any attempt to contact a minor for a sexual purpose. This results in immediate
+  permanent removal and is reported to the relevant authorities. There is no
+  appeal.
+</p>
+
+<h3>Harassment, threats and stalking</h3>
+<p>
+  Targeting a person with abuse, threatening violence, repeatedly contacting
+  somebody who has asked you to stop, or using Aura's proximity features to
+  follow, watch or turn up on somebody.
+</p>
+
+<h3>Hate speech</h3>
+<p>
+  Attacking or dehumanising people for their race, ethnicity, national origin,
+  religion, caste, sexual orientation, sex, gender identity, disability or
+  serious illness. This includes slurs, and includes "jokes".
+</p>
+
+<h3>Sexual content and nudity</h3>
+<p>
+  Aura is not a place for pornography or sexual solicitation. Do not post
+  explicit imagery, and do not solicit sex, whether or not money is involved.
+</p>
+
+<h3>Violence and graphic content</h3>
+<p>
+  Content glorifying violence, gore posted for shock, or anything that promotes
+  a violent act.
+</p>
+
+<h3>Self-harm and suicide</h3>
+<p>
+  Do not encourage self-harm, and do not tell anybody to hurt themselves. If you
+  are struggling, please contact a local crisis line — and if somebody on Aura is
+  in danger, report it and contact emergency services.
+</p>
+
+<h3>Impersonation and deception</h3>
+<p>
+  Pretending to be another person or an organisation, or using someone else's
+  photographs as your own.
+</p>
+
+<h3>Spam, scams and money</h3>
+<p>
+  Bulk or repetitive posting, advertising, phishing, crypto schemes, and any
+  request for money, gift cards or account credentials. Nobody you meet on Aura
+  has a legitimate reason to ask you for money.
+</p>
+
+<h3>Other people's private information</h3>
+<p>
+  Do not publish anybody's home address, phone number, workplace, or anything
+  else that would let a stranger find them offline.
+</p>
+
+<h2>How this is enforced</h2>
+<ul>
+  <li>
+    <strong>Automated screening.</strong> Text posted to Aura is screened before
+    it is published. Content in the categories above is refused outright;
+    borderline content is held back and shown to a moderator before anybody else
+    sees it.
+  </li>
+  <li>
+    <strong>Reports.</strong> Every Swift, story, comment, message and profile
+    carries a report control. Reports are reviewed by a person, normally within
+    24 hours. Content reported independently by several people is hidden while
+    it waits.
+  </li>
+  <li>
+    <strong>Blocking.</strong> You can block any account from its profile or from
+    a chat. Blocking is immediate and mutual: they disappear from your feed, your
+    map, your search results and your messages, and you disappear from theirs.
+  </li>
+  <li>
+    <strong>Consequences.</strong> Content is removed. Accounts are suspended,
+    and banned permanently for serious or repeated violations. We keep a record
+    of every moderation decision and who made it.
+  </li>
+</ul>
+
+<h2>Meeting people safely</h2>
+<ul>
+  <li>Meet in a public, populated place the first time, in daylight.</li>
+  <li>Tell a friend where you are going, who you are meeting and when you expect to be back.</li>
+  <li>Arrange your own transport, so leaving is entirely your decision.</li>
+  <li>Keep your home street, school, workplace and daily routine out of your profile.</li>
+  <li>Trust your instincts. If something feels wrong, leave. You owe a stranger no explanation.</li>
+  <li>If you are in immediate danger, contact emergency services first. Reporting to us can wait.</li>
+</ul>
+
+<h2>Reporting to us</h2>
+<p>
+  Use the report control in the app — it reaches the moderation queue directly
+  and carries the context we need. For anything that does not fit, or to appeal a
+  decision, write to <a href="mailto:{{ contact_email }}">{{ contact_email }}</a>.
+</p>
+
+{% endblock %}

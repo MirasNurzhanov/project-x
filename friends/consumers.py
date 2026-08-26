@@ -76,6 +76,18 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.close(code=4003)
             return
 
+        # The socket is the path the app actually sends on — the REST endpoint
+        # is a fallback and the route photos take. Screening only the REST view
+        # would therefore have filtered almost nothing, which is the shape of
+        # hole that makes a content filter decorative. Same tier as the REST
+        # path: a direct message is refused for the block categories and is
+        # never quarantined, because it has exactly one reader who already has
+        # Block, Report and Delete.
+        verdict = await self._screen(content)
+        if verdict.blocked:
+            await self._send_error(verdict.message())
+            return
+
         message = await self._save_message(content)
         await self.channel_layer.group_send(
             self.room_group,
@@ -122,6 +134,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         ).filter(
             Q(sender=user_a, receiver=user_b) | Q(sender=user_b, receiver=user_a)
         ).exists()
+
+    @database_sync_to_async
+    def _screen(self, content):
+        from moderation import services as moderation_services
+
+        return moderation_services.screen(content, raise_on_block=False)
 
     @database_sync_to_async
     def _save_message(self, content):

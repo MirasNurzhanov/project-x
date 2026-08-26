@@ -1,7 +1,7 @@
 from django.db.models import Max, Q
 from django.utils import timezone
 from rest_framework import generics, permissions, status
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -46,6 +46,22 @@ class SafeTokenRefreshView(TokenRefreshView):
     serializer_class = SafeTokenRefreshSerializer
 
 
+class _SuspendedAccount(Exception):
+    """Carries the suspension detail from the serializer up to the view.
+
+    A plain exception rather than DRF's `PermissionDenied`, and that is the
+    whole reason it exists: DRF coerces every value in an error payload to
+    `ErrorDetail`, which is a `str` subclass. Raising `PermissionDenied(detail)`
+    therefore ships `"permanent": "False"` — a string a client reads as truthy,
+    which would tell somebody a seven-day suspension was permanent. The view
+    catches this and renders the dict itself, with its booleans intact.
+    """
+
+    def __init__(self, detail):
+        super().__init__(detail.get('detail', 'Account suspended.'))
+        self.detail = detail
+
+
 class SuspensionAwareTokenObtainPairSerializer(TokenObtainPairSerializer):
     """Password login, refused for a suspended account with the reason attached.
 
@@ -60,12 +76,18 @@ class SuspensionAwareTokenObtainPairSerializer(TokenObtainPairSerializer):
         data = super().validate(attrs)
         detail = self.user.suspension_detail()
         if detail is not None:
-            raise PermissionDenied(detail)
+            raise _SuspendedAccount(detail)
         return data
 
 
 class SuspensionAwareTokenObtainPairView(TokenObtainPairView):
     serializer_class = SuspensionAwareTokenObtainPairSerializer
+
+    def post(self, request, *args, **kwargs):
+        try:
+            return super().post(request, *args, **kwargs)
+        except _SuspendedAccount as exc:
+            return Response(exc.detail, status=status.HTTP_403_FORBIDDEN)
 
 
 class RegisterView(generics.CreateAPIView):

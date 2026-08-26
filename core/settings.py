@@ -397,10 +397,26 @@ STORAGES = {
 }
 
 # ── Legal ─────────────────────────────────────────────────────────────────────
-# Where the Terms of Use, Community Guidelines and Privacy Policy are published.
-# Served to the app by `GET /api/users/terms/` rather than compiled into it, so
-# moving the documents is a deploy instead of an App Store release.
-LEGAL_BASE_URL = config('LEGAL_BASE_URL', default='https://auraapp.io')
+# Where the Terms of Use, Community Guidelines and Privacy pages live.
+#
+# This backend serves them itself, at /legal/ (see moderation/legal_views.py),
+# because Aura has no marketing domain and a legal document behind a URL that
+# does not resolve is the same as not having one. The default is therefore this
+# service's own public origin.
+#
+# Set LEGAL_BASE_URL if a domain is put in front of the API, and set
+# LEGAL_PRIVACY_URL on its own if the privacy policy is published somewhere else
+# — the app reads whatever `GET /api/users/terms/` hands it, so either is a
+# deploy rather than an App Store release.
+LEGAL_BASE_URL = config(
+    'LEGAL_BASE_URL', default='https://project-x-production-3261.up.railway.app')
+LEGAL_PRIVACY_URL = config('LEGAL_PRIVACY_URL', default='')
+
+#: Published contact address for safety reports and appeals. App Review asks
+#: that this be reachable; it is printed on every legal page and linked from
+#: Settings.
+SAFETY_CONTACT_EMAIL = config(
+    'SAFETY_CONTACT_EMAIL', default='nurdauletaskar551@gmail.com')
 
 STATIC_URL = "static/"
 

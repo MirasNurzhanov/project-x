@@ -36,7 +36,7 @@ urlpatterns = [
     path('profile/<int:user_id>/', PublicProfileView.as_view(), name='public-profile-v2'),
     # Sits with the other per-user actions for readability; the prefixes
     # differ, so ordering against the profile routes above does not matter.
-    path('<int:user_id>/report/', UserReportView.as_view(), name='user-report'),
+    path('<int:pk>/report/', UserReportView.as_view(), name='user-report'),
     path('search/', UserSearchView.as_view(), name='user-search'),
     path('delete/', DeleteAccountView.as_view(), name='delete-account'),
 ]

@@ -1,0 +1,142 @@
+{% extends "legal/base.html" %}
+{% block title %}Aura — Privacy &amp; Safety{% endblock %}
+{% block heading %}Privacy &amp; Safety{% endblock %}
+{% block content %}
+
+{% comment %}
+Kept deliberately consistent with the longer policy in the web app
+(websitefront/.../PolicyPage.jsx), which remains the fuller document. Where the
+two describe the same thing they must say the same thing - two policies that
+disagree is worse than one that is short. If a marketing domain is configured
+later, set `LEGAL_PRIVACY_URL` to point this link at that copy instead and
+delete this file rather than letting both drift.
+{% endcomment %}
+
+<p>
+  This describes what Aura collects, why, and what control you have. It is a
+  companion to the <a href="{% url 'legal-terms' %}">Terms of Use</a> and the
+  <a href="{% url 'legal-guidelines' %}">Community Guidelines</a>.
+</p>
+
+<h2>What Aura collects</h2>
+<ul>
+  <li><strong>Account</strong> — username, email address, date of birth, and anything you choose to put on your profile.</li>
+  <li><strong>Location</strong> — latitude and longitude reported by your device, only while you have chosen to share it.</li>
+  <li><strong>Content</strong> — Swifts, stories, comments, messages, and the images you attach to them.</li>
+  <li><strong>Social graph</strong> — your friends, connections, and your block list.</li>
+  <li><strong>Safety</strong> — reports you file, reports filed about you, blocks, and moderation decisions.</li>
+  <li><strong>Technical</strong> — device type, app version, server logs and IP address.</li>
+</ul>
+
+<h2>Location, in detail</h2>
+<p>
+  This is the part worth reading twice.
+</p>
+<ul>
+  <li>
+    Every account starts <strong>Paused</strong>. While Paused, your position is
+    used only to answer your own searches — it is never stored on our servers and
+    never shown to anybody.
+  </li>
+  <li>
+    You appear on other people's maps only after you choose <strong>Live</strong>
+    or <strong>Approximate</strong> yourself, on a screen explaining what that
+    means. Granting the operating system's location permission does not do this.
+  </li>
+  <li>
+    <strong>Approximate</strong> rounds your position to a grid roughly 500m
+    across <em>before</em> it is stored, so a precise position never reaches our
+    database at all.
+  </li>
+  <li>
+    Sharing ends when you choose Paused or close the app. It does not persist
+    across launches: you choose again each time.
+  </li>
+  <li>
+    If you allow background location, Aura keeps your position current while the
+    app is closed <em>only while you are sharing</em>. Choosing Paused stops it
+    immediately, and this permission is optional — everything works while the app
+    is open without it.
+  </li>
+  <li>
+    People you have blocked never see you, in any mode.
+  </li>
+</ul>
+
+<h2>Who receives your data</h2>
+<p>
+  Other Aura users see what you chose to show them, at the audience you chose.
+  Beyond that: our hosting and storage providers, and law enforcement where we
+  are legally required or where there is a credible threat to somebody's safety.
+  We do not sell your data and we do not read your private messages except when
+  responding to a specific abuse report or a valid legal obligation.
+</p>
+
+<h2>Retention and deletion</h2>
+<p>
+  Deleting your account from Settings removes your profile, content and stored
+  position. Where an account has been reported, blocked or removed for abuse we
+  may keep the safety record — the report, the content it concerned, and the
+  decision — because deleting it would erase the evidence that a decision was
+  correct.
+</p>
+
+<h2>Your controls</h2>
+<ul>
+  <li>Location sharing: Live, Approximate or Paused, changeable at any moment.</li>
+  <li>Per-field visibility for interests, stories, stats, connections, links and presence.</li>
+  <li>A private account, so only approved people see anything beyond your name and picture.</li>
+  <li>Discoverability switches for search by username and by interest.</li>
+  <li>Block any account. Blocking is immediate and mutual.</li>
+  <li>Report any content or account. Reports are reviewed by a person.</li>
+  <li>Delete your account outright.</li>
+</ul>
+
+<h2>Children</h2>
+<p>
+  Aura is not for anybody under 13, and we do not knowingly collect data from
+  them. If you believe a child is using Aura, write to
+  <a href="mailto:{{ contact_email }}">{{ contact_email }}</a> with the username;
+  we will verify, delete the account and erase its data.
+</p>
+
+<h2>Staying safe</h2>
+<h3>Before you meet anyone</h3>
+<ul>
+  <li>Meet in a public, populated place the first time — somewhere with staff and other people around, in daylight.</li>
+  <li>Tell a friend where you are going, who you are meeting, and when you expect to be back.</li>
+  <li>Arrange your own transport there and back, so leaving is always entirely your decision.</li>
+  <li>Chat inside the app first. There is no rush to move to another platform or to hand over your phone number, address or workplace.</li>
+  <li>Trust your instincts. If something feels wrong, leave. You owe a stranger no explanation.</li>
+</ul>
+
+<h3>Protecting yourself in the app</h3>
+<ul>
+  <li>Keep identifying details out of your bio — your home street, your school or workplace, your daily routine, or a photo that shows your front door.</li>
+  <li>Use Paused when you are somewhere you would rather not be locatable, such as at home or at work.</li>
+  <li>Remember that anything you send in a chat can be screenshotted by the person receiving it.</li>
+  <li>Never send money, gift cards or account credentials to someone you met on Aura. Requests for those are the clearest sign of a scam.</li>
+</ul>
+
+<h3>If someone makes you uncomfortable</h3>
+<ul>
+  <li><strong>Block them.</strong> It takes effect immediately and stops them seeing you or contacting you anywhere in Aura.</li>
+  <li><strong>Report them</strong> from their profile or from the content itself. Reports are reviewed by a person.</li>
+  <li>Preserve the evidence before deleting a conversation — deleting it removes your copy too.</li>
+  <li>Contact your local emergency services if you are in immediate danger. Do that first; reporting to us can wait.</li>
+</ul>
+
+<h2>Changes</h2>
+<p>
+  Aura is actively developed, so this will change as the app does. When the
+  substance changes we publish a new version and ask you to agree to it in the
+  app.
+</p>
+
+<h2>Contact</h2>
+<p>
+  <a href="mailto:{{ contact_email }}">{{ contact_email }}</a> — access requests,
+  deletion requests, safety reports and appeals.
+</p>
+
+{% endblock %}

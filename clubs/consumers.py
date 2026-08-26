@@ -48,7 +48,21 @@ class ClubChatConsumer(AsyncWebsocketConsumer):
             await self.close(code=4003)
             return
 
-        message = await self._save_message(content, message_type)
+        # See the note in friends/consumers: the socket is the real send path,
+        # so screening the REST view alone would filter almost nothing. A club
+        # is semi-public, so unlike a DM its flagged messages are quarantined
+        # rather than delivered — `_save_message` stores the verdict.
+        verdict = await self._screen(content)
+        if verdict.blocked:
+            await self._send_error(verdict.message())
+            return
+
+        message = await self._save_message(content, message_type, verdict)
+        if verdict.flagged:
+            # Stored, invisible to the club, and in the moderation queue. It is
+            # deliberately not broadcast: putting it on everyone's screen and
+            # then hiding it on the next fetch would be worse than either.
+            return
         message_data = await self._serialize_message(message.pk)
         await self.channel_layer.group_send(
             self.room_group,
@@ -83,15 +97,36 @@ class ClubChatConsumer(AsyncWebsocketConsumer):
         return ClubMember.objects.filter(club_id=club_id, user=user).exists()
 
     @database_sync_to_async
-    def _save_message(self, content, message_type):
+    def _screen(self, content):
+        from moderation import services as moderation_services
+
+        return moderation_services.screen(content, raise_on_block=False)
+
+    @database_sync_to_async
+    def _save_message(self, content, message_type, verdict=None):
+        from moderation import services as moderation_services
+        from moderation.models import ContentReport
         from notifications.utils import notify_club_message
         from .models import ClubMessage
+
+        moderation = (
+            moderation_services.moderation_for(verdict)
+            if verdict is not None
+            else ClubMessage._meta.get_field('moderation').default
+        )
         message = ClubMessage.objects.create(
             club_id=self.club_id,
             sender=self.user,
             content=content,
             message_type=message_type,
+            moderation=moderation,
         )
+        if verdict is not None and verdict.flagged:
+            moderation_services.record_automated_flag(
+                message, ContentReport.Target.CLUB_MESSAGE, verdict, author=self.user,
+            )
+            # No push for a message nobody in the club can see.
+            return message
         # Same reason as the DM socket: this is the path the app sends on, so
         # without this a club could hold an entire conversation that no member
         # with the app closed ever heard about. `notify_club_message` owns the

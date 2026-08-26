@@ -32,7 +32,19 @@ class SuspensionAwareJWTAuthentication(JWTAuthentication):
         user = super().get_user(validated_token)
         detail = user.suspension_detail()
         if detail is not None:
-            # `AuthenticationFailed` takes the whole dict, so the reason and the
-            # end date reach the client instead of a bare "not authenticated".
-            raise AuthenticationFailed(detail, code=detail['code'])
+            # Strings only. DRF coerces every value in an exception payload to
+            # `ErrorDetail`, which is a `str` subclass — so a boolean sent
+            # through here arrives as `"False"`, which a client reads as true.
+            # The login path avoids that by rendering its own Response (see
+            # `users.views._SuspendedAccount`); an authentication class has no
+            # such opportunity, so it simply does not send booleans.
+            raise AuthenticationFailed(
+                {
+                    'detail': detail['detail'],
+                    'code': detail['code'],
+                    'reason': detail['reason'],
+                    'until': detail['until'] or '',
+                },
+                code=detail['code'],
+            )
         return user
