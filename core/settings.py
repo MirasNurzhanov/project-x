@@ -412,6 +412,26 @@ LEGAL_BASE_URL = config(
     'LEGAL_BASE_URL', default='https://project-x-production-3261.up.railway.app')
 LEGAL_PRIVACY_URL = config('LEGAL_PRIVACY_URL', default='')
 
+# ── Terms enforcement window ──────────────────────────────────────────────────
+# The login gate (users.views.SuspensionAwareTokenObtainPairSerializer) refuses
+# to issue tokens to an account that has not agreed to the current Terms. That
+# rule cannot be applied to a build that has never heard of it, and the backend
+# has to be live *during* App Review — so it is scoped by client build.
+#
+#   TERMS_ENFORCEMENT_MIN_BUILD    the first build that gets enforced. Build 32
+#                                  is the one that ships the agreement on its
+#                                  sign-in screen.
+#   TERMS_ENFORCEMENT_ALLOW_LEGACY the compatibility window. True lets clients
+#                                  that send no `X-Aura-Build` header through,
+#                                  which is build 31 and older.
+#
+# **Set ALLOW_LEGACY to False once build 31 is off the store.** Until then there
+# is an unenforced path, and it stays open only because closing it early would
+# lock out every user who has not updated. See `users.terms.terms_enforced_for`.
+TERMS_ENFORCEMENT_MIN_BUILD = config('TERMS_ENFORCEMENT_MIN_BUILD', default=32, cast=int)
+TERMS_ENFORCEMENT_ALLOW_LEGACY = config(
+    'TERMS_ENFORCEMENT_ALLOW_LEGACY', default=True, cast=bool)
+
 #: Published contact address for safety reports and appeals. App Review asks
 #: that this be reachable; it is printed on every legal page and linked from
 #: Settings.

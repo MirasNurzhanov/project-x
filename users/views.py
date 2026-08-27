@@ -62,22 +62,87 @@ class _SuspendedAccount(Exception):
         self.detail = detail
 
 
-class SuspensionAwareTokenObtainPairSerializer(TokenObtainPairSerializer):
-    """Password login, refused for a suspended account with the reason attached.
+class _TermsRequired(Exception):
+    """The account has not agreed to the Terms as they currently stand.
 
-    `users.authentication` would stop them a moment later anyway - every
-    authenticated request re-reads the suspension - but a token that is issued
-    and then rejected on first use looks to the app like a broken session
-    rather than a ban. Saying so at the door is the honest version, and it is
-    the only place the reason and the end date can be shown.
+    Carried up to the view for the same reason `_SuspendedAccount` is: the
+    body has to reach the client with a machine-readable `code` and without
+    DRF coercing its values into `ErrorDetail` strings.
     """
 
-    def validate(self, attrs):
-        data = super().validate(attrs)
-        detail = self.user.suspension_detail()
+    def __init__(self, version):
+        super().__init__('Agreement to the Terms of Use is required.')
+        self.detail = {
+            'detail': (
+                'Please read and agree to the Aura Terms of Use and Community '
+                'Guidelines to continue.'
+            ),
+            'code': 'terms_required',
+            'terms_version': version,
+        }
+
+
+class SuspensionAwareTokenObtainPairSerializer(TokenObtainPairSerializer):
+    """Password login, gated on the agreement and on the account's standing.
+
+    Both checks live in `get_token` rather than in `validate`, and the
+    placement is the point. simplejwt's `validate` authenticates and *then*
+    calls `self.get_token(self.user)` to mint the pair - so a check in
+    `validate` would run after a refresh token had already been created,
+    leaving an `OutstandingToken` row for a token nobody was ever handed.
+    Overriding `get_token` puts both gates in front of the mint: when either
+    fails, no token object is constructed at all.
+
+    (`get_token` is a classmethod on the base and an instance method here.
+    That is deliberate and it works - simplejwt calls it as `self.get_token`,
+    so the override binds, and `super().get_token(user)` still resolves to the
+    base classmethod.)
+
+    Neither check can run any earlier than this, because both are questions
+    about a *particular* account and the account is not known until the
+    credentials have been verified. Answering "terms required" to an
+    unauthenticated request would be an account-existence oracle.
+    """
+
+    def get_token(self, user):
+        detail = user.suspension_detail()
         if detail is not None:
             raise _SuspendedAccount(detail)
-        return data
+
+        # The agreement, before the session. App Review asked for the terms to
+        # be presented "before registering or logging in", and an existing
+        # account that authenticates first and meets a gate afterwards is
+        # exactly the order they objected to. Registration enforces this in
+        # `RegisterSerializer`; this is the same rule for everybody else.
+        #
+        # `accept_terms` is read from `initial_data` because it is not a
+        # declared field on this serializer and never becomes part of
+        # `validated_data`. The version recorded is always the server's - a
+        # client can say yes, but not to what.
+        #
+        # Two separate questions, and keeping them separate is what makes the
+        # rollout safe:
+        #
+        #   *Should* this client be enforced?  `terms_enforced_for` - answered
+        #       from the build header alone, never from the presence of
+        #       `accept_terms`. A build 32 request cannot slip the gate by
+        #       omitting the field, because omitting the field is not what the
+        #       server is looking at.
+        #   *Has* this user agreed?            `has_accepted`.
+        #
+        # An agreement that arrives from a client we are not enforcing is still
+        # recorded. A build-31 user cannot send one today, but if any client
+        # ever does, throwing it away would mean asking them again for nothing.
+        enforced = terms.terms_enforced_for(self.context['request'])
+        if not terms.has_accepted(user):
+            if self.initial_data.get('accept_terms'):
+                terms.record_acceptance(user)
+            elif enforced:
+                raise _TermsRequired(terms.CURRENT_VERSION)
+            # Otherwise: a legacy client, inside the compatibility window. It
+            # signs in, and `TermsGate` catches the account after it updates.
+
+        return super().get_token(user)
 
 
 class SuspensionAwareTokenObtainPairView(TokenObtainPairView):
@@ -88,6 +153,11 @@ class SuspensionAwareTokenObtainPairView(TokenObtainPairView):
             return super().post(request, *args, **kwargs)
         except _SuspendedAccount as exc:
             return Response(exc.detail, status=status.HTTP_403_FORBIDDEN)
+        except _TermsRequired as exc:
+            # 400, not 401: the credentials were correct. Telling the app
+            # "unauthorized" here would send it to its session-expired
+            # teardown instead of showing the agreement.
+            return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
 
 
 class RegisterView(generics.CreateAPIView):

@@ -55,6 +55,51 @@ def current_terms():
     return {'version': CURRENT_VERSION, **document_urls()}
 
 
+def terms_enforced_for(request):
+    """Whether *this* request's client is one the login gate applies to.
+
+    Three-way, and the third case is the whole point:
+
+        build >= MIN      enforce. The client knows how to show the agreement
+                          and how to send `accept_terms`.
+        build <  MIN      do not enforce. A client that predates the mechanism.
+        no build header   do not enforce *while the window is open*. This is
+                          build 31, which is in review and in users' hands.
+
+    An absent header is deliberately **not** read as "current". Defaulting it
+    forward would enforce against exactly the clients that cannot comply, which
+    is the lockout this function exists to prevent.
+
+    ── On forgery ────────────────────────────────────────────────────────────
+    The header is client-asserted, so a *modified* build 32 could omit it and be
+    treated as legacy. That is worth stating plainly rather than papering over:
+
+      * It buys nothing an attacker wants. The gate protects a compliance
+        obligation, not data — skipping it grants no access, reveals nothing,
+        and still leaves `TermsGate` in front of the app on first launch.
+      * It cannot be closed by making the header cleverer. Anything the client
+        sends, a modified client can change. Signing it would only move the
+        secret into the same bundle.
+      * It closes on its own. Set `TERMS_ENFORCEMENT_ALLOW_LEGACY=False` once
+        build 31 is off the store and headerless requests are enforced too,
+        which leaves no unenforced path at all. That is the real fix and it is
+        one environment variable.
+
+    The genuine users this protects — people on build 31 who cannot update
+    yet — are the reason the window exists, and they are the reason it should
+    be shut deliberately rather than left open.
+    """
+    from django.conf import settings
+
+    from .clientinfo import client_build
+
+    build = client_build(request)
+    if build is None:
+        # Legacy, for as long as the window is open.
+        return not getattr(settings, 'TERMS_ENFORCEMENT_ALLOW_LEGACY', True)
+    return build >= getattr(settings, 'TERMS_ENFORCEMENT_MIN_BUILD', 32)
+
+
 def has_accepted(user):
     """Whether `user` has agreed to the agreement as it stands right now.
 

@@ -24,6 +24,12 @@ from users.models import User
 
 from .models import ContentReport, ModerationAction
 from .reasons import AUTO_QUARANTINE_REPORTS, Moderation, Reason, State
+
+#: What the tests below claim to be unless they say otherwise. Kept at the
+#: enforced floor rather than at a specific release, so raising
+#: TERMS_ENFORCEMENT_MIN_BUILD does not silently move these onto the
+#: legacy path and stop testing the gate.
+CURRENT_BUILD = 32
 from . import services, text
 
 
@@ -604,6 +610,299 @@ class TermsTests(TestCase):
                 self.assertTrue(client.get('/api/users/me/').data['needs_terms'])
             finally:
                 terms.CURRENT_VERSION = original
+
+    # ── Login, which is the path App Review quoted ────────────────────────────
+    #
+    # "The EULA or terms of use agreement presented to users before registering
+    # or logging in." Registration is covered above; these cover the other half.
+    # The rule is enforced on the server as well as in the app, because a gate
+    # that only exists in the client is a gate that a modified client does not
+    # have.
+
+    def _login(self, user, build=CURRENT_BUILD, **extra):
+        """Sign in as `user`, declaring a client build.
+
+        `build` defaults to the current one because that is what these tests
+        are about; `build=None` sends no header at all and is how the legacy
+        path is exercised. It is a distinct case from any number - see
+        `users.clientinfo.client_build`.
+        """
+        headers = {} if build is None else {'HTTP_X_AURA_BUILD': str(build)}
+        return APIClient().post('/api/users/login/', {
+            'email': user.email, 'password': 'pw-a-real-one-1', **extra,
+        }, format='json', **headers)
+
+    def test_an_account_that_has_not_agreed_cannot_log_in(self):
+        user = make_user('needsterms')
+
+        res = self._login(user)
+
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data['code'], 'terms_required')
+        self.assertEqual(res.data['terms_version'], terms.CURRENT_VERSION)
+
+    def test_no_token_is_issued_when_the_agreement_is_missing(self):
+        """The tokens must not merely be withheld from the body - they must
+        never be minted.
+
+        `SuspensionAwareTokenObtainPairSerializer` gates inside `get_token`
+        rather than inside `validate` for exactly this reason: simplejwt's
+        `validate` authenticates and *then* mints, so a check placed there
+        would leave an `OutstandingToken` row for a pair nobody received.
+        """
+        from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
+
+        user = make_user('notoken')
+        before = OutstandingToken.objects.filter(user=user).count()
+
+        res = self._login(user)
+
+        self.assertNotIn('access', res.data)
+        self.assertNotIn('refresh', res.data)
+        self.assertEqual(OutstandingToken.objects.filter(user=user).count(), before)
+
+    def test_sending_accept_terms_false_is_the_same_as_not_sending_it(self):
+        user = make_user('explicitno')
+
+        res = self._login(user, accept_terms=False)
+
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data['code'], 'terms_required')
+
+    def test_agreeing_at_the_login_screen_signs_the_user_in(self):
+        user = make_user('agreesnow')
+
+        res = self._login(user, accept_terms=True)
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['access'])
+        self.assertTrue(res.data['refresh'])
+
+    def test_agreeing_at_the_login_screen_records_version_and_time(self):
+        user = make_user('recorded')
+        self.assertIsNone(user.terms_accepted_at)
+
+        self._login(user, accept_terms=True)
+
+        user.refresh_from_db()
+        self.assertEqual(user.terms_version, terms.CURRENT_VERSION)
+        self.assertIsNotNone(user.terms_accepted_at)
+
+    def test_an_account_that_already_agreed_logs_in_without_sending_anything(self):
+        """The common case, and the one that must not become friction: somebody
+        who agreed last week signs in as before. The app still sends the flag,
+        but the server does not require it from them."""
+        user = accepted(make_user('alreadyagreed'))
+
+        res = self._login(user)
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['access'])
+
+    def test_an_existing_acceptance_is_not_re_stamped_on_every_login(self):
+        """Re-recording would move the timestamp on every sign-in and destroy
+        the only evidence of *when* they actually agreed."""
+        user = accepted(make_user('stable'))
+        first = User.objects.get(pk=user.pk).terms_accepted_at
+
+        self._login(user, accept_terms=True)
+
+        user.refresh_from_db()
+        self.assertEqual(user.terms_accepted_at, first)
+
+    def test_a_new_version_puts_an_existing_account_back_behind_the_gate(self):
+        user = accepted(make_user('staleversion'))
+        original = terms.CURRENT_VERSION
+        terms.CURRENT_VERSION = '2099-01-01'
+        try:
+            refused = self._login(user)
+            self.assertEqual(refused.status_code, 400)
+            self.assertEqual(refused.data['code'], 'terms_required')
+
+            allowed = self._login(user, accept_terms=True)
+            self.assertEqual(allowed.status_code, 200)
+
+            user.refresh_from_db()
+            self.assertEqual(user.terms_version, '2099-01-01')
+        finally:
+            terms.CURRENT_VERSION = original
+
+    def test_bad_credentials_still_read_as_bad_credentials(self):
+        """The terms check runs after authentication and must not shadow it.
+
+        Answering "terms required" to a wrong password would tell an attacker
+        that the address has an account - the account-existence oracle the
+        ordering exists to avoid.
+        """
+        accepted(make_user('rightpassword'))
+
+        res = APIClient().post('/api/users/login/', {
+            'email': 'rightpassword@example.com', 'password': 'wrong-password',
+        }, format='json')
+
+        self.assertEqual(res.status_code, 401)
+
+    def test_a_suspended_account_is_still_refused_before_the_terms_check(self):
+        """Both gates live in `get_token`, and suspension is asked first: an
+        account that is banned *and* owes an agreement should be told it is
+        banned, not sent to read the Terms."""
+        user = accepted(make_user('bannedtoo'))
+        user.suspended_at = timezone.now()
+        user.suspension_reason = 'Hate or harassment'
+        user.save(update_fields=['suspended_at', 'suspension_reason'])
+
+        res = self._login(user)
+
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.data['code'], 'account_suspended')
+
+    # -- The compatibility window ---------------------------------------------
+    #
+    # The backend has to be live *during* App Review, which means it deploys
+    # while build 31 is still the version everybody is running. Build 31 has
+    # never heard of `accept_terms`, so enforcing against it would lock out
+    # every existing user. These pin the three-way behaviour of
+    # `users.terms.terms_enforced_for` - and the one that matters most is the
+    # bypass test, because "build 32 omits the field" must not look like
+    # "legacy client".
+
+    def test_a_legacy_client_that_sends_no_build_header_can_still_sign_in(self):
+        """Build 31, mid-review, with no way to show an agreement."""
+        user = make_user('legacyclient')
+
+        res = self._login(user, build=None)
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['access'])
+
+    def test_a_legacy_login_does_not_fabricate_an_acceptance(self):
+        """Letting them in is not the same as recording that they agreed. The
+        account still owes an agreement and meets `TermsGate` after updating."""
+        user = make_user('legacynostamp')
+
+        self._login(user, build=None)
+
+        user.refresh_from_db()
+        self.assertEqual(user.terms_version, '')
+        self.assertIsNone(user.terms_accepted_at)
+
+    def test_a_build_below_the_minimum_is_treated_as_legacy(self):
+        user = make_user('build31')
+
+        res = self._login(user, build=31)
+
+        self.assertEqual(res.status_code, 200)
+
+    def test_the_minimum_build_is_enforced(self):
+        user = make_user('build32')
+
+        res = self._login(user, build=32)
+
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data['code'], 'terms_required')
+
+    def test_a_future_build_is_enforced_too(self):
+        """The rule is `>=`, not `==`. Build 40 must not fall out of the gate
+        by being newer than anything this code knew about."""
+        user = make_user('build40')
+
+        res = self._login(user, build=40)
+
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data['code'], 'terms_required')
+
+    def test_build_32_cannot_bypass_the_gate_by_omitting_accept_terms(self):
+        """The load-bearing test.
+
+        The server decides whether to enforce from the *build header*, never
+        from whether `accept_terms` is present. If it inferred "no
+        accept_terms means an old client", every build 32 could opt out of the
+        agreement by leaving the field off.
+        """
+        user = make_user('nobypass')
+
+        omitted = self._login(user, build=32)
+        explicit_false = self._login(user, build=32, accept_terms=False)
+
+        self.assertEqual(omitted.status_code, 400)
+        self.assertEqual(explicit_false.status_code, 400)
+        self.assertEqual(omitted.data['code'], 'terms_required')
+        self.assertEqual(explicit_false.data['code'], 'terms_required')
+        user.refresh_from_db()
+        self.assertIsNone(user.terms_accepted_at)
+
+    def test_build_32_with_agreement_records_and_signs_in(self):
+        user = make_user('build32agrees')
+
+        res = self._login(user, build=32, accept_terms=True)
+
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['access'])
+        user.refresh_from_db()
+        self.assertEqual(user.terms_version, terms.CURRENT_VERSION)
+        self.assertIsNotNone(user.terms_accepted_at)
+
+    def test_build_32_user_who_already_agreed_is_not_re_stamped(self):
+        user = accepted(make_user('build32already'))
+        first = User.objects.get(pk=user.pk).terms_accepted_at
+
+        res = self._login(user, build=32)
+
+        self.assertEqual(res.status_code, 200)
+        user.refresh_from_db()
+        self.assertEqual(user.terms_accepted_at, first)
+
+    def test_no_token_is_minted_for_a_rejected_build_32_login(self):
+        from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
+
+        user = make_user('build32notoken')
+        before = OutstandingToken.objects.filter(user=user).count()
+
+        res = self._login(user, build=32)
+
+        self.assertNotIn('access', res.data)
+        self.assertNotIn('refresh', res.data)
+        self.assertEqual(OutstandingToken.objects.filter(user=user).count(), before)
+
+    def test_bad_credentials_are_401_whatever_the_build_says(self):
+        """The build header must not turn the login endpoint into an
+        account-existence oracle: a wrong password answers the same 401 whether
+        or not the account owes an agreement."""
+        accepted(make_user('rightpw32'))
+
+        for build in (None, 31, 32):
+            with self.subTest(build=build):
+                headers = {} if build is None else {'HTTP_X_AURA_BUILD': str(build)}
+                res = APIClient().post('/api/users/login/', {
+                    'email': 'rightpw32@example.com', 'password': 'wrong-password',
+                }, format='json', **headers)
+                self.assertEqual(res.status_code, 401)
+
+    def test_a_mangled_build_header_degrades_to_legacy_rather_than_500(self):
+        """A proxy that rewrites the header should not take login down."""
+        user = make_user('mangled')
+
+        res = self._login(user, build='not-a-number')
+
+        self.assertEqual(res.status_code, 200)
+
+    def test_closing_the_window_enforces_headerless_clients_too(self):
+        """The end state. Once build 31 is off the store,
+        `TERMS_ENFORCEMENT_ALLOW_LEGACY=False` leaves no unenforced path."""
+        user = make_user('windowclosed')
+
+        with self.settings(TERMS_ENFORCEMENT_ALLOW_LEGACY=False):
+            res = self._login(user, build=None)
+
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data['code'], 'terms_required')
+
+    def test_the_minimum_build_is_configuration_not_a_hard_coded_policy(self):
+        user = make_user('configurable')
+
+        with self.settings(TERMS_ENFORCEMENT_MIN_BUILD=99):
+            allowed = self._login(user, build=32)
+        self.assertEqual(allowed.status_code, 200)
 
     def test_a_client_cannot_claim_acceptance_through_a_profile_patch(self):
         user = make_user('sneaky')
