@@ -1,15 +1,46 @@
 from django.contrib import admin
+from django.utils.html import format_html
 
 from .models import (
-    SwiftComment, SwiftLike, SwiftLocationReveal, SwiftReport, SwiftRepost,
-    SwiftTrack, SwiftVideo, SwiftView,
+    SwiftComment, SwiftLike, SwiftLocationReveal, SwiftModerationJob,
+    SwiftReport, SwiftRepost, SwiftTrack, SwiftVideo, SwiftView,
 )
+
+
+class SwiftModerationJobInline(admin.StackedInline):
+    """The AI's evidence, on the Swift it is about.
+
+    An inline rather than a screen of its own, and that is the whole of
+    requirement 6: there is no second moderation dashboard. A moderator opening
+    a Swift sees what the classifier saw — which timestamps, which categories,
+    how sure, which model — in the place they were already going to look, and
+    then presses the same four buttons they press for a human report.
+
+    Read-only in full. This is evidence about a decision, and an editable
+    record of what a classifier concluded is not one.
+    """
+
+    model = SwiftModerationJob
+    extra = 0
+    can_delete = False
+    verbose_name_plural = 'AI moderation'
+    readonly_fields = (
+        'state', 'outcome', 'basis', 'categories', 'confidence',
+        'sampled_ms', 'frames_classified', 'frames_requested', 'model_used',
+        'audio_checked', 'attempts', 'next_attempt_at', 'last_error',
+        'report', 'created_at', 'finished_at',
+    )
+    fields = readonly_fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(SwiftVideo)
 class SwiftVideoAdmin(admin.ModelAdmin):
+    inlines = (SwiftModerationJobInline,)
     list_display = (
-        'id', 'author', 'status', 'visibility', 'moderation',
+        'id', 'author', 'status', 'visibility', 'moderation', 'ai_verdict',
         'location_shared', 'like_count', 'comment_count', 'view_count', 'created_at',
     )
     list_filter = ('moderation', 'status', 'visibility', 'location_shared', 'created_at')
@@ -24,6 +55,34 @@ class SwiftVideoAdmin(admin.ModelAdmin):
     # handling a report, but a column of them in a list view turns a support
     # screen into a map of everybody who ever attached a location.
     readonly_fields = ('like_count', 'comment_count', 'repost_count', 'view_count')
+
+    def get_queryset(self, request):
+        # One join instead of one query per row for the column below. The
+        # moderation list view is the screen most likely to be opened on a
+        # backlog of a few hundred rows.
+        return super().get_queryset(request).select_related('moderation_job')
+
+    @admin.display(description='AI')
+    def ai_verdict(self, obj):
+        """One glance at what the classifier concluded, if anything.
+
+        Blank for every Swift posted before this feature and every Swift posted
+        while it is switched off, which is the honest answer: "not screened" and
+        "screened and found clean" must not look the same in a queue.
+        """
+        job = getattr(obj, 'moderation_job', None)
+        if job is None:
+            return ''
+        if job.state in (SwiftModerationJob.State.QUEUED,
+                         SwiftModerationJob.State.RUNNING):
+            return format_html('<span title="Waiting on the classifier">…</span>')
+        if job.outcome == 'approved':
+            return format_html('<span style="color:#146c2e" title="AI: clean">ok</span>')
+        detail = job.categories or job.basis or 'flagged'
+        return format_html(
+            '<span style="color:#b3261e;font-weight:700" title="{}">{:.0%}</span>',
+            detail, job.confidence or 0,
+        )
 
 
 @admin.register(SwiftComment)
@@ -74,13 +133,18 @@ class SwiftReportAdmin(admin.ModelAdmin):
     """
 
     list_display = (
-        'id', 'swift', 'reporter', 'reason', 'state', 'action_taken', 'created_at',
+        'id', 'swift', 'reporter', 'source', 'reason', 'state', 'action_taken',
+        'created_at',
     )
-    list_filter = ('state', 'reason', 'action_taken', 'created_at')
+    # `source` is in the filter list because the first question a moderator
+    # asks a mixed queue is which of these a person actually complained about.
+    # An AI item and three independent reports are very different evidence and
+    # a queue that cannot separate them makes the moderator do it by eye.
+    list_filter = ('state', 'source', 'reason', 'action_taken', 'created_at')
     search_fields = ('reporter__username', 'note')
     ordering = ('state', 'created_at')
     readonly_fields = (
-        'swift', 'reporter', 'reason', 'note', 'created_at',
+        'swift', 'reporter', 'source', 'reason', 'note', 'created_at',
         'reviewed_at', 'reviewed_by',
     )
     actions = ('action_remove_swift', 'action_restore_swift',

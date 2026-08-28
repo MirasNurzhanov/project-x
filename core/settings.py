@@ -378,6 +378,15 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # bucket URL (R2_PUBLIC_URL) with the scheme stripped, which is the form
 # S3Boto3Storage expects: it prefixes whatever it's given with `https://` when
 # building a file's `.url`, so passing the scheme through too would double it up.
+#
+# Hoisted out of the OPTIONS dict below because a second reader appeared:
+# `moderation.cloudflare_ai.transform_base` needs the origin these files are
+# served from, and `config()` inside a nested literal is not a setting anything
+# else can reach. Public by definition - it is the URL every Swift's video is
+# already served from - so there is nothing here that was not already going out
+# in every feed payload.
+R2_PUBLIC_URL = config('R2_PUBLIC_URL')
+
 STORAGES = {
     'default': {
         'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage',
@@ -388,13 +397,100 @@ STORAGES = {
             'endpoint_url': config('R2_ENDPOINT_URL'),
             'region_name': 'auto',
             'default_acl': 'public-read',
-            'custom_domain': config('R2_PUBLIC_URL').replace('https://', ''),
+            'custom_domain': R2_PUBLIC_URL.replace('https://', ''),
         },
     },
     'staticfiles': {
         'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
     },
 }
+
+# ── AI moderation for Swift video ─────────────────────────────────────────────
+# Cloudflare, and only these two variables carry anything secret. They are read
+# in exactly one place — `moderation.cloudflare_ai.credentials()` — and nothing
+# else in the project is allowed to import them. They are never serialized,
+# never logged, never sent to the app, and never written to the database.
+#
+# `SWIFT_AI_MODERATION_ENABLED` is the master switch and it defaults to **off**,
+# which is what makes this change safe to ship before the Cloudflare dashboard
+# work is done: with it off, a Swift is published exactly the way it was before
+# this feature existed. Turning it on is a variable change, not a release.
+#
+# The failure mode when it is on and the credentials are missing is deliberate:
+# `credentials()` raises, the moderation job fails, and the Swift stays
+# `PENDING` — invisible. Nothing gets published unscreened because a variable
+# was mistyped. `moderation.checks` warns about that combination at startup so
+# it is noticed before a queue builds up.
+CLOUDFLARE_API_TOKEN = config('CLOUDFLARE_API_TOKEN', default='')
+CLOUDFLARE_ACCOUNT_ID = config('CLOUDFLARE_ACCOUNT_ID', default='')
+
+SWIFT_AI_MODERATION_ENABLED = config(
+    'SWIFT_AI_MODERATION_ENABLED', default=False, cast=bool)
+
+# Which Workers AI model classifies a frame. Configurable because the catalogue
+# moves faster than this codebase does; the default is Meta's vision-instruct
+# model, which takes an image plus a prompt and returns text.
+CLOUDFLARE_AI_VISION_MODEL = config(
+    'CLOUDFLARE_AI_VISION_MODEL',
+    default='@cf/meta/llama-3.2-11b-vision-instruct')
+CLOUDFLARE_AI_TRANSCRIBE_MODEL = config(
+    'CLOUDFLARE_AI_TRANSCRIBE_MODEL', default='@cf/openai/whisper')
+
+# The origin that serves `/cdn-cgi/media/`. Blank means "use R2_PUBLIC_URL",
+# which is right whenever the bucket is published on a custom domain in the
+# same Cloudflare account. It is a separate setting because Media
+# Transformations are enabled **per zone**: a bucket published on an `r2.dev`
+# address has no zone to enable them on, and this has to name a custom domain
+# instead. See `moderation.cloudflare_ai.transform_base`.
+CLOUDFLARE_MEDIA_TRANSFORM_BASE = config(
+    'CLOUDFLARE_MEDIA_TRANSFORM_BASE', default='')
+
+# Every Cloudflare call gets this timeout, and there is no call without one. A
+# hung inference request holding a worker thread open is how a moderation
+# feature takes the whole API down with it.
+CLOUDFLARE_AI_TIMEOUT_S = config('CLOUDFLARE_AI_TIMEOUT_S', default=30, cast=int)
+
+# How many frames to look at. Blank/0 means "let the duration decide" — see
+# `moderation.policy.frame_count_for`, which spends 5 frames on a short clip
+# and 10 on a long one. The cap is the thing that actually protects the bill:
+# it is what stops a per-second strategy from ever being possible.
+SWIFT_AI_FRAME_COUNT = config('SWIFT_AI_FRAME_COUNT', default=0, cast=int)
+SWIFT_AI_FRAME_MAX = config('SWIFT_AI_FRAME_MAX', default=12, cast=int)
+#: Frames are scaled down before they are classified. A vision model is billed
+#: by the tokens an image becomes, and a 1080-wide frame becomes far more of
+#: them than a 640-wide one without saying anything more about whether it
+#: contains nudity.
+SWIFT_AI_FRAME_WIDTH = config('SWIFT_AI_FRAME_WIDTH', default=640, cast=int)
+
+#: Above this, one frame's objection is recorded as a confident one. Below it,
+#: the same objection still quarantines — it is the queue note that changes,
+#: not the visibility. See `moderation.policy`.
+SWIFT_AI_UNSAFE_CONFIDENCE = config(
+    'SWIFT_AI_UNSAFE_CONFIDENCE', default=0.75, cast=float)
+
+#: Attempts before a job stops retrying and the Swift is quarantined for a
+#: human instead. Bounded, because "retry until it works" against a paid API
+#: that is answering 403 is an unbounded bill.
+SWIFT_AI_MAX_ATTEMPTS = config('SWIFT_AI_MAX_ATTEMPTS', default=3, cast=int)
+#: Seconds before a job that claims to be running is assumed dead and re-queued
+#: by the sweeper. Longer than the worst case for one job (frames x timeout).
+SWIFT_AI_STALE_AFTER_S = config('SWIFT_AI_STALE_AFTER_S', default=900, cast=int)
+
+#: Phase 2, off by default. Extracts the audio track through the same Media
+#: Transformations path, transcribes it, and runs the transcript through the
+#: *existing* text filter — so a spoken slur and a typed one are judged by one
+#: set of rules. Off until the transformation origin above is confirmed
+#: working, because a second dependency on an unproven path would make a
+#: failure harder to read, not the moderation stronger.
+SWIFT_AI_AUDIO_MODERATION_ENABLED = config(
+    'SWIFT_AI_AUDIO_MODERATION_ENABLED', default=False, cast=bool)
+
+#: Set by `core.test_settings`. Stops the in-process worker thread from being
+#: started, so a test drives the pipeline synchronously and nothing outlives
+#: the case that spawned it — the same arrangement, and the same reason, as
+#: `PUSH_DISABLED` in `notifications.push`.
+SWIFT_AI_MODERATION_SYNC = config(
+    'SWIFT_AI_MODERATION_SYNC', default=False, cast=bool)
 
 # ── Legal ─────────────────────────────────────────────────────────────────────
 # Where the Terms of Use, Community Guidelines and Privacy pages live.

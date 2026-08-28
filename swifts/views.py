@@ -36,6 +36,7 @@ from notifications.utils import (
 )
 from users import visibility as user_visibility
 
+from . import ai_moderation
 from . import counters
 from . import visibility as swift_visibility
 from .models import (
@@ -152,6 +153,35 @@ def _visible_swift(viewer, pk):
     return (
         swift_visibility.watchable(viewer)
         .filter(pk=pk)
+        .select_related('author')
+        .first()
+    )
+
+
+def _own_or_visible_swift(viewer, pk):
+    """A Swift `viewer` may watch, **or** one of their own that is not live yet.
+
+    The one deliberate exception to "a Swift you cannot see is indistinguishable
+    from one that does not exist", and it exists because the composer needs it:
+    publishing navigates straight to `/swifts/<id>`, and with AI moderation on
+    that Swift is `PENDING` at the moment the phone arrives there. Answering
+    404 to the person who just posted it would read as "your upload vanished".
+
+    Scoped as tightly as the exception allows. It is the author only, it is
+    never a REMOVED row — a takedown the author can still browse is not a
+    takedown, which is the rule `SwiftMineView` already states — and it is not
+    a soft-deleted one. What they get back is the ordinary payload with
+    `review_state` telling them where it is; what everybody else gets is the
+    404 they got before this function existed.
+    """
+    swift = _visible_swift(viewer, pk)
+    if swift is not None:
+        return swift
+    return (
+        SwiftVideo.objects.filter(
+            pk=pk, author=viewer, deleted_at__isnull=True,
+        )
+        .exclude(moderation=SwiftVideo.Moderation.REMOVED)
         .select_related('author')
         .first()
     )
@@ -337,17 +367,34 @@ class SwiftListCreateView(APIView):
         # them during `is_valid()`. A flagged one is stored quarantined, which
         # `swifts.visibility.live_q` keeps out of every feed until a moderator
         # has looked at it.
+        #
+        # With AI video moderation switched on, everything else is stored
+        # `PENDING` — also hidden by `live_q`, and hidden *before* the response
+        # to this request is written. That ordering is requirement 7: there is
+        # no window, not even a millisecond, in which the row exists in a
+        # publishable state. The verdict arrives later and can only move it
+        # from PENDING; it cannot un-publish something that was briefly public,
+        # because nothing was ever briefly public.
         verdict = serializer.moderation_verdict
-        swift = serializer.save(
-            author=request.user,
-            moderation=moderation_services.moderation_for(verdict),
-            **_position_for(request.user, serializer.validated_data),
-        )
+        with transaction.atomic():
+            swift = serializer.save(
+                author=request.user,
+                moderation=ai_moderation.initial_moderation(verdict),
+                **_position_for(request.user, serializer.validated_data),
+            )
+            # Inside the transaction, so the durable job record commits with
+            # the row it is about. The *work* is not inside it — `enqueue`
+            # defers that to `on_commit` — so the phone is not waiting on
+            # inference to get its 201.
+            ai_moderation.enqueue(swift)
         # No `ContentReport` row for this one, unlike a story or a comment:
         # Swifts have their own report table and their own admin, and
         # `SwiftVideoAdmin` already filters on `moderation`. A quarantined
         # Swift is therefore already in front of a moderator, and inventing a
-        # report with no reporter would put it in a second queue as well.
+        # report with no reporter would put it in a second queue as well. An
+        # *AI* quarantine does file one — see `ai_moderation.record_ai_report`
+        # — because that one has evidence attached that the column alone
+        # cannot carry.
         return Response(
             SwiftSerializer(swift, context=_verified(request)).data,
             status=status.HTTP_201_CREATED,
@@ -366,7 +413,10 @@ class SwiftDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
-        swift = _visible_swift(request.user, pk)
+        # `_own_or_visible_swift`, not `_visible_swift`: the author of a Swift
+        # still being screened has to be able to open the thing they just
+        # posted. Nobody else's view of it changes — see that function.
+        swift = _own_or_visible_swift(request.user, pk)
         if swift is None:
             return user_visibility.not_found()
         return Response(SwiftSerializer(swift, context=_verified(request)).data)

@@ -38,6 +38,37 @@ def _author_payload(user):
     }
 
 
+#: What `SwiftSerializer.review_state` can say. Strings rather than the
+#: `moderation` column's own values on purpose: the column answers a question
+#: about enforcement ("has this been taken down"), and the app is asking a
+#: question about progress ("can I show this to my friends yet"). Mapping
+#: between them here means the client never learns the enforcement vocabulary,
+#: and a new internal state does not become an app release.
+REVIEW_PROCESSING = 'processing'
+REVIEW_REVIEWING = 'reviewing'
+REVIEW_PUBLISHED = 'published'
+REVIEW_NEEDS_REVIEW = 'needs_review'
+
+
+def review_state_for(swift):
+    """The creator-facing state of one Swift.
+
+    Ordered by which fact is most specific. A Swift that is still uploading is
+    `processing` whatever its moderation column says, because the column has
+    not been decided yet and telling somebody their video is "under review"
+    while it is in fact still transcoding is simply false.
+    """
+    from moderation.reasons import Moderation
+
+    if swift.status != SwiftVideo.Status.READY:
+        return REVIEW_PROCESSING
+    if swift.moderation == Moderation.PENDING:
+        return REVIEW_REVIEWING
+    if swift.moderation == Moderation.QUARANTINED:
+        return REVIEW_NEEDS_REVIEW
+    return REVIEW_PUBLISHED
+
+
 class SwiftSerializer(serializers.ModelSerializer):
     """A Swift as the feed and the detail endpoint send it.
 
@@ -64,6 +95,7 @@ class SwiftSerializer(serializers.ModelSerializer):
     viewer_reposted = serializers.SerializerMethodField()
     viewer_viewed = serializers.SerializerMethodField()
     is_mine = serializers.SerializerMethodField()
+    review_state = serializers.SerializerMethodField()
 
     class Meta:
         model = SwiftVideo
@@ -71,7 +103,7 @@ class SwiftSerializer(serializers.ModelSerializer):
             'id', 'author', 'caption',
             'video_url', 'thumbnail_url',
             'duration_ms', 'width', 'height', 'aspect_ratio',
-            'status',
+            'status', 'review_state',
             'audio_title', 'audio_artist', 'audio_artwork_url',
             'audio_preview_url', 'uses_original_audio',
             'track',
@@ -155,6 +187,34 @@ class SwiftSerializer(serializers.ModelSerializer):
         viewer = self._viewer()
         return bool(viewer and obj.author_id == viewer.pk)
 
+    def get_review_state(self, obj):
+        """What the composer shows the creator while a Swift is being screened.
+
+        Four words, and deliberately only four. Everything the pipeline
+        actually knows — which categories fired, how confident the model was,
+        how many frames it looked at — stays on `SwiftModerationJob` where a
+        moderator can read it. Publishing a confidence score to the author
+        would be handing anybody who wants to get material past this filter a
+        free tuning signal, one upload at a time, and it would do it while
+        telling somebody who did nothing wrong a number they cannot act on.
+
+        Only the author is told anything. Every other viewer sees
+        `published`, because every other viewer can only ever be looking at a
+        Swift that *is* published: `live_q` has already excluded the rest, and
+        a state field that could say something else to a stranger would be a
+        second place for that rule to be got wrong.
+
+        `needs_review` is worded on the client as a neutral sentence — see
+        `aura-mobile/components/swifts/SwiftReviewNotice.tsx`. A quarantine is
+        not a finding, and accusing somebody before a human has looked is both
+        wrong and, for the false positives this policy accepts by design,
+        wrong about a person who did nothing.
+        """
+        viewer = self._viewer()
+        if viewer is None or obj.author_id != getattr(viewer, 'pk', None):
+            return REVIEW_PUBLISHED
+        return review_state_for(obj)
+
     def get_location_available(self, obj):
         """Whether this viewer would be shown a location-reveal button.
 
@@ -236,7 +296,22 @@ class SwiftCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
-        """`location_shared` cannot be switched on over nothing.
+        """Screen the text, then check the fields that have to agree.
+
+        `super().validate(attrs)` is the important line and it was missing.
+        `ScreenedTextMixin` does its work *in* `validate`, so a subclass that
+        defines one and does not chain silently switches the filter off —
+        `screened_fields` above still reads as a declaration that the caption is
+        screened, `is_valid()` still passes, and the only symptom is that
+        prohibited captions publish. Every other screened serializer in the
+        project (`StoryCreateSerializer`, `SwiftCommentCreateSerializer`,
+        `users`) declares `screened_fields` and no `validate`, which is why this
+        was the only one affected.
+
+        What follows is the pair of consistency rules this method was written
+        for:
+
+        `location_shared` cannot be switched on over nothing.
 
         A Swift flagged as having a shareable location but carrying no
         coordinate would publish `location_available: true`, draw the reveal
@@ -248,6 +323,8 @@ class SwiftCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
         drop, and refusing the whole post over that would be telling them their
         privacy setting is an error.
         """
+        attrs = super().validate(attrs)
+
         shared = attrs.get('location_shared', False)
         has_pair = attrs.get('latitude') is not None and attrs.get('longitude') is not None
         if shared and not has_pair:

@@ -64,9 +64,18 @@ class SwiftVideo(models.Model):
 
     #: Aliased to the project-wide vocabulary rather than redeclared, so
     #: `SwiftVideo.Moderation.REMOVED` and `Story.moderation` REMOVED are the
-    #: same string and one admin filter spans both. The values here are the
-    #: ones this column already held; `QUARANTINED` is the addition, and no
-    #: existing row is in it.
+    #: same string and one admin filter spans both.
+    #:
+    #: `PENDING` is the one that matters here and it is the only state a Swift
+    #: reaches that a story does not: media that has been stored but not yet
+    #: screened. It is in `moderation.reasons.HIDDEN_STATES`, so a Swift is
+    #: invisible from the instant the row is written until
+    #: `swifts.ai_moderation` approves it — there is no window in which it is
+    #: publishable, which is the entire point of the state existing rather than
+    #: the pipeline flipping an already-visible row to hidden after the fact.
+    #:
+    #: No existing row is in `PENDING` or `QUARANTINED`; both arrived with a
+    #: choices-only migration and nothing backfills them.
     Moderation = SharedModeration
 
     author = models.ForeignKey(
@@ -543,9 +552,39 @@ class SwiftReport(models.Model):
         REVIEWED = 'reviewed', 'Reviewed — no action'
         ACTIONED = 'actioned', 'Reviewed — content removed'
 
+    class Source(models.TextChoices):
+        """How the report was raised.
+
+        The same vocabulary `moderation.ContentReport.Source` uses, plus the
+        one this app needs that a story or a comment does not: `AI_VIDEO`, an
+        item raised by the frame classifier in `swifts.ai_moderation` rather
+        than by a person.
+
+        It matters that these are distinguishable and not merely countable. A
+        moderator triaging the queue reads "three people objected to this" and
+        "a classifier was 0.6 sure about one frame" completely differently, and
+        a queue that presents them as the same row has thrown away the only
+        thing that tells them which to open first. It is also what stops the
+        automated items being counted as corroboration by anything that later
+        wants to know how many *people* reported something.
+        """
+
+        REPORT = 'report', 'Reported by a user'
+        AUTOMATED = 'automated', 'Flagged by the text filter'
+        AI_VIDEO = 'ai_video', 'Flagged by AI video moderation'
+
     swift = models.ForeignKey(SwiftVideo, on_delete=models.CASCADE, related_name='reports')
+    #: Who objected. Non-null, so an automated item has to name somebody — and
+    #: the only party with any connection to it is the author. That is the same
+    #: compromise `moderation.services.record_automated_flag` already makes for
+    #: stories and comments, and `source` above is what keeps it from reading
+    #: as "this creator reported their own Swift" in the queue.
     reporter = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='swift_reports',
+    )
+    source = models.CharField(
+        # 9, the length of `automated` - the longest value above.
+        max_length=9, choices=Source.choices, default=Source.REPORT, db_index=True,
     )
     reason = models.CharField(max_length=14, choices=Reason.choices)
     #: Optional free text. Capped short: a moderator reads these in a list, and
@@ -689,3 +728,107 @@ class SwiftTrack(models.Model):
 
     def __str__(self):
         return f'{self.title} — {self.artist}' if self.artist else self.title
+
+
+class SwiftModerationJob(models.Model):
+    """One run of the AI moderation pipeline over one Swift.
+
+    A row rather than a queue message, and that is the whole architecture. This
+    project has no Celery, no RQ and no Django-Q — `notifications.push` does its
+    off-request work in a daemon thread, and a daemon thread is fine for a push
+    that nobody notices the loss of. It is not fine here: a process restart
+    between "Swift saved as PENDING" and "classifier answered" would leave that
+    Swift invisible forever, with nothing anywhere recording that it was ever
+    supposed to be looked at.
+
+    So the durable part is this table and the ephemeral part is the thread. The
+    thread is an optimisation — it makes the common case finish in seconds
+    instead of waiting for a sweep — and `manage.py moderate_swifts` is the
+    thing that makes the feature correct: every job that was queued and never
+    finished is still queued, still has its attempt count, and gets picked up.
+    Losing the process loses latency, not work.
+
+    Retry safety is a property of this row, not of the code that reads it.
+    `claim()` is a conditional UPDATE, so two workers racing for the same job
+    produce one winner and one no-op rather than two classifications and two
+    reports. `report` below is the other half: it is written once and re-found
+    on a retry, so a job that fails after filing a report and then succeeds
+    does not leave two items in the queue.
+    """
+
+    class State(models.TextChoices):
+        QUEUED = 'queued', 'Queued'
+        RUNNING = 'running', 'Running'
+        DONE = 'done', 'Finished'
+        #: Out of attempts. The Swift has been quarantined for a human rather
+        #: than left pending forever — see `swifts.ai_moderation.exhaust`.
+        FAILED = 'failed', 'Failed - given up'
+
+    swift = models.OneToOneField(
+        SwiftVideo, on_delete=models.CASCADE, related_name='moderation_job',
+    )
+    state = models.CharField(
+        max_length=7, choices=State.choices, default=State.QUEUED, db_index=True,
+    )
+    attempts = models.PositiveSmallIntegerField(default=0)
+    #: Not before this. Set on every failure, so a Cloudflare outage backs off
+    #: instead of hammering — and so the sweeper has one column to order by
+    #: rather than re-deriving a schedule from `attempts` and `updated_at`.
+    next_attempt_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    # ── What the run concluded ────────────────────────────────────────────────
+    # Denormalised onto the job rather than left in a log, because this is the
+    # evidence a moderator needs to interpret the queue item: which model said
+    # it, how sure it was, and *where in the video* it was looking. A report
+    # note capped at 500 characters cannot hold that, and a log line cannot be
+    # opened from the admin.
+    outcome = models.CharField(max_length=11, blank=True, default='')
+    #: `moderation.policy`'s constant, e.g. `unsafe_confident`. Machine-readable
+    #: and internal - never shown to the author, who gets one neutral sentence.
+    basis = models.CharField(max_length=24, blank=True, default='')
+    #: The provider's category strings, comma-separated, already filtered to the
+    #: ones `moderation.cloudflare_ai.CATEGORY_REASONS` recognises. A model that
+    #: invents a category does not get to write it here.
+    categories = models.CharField(max_length=200, blank=True, default='')
+    confidence = models.FloatField(default=0.0)
+    #: Which timestamps were actually classified, comma-separated ms. The proof
+    #: that the video was sampled across its length rather than at one point.
+    sampled_ms = models.CharField(max_length=200, blank=True, default='')
+    frames_requested = models.PositiveSmallIntegerField(default=0)
+    frames_classified = models.PositiveSmallIntegerField(default=0)
+    model_used = models.CharField(max_length=120, blank=True, default='')
+    #: Whether the audio track was transcribed and screened on this run. A
+    #: separate column rather than an inference from `SWIFT_AI_AUDIO_...`,
+    #: because the setting says what is switched on *now* and this says what
+    #: actually happened *then*.
+    audio_checked = models.BooleanField(default=False)
+    #: The last failure, for operations. Provider detail: never serialized to a
+    #: client, and `moderation.cloudflare_ai` guarantees it carries no
+    #: credentials.
+    last_error = models.CharField(max_length=300, blank=True, default='')
+
+    #: The queue item this run raised, if it raised one. The unique reference is
+    #: what makes a retry idempotent — see the class docstring.
+    report = models.ForeignKey(
+        'swifts.SwiftReport', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='ai_jobs',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            # The sweeper's only query: what is due, oldest first.
+            models.Index(fields=['state', 'next_attempt_at'], name='swift_modjob_due_idx'),
+        ]
+
+    def __str__(self):
+        return f'AI moderation of swift {self.swift_id} ({self.state})'
+
+    @property
+    def sampled_timestamps(self):
+        """`sampled_ms` as a list of ints, for the admin and the tests."""
+        return [int(x) for x in self.sampled_ms.split(',') if x.strip().isdigit()]

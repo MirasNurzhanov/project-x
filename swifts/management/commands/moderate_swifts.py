@@ -1,0 +1,102 @@
+"""Run the AI moderation jobs that are waiting.
+
+    python manage.py moderate_swifts            # one pass, then exit
+    python manage.py moderate_swifts --loop     # keep going, for a worker dyno
+    python manage.py moderate_swifts --status   # what is configured, no secrets
+
+Why this exists next to the in-process thread
+---------------------------------------------
+`swifts.ai_moderation.enqueue` starts a daemon thread on commit, which finishes
+the common case in seconds. That thread is *latency*, not durability: a deploy,
+a crash or an OOM between the commit and the thread finishing leaves the job
+row `QUEUED` and the Swift `PENDING`, which is safe — nobody can see it — but
+permanent unless something comes back for it.
+
+This is the something. It is the only part of the design that makes the feature
+correct rather than merely fast, so a deployment that runs the web process and
+never runs this has a feature that mostly works and silently strands Swifts
+whenever a dyno restarts at the wrong moment.
+
+Run it either way:
+
+  * `--loop` as a second Railway service (or a `worker:` Procfile entry), which
+    is the lower-latency option and the one worth having once volume justifies
+    a second container;
+  * or a scheduled `python manage.py moderate_swifts` every few minutes, which
+    needs no new service at all.
+
+Both are safe to run alongside the web process and alongside each other:
+`ai_moderation.claim` is a conditional UPDATE, so two sweepers racing for one
+job produce one winner and one no-op rather than two inference bills.
+"""
+import time
+
+from django.core.management.base import BaseCommand
+
+from swifts import ai_moderation
+
+
+class Command(BaseCommand):
+    help = 'Run queued AI moderation jobs for Swifts.'
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--loop', action='store_true',
+            help='Keep sweeping until interrupted, instead of one pass.')
+        parser.add_argument(
+            '--interval', type=int, default=20,
+            help='Seconds between passes when looping (default 20).')
+        parser.add_argument(
+            '--limit', type=int, default=50,
+            help='Most jobs to claim in one pass (default 50).')
+        parser.add_argument(
+            '--status', action='store_true',
+            help='Print what is configured and exit. Prints no secrets.')
+
+    def handle(self, *args, **options):
+        if options['status']:
+            self._status()
+            return
+
+        if not ai_moderation.enabled():
+            self.stdout.write(self.style.WARNING(
+                'SWIFT_AI_MODERATION_ENABLED is off - nothing to do. '
+                'Existing queued jobs are left alone.'))
+            return
+
+        if not options['loop']:
+            self._pass(options['limit'])
+            return
+
+        self.stdout.write(f'Sweeping every {options["interval"]}s. Ctrl-C to stop.')
+        try:
+            while True:
+                self._pass(options['limit'])
+                time.sleep(options['interval'])
+        except KeyboardInterrupt:
+            self.stdout.write('\nStopped.')
+
+    def _pass(self, limit):
+        done = ai_moderation.sweep(limit=limit)
+        if done:
+            self.stdout.write(self.style.SUCCESS(f'Ran {done} job(s).'))
+
+    def _status(self):
+        from moderation import cloudflare_ai
+
+        from swifts.models import SwiftModerationJob
+
+        # `configuration_summary` reports whether the token is *set* and never
+        # any part of it. There is deliberately no "first four characters"
+        # convenience here: that is how a credential ends up in a screenshot.
+        for key, value in cloudflare_ai.configuration_summary().items():
+            self.stdout.write(f'{key:24} {value}')
+
+        counts = {
+            state.label: SwiftModerationJob.objects.filter(state=state).count()
+            for state in SwiftModerationJob.State
+        }
+        self.stdout.write('')
+        self.stdout.write('Jobs:')
+        for label, count in counts.items():
+            self.stdout.write(f'  {label:24} {count}')

@@ -67,6 +67,19 @@ class Moderation(models.TextChoices):
     """
 
     OK = 'ok', 'OK'
+    #: Uploaded, stored, and not published to anybody yet - the automated
+    #: pipeline has not returned a verdict. Distinct from `QUARANTINED`, which
+    #: is a verdict ("something looked wrong, a human should decide"), and from
+    #: `SwiftVideo.Status.PROCESSING`, which is about the *file* rather than
+    #: its content. Three separate questions, three separate answers: an
+    #: upload that is still transcoding, one whose frames are still being
+    #: classified, and one a classifier objected to are three different things
+    #: to tell a creator, and collapsing any two of them means telling at
+    #: least one of them the wrong thing.
+    #:
+    #: In `HIDDEN_STATES` below, which is the whole point: nothing reaches a
+    #: feed while it is in this state. See `swifts.ai_moderation`.
+    PENDING = 'pending', 'Pending automated review'
     #: Reported and awaiting review, and still visible. Flagging is not a
     #: verdict - hiding on the first report hands every user a mute button
     #: pointed at anybody they dislike, and coordinated flagging is a real
@@ -84,10 +97,16 @@ class Moderation(models.TextChoices):
 
 #: The states that keep content out of public view, and its complement. One
 #: name for each rule, so no queryset has to re-derive it and get it subtly
-#: different. Both are needed: a filter reads more clearly as `__in=VISIBLE`
+#: different. `PENDING` is in the hidden set rather than the visible one and
+#: that is the single line requirement 7 rests on: a Swift whose media has not
+#: been screened yet is invisible *by default*, everywhere, because every read
+#: path in the project already goes through one of these two tuples. Nothing
+#: had to be added to the feed, the detail endpoint, the recommender or the
+#: repost path to make that true - which is exactly why the state was put here
+#: rather than checked at each of them. Both are needed: a filter reads more clearly as `__in=VISIBLE`
 #: when it is ORed with "or you wrote it", and as `~Q(__in=HIDDEN)` when it
 #: stands alone.
-HIDDEN_STATES = (Moderation.QUARANTINED, Moderation.REMOVED)
+HIDDEN_STATES = (Moderation.PENDING, Moderation.QUARANTINED, Moderation.REMOVED)
 VISIBLE_STATES = (Moderation.OK, Moderation.FLAGGED)
 
 #: How many *distinct* reporters it takes to quarantine content before a human

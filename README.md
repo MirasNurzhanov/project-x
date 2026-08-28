@@ -69,3 +69,76 @@ timeout: one long-lived connection doing one thing needs neither.
 Confirm the effect against `pg_stat_activity` after deploying — connection
 count should stop tracking request volume and settle between the two sizes
 above.
+
+## AI moderation for Swift video
+
+A Swift is not watchable by anybody but its author until its media has been
+screened. The pipeline is:
+
+```
+POST /api/swifts/  ->  moderation=PENDING (hidden everywhere, in the same INSERT)
+                   ->  frames out of Cloudflare Media Transformations
+                   ->  each frame through a Workers AI vision model
+                   ->  caption + overlay through the existing moderation/text.py
+                   ->  (optional) audio track -> Whisper -> the same text filter
+                   ->  APPROVED  -> moderation=OK, now in feeds
+                       QUARANTINED -> stays hidden, SwiftReport(source=ai_video)
+                       FAILED    -> stays PENDING, job retries, then quarantines
+```
+
+Nothing in the pipeline can remove content or touch an account. Permanent
+takedowns are a human at `/admin/`, and the AI's item lands in the same
+`SwiftReport` queue with the same four actions as a report a person filed.
+
+| module | what it is |
+|---|---|
+| `moderation/cloudflare_ai.py` | the only code that talks to Cloudflare. No models, no Swift knowledge |
+| `moderation/policy.py` | how frame results become one decision. Pure functions |
+| `moderation/checks.py` | startup warnings for a misconfiguration |
+| `swifts/ai_moderation.py` | the orchestration — the only place the two meet a row |
+| `swifts/models.py::SwiftModerationJob` | the durable job, and the evidence a moderator reads |
+
+### Running the worker
+
+`ai_moderation.enqueue` starts a daemon thread on commit, which finishes the
+common case in seconds. That thread is **latency, not durability**: a deploy or
+a crash between the commit and the thread finishing leaves the job `QUEUED` and
+the Swift `PENDING` — safe, because nobody can see it, but permanent unless
+something comes back for it.
+
+That something is:
+
+```
+python manage.py moderate_swifts --loop      # a worker service
+python manage.py moderate_swifts             # or one pass, on a schedule
+python manage.py moderate_swifts --status    # what is configured. Prints no secrets
+```
+
+A deployment that never runs it has a feature that mostly works and silently
+strands Swifts whenever a dyno restarts at the wrong moment. Both forms are
+safe to run alongside the web process and each other — claiming a job is a
+conditional UPDATE, so two sweepers racing produce one winner and one no-op.
+
+### Cloudflare configuration this needs
+
+1. **Workers AI** — an API token with the Workers AI permission, and the
+   account id. `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`, server-side
+   only.
+2. **Media Transformations, enabled on the zone that serves the R2 bucket.**
+   This is the one that is easy to get wrong: transformations are enabled *per
+   zone*, and the default `pub-*.r2.dev` address is Cloudflare's hostname, not
+   one of yours — there is nowhere to switch them on. The bucket has to be
+   published on a custom domain in the account, and `R2_PUBLIC_URL` (or
+   `CLOUDFLARE_MEDIA_TRANSFORM_BASE`) pointed at it. `moderation.W003` warns
+   about exactly this at startup.
+3. **Allowed origins** for transformations must include the bucket's host if it
+   differs from the zone serving `/cdn-cgi/media/`.
+
+`SWIFT_AI_MODERATION_ENABLED` defaults to **off**, and with it off a Swift
+publishes exactly as it did before this feature existed. Turn it on only once
+1 and 2 are done: otherwise every new Swift is held invisible until the sweeper
+gives up and quarantines it for a human.
+
+Cloudflare Stream is **not** used. The videos are already in R2 and Media
+Transformations reads them there, so there is no encoding pipeline to adopt and
+no processing-complete webhook to verify.
