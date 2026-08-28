@@ -624,21 +624,47 @@ class ZoneView(APIView):
         # rather than in the serializer keeps `save()` meaning "store what was
         # sent"; this is a separate action that happens to be triggered by it.
         #
-        # Upstream is deliberately not consulted: `allow_upstream=False` means
-        # this answers from boundaries already cached, so turning a switch on
-        # cannot block on a Nominatim round trip. Somewhere with nothing cached
-        # yet resolves on the next location report instead.
-        if user.zone_follows_location:
-            try:
-                zones.follow_location(
-                    user, places.snapshot_for(user, allow_upstream=False),
-                )
-            except Exception as exc:  # noqa: BLE001
-                # The setting is saved either way. A zone that could not move
-                # yet is the stale case, which the next report resolves.
-                print(f'[Zone] follow-on-save failed for user {user.pk}: {exc}')
+        # **Only when the request did not itself name a region.** A request that
+        # did has already said which place it wants, and that choice was
+        # validated against the position in the same request — re-resolving
+        # afterwards would overwrite the user's explicit pick with whatever a
+        # snapshot says, which for a user whose stored position is behind is
+        # precisely the district they were trying to get away from.
+        if user.zone_follows_location and 'zone_region' not in serializer.validated_data:
+            self._repoint(user, serializer.validation_anchor)
             serializer = ZoneUpdateSerializer(user)
         return Response(serializer.data)
+
+    def _repoint(self, user, anchor):
+        """Move a following zone to where the user is, now.
+
+        Resolves from the request's own position when it sent one, and only
+        falls back to the stored snapshot otherwise. Using the snapshot
+        unconditionally would reintroduce the staleness the anchor exists to
+        sidestep — the switch would be honoured against a position from the
+        district the user has just left.
+
+        `allow_upstream=False` throughout: turning a switch on must not block on
+        a Nominatim round trip. Somewhere with nothing cached yet simply
+        resolves on the next location report instead.
+
+        `Hierarchy` and `UserPlace` both expose `city`/`region`/`district`,
+        which is all `follow_location` reads — so the two sources are
+        interchangeable here without a translation layer.
+        """
+        try:
+            if anchor is not None:
+                lat, lon, tolerance = anchor
+                where = places.hierarchy_for_point(
+                    lat, lon, allow_upstream=False, tolerance_m=tolerance,
+                )
+            else:
+                where = places.snapshot_for(user, allow_upstream=False)
+            zones.follow_location(user, where)
+        except Exception as exc:  # noqa: BLE001
+            # The setting is saved either way. A zone that could not move yet is
+            # the stale case, which the next location report resolves.
+            print(f'[Zone] follow-on-save failed for user {user.pk}: {exc}')
 
 
 class AppleMusicStatusView(APIView):

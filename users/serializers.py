@@ -2,6 +2,7 @@ from datetime import date
 from django.db.models import Q
 from moderation.drf import ScreenedTextMixin
 from rest_framework import serializers
+from rest_framework.exceptions import APIException
 from django.contrib.auth.password_validation import validate_password
 from friends.models import FriendRequest, HiRequest
 from . import terms, visibility, zones
@@ -447,6 +448,44 @@ class NotificationSettingsSerializer(serializers.ModelSerializer):
         )
 
 
+class OutsideRegion(APIException):
+    """400, with a body the app can act on rather than only display.
+
+    Deliberately **not** `serializers.ValidationError`. DRF funnels any
+    ValidationError raised inside `validate()` through `as_serializer_error`,
+    which coerces every leaf into an `ErrorDetail` string and wraps it in a
+    list — so `you_are_in: {'id': 4, ...}` arrives as
+    `you_are_in: ["{'id': ErrorDetail('4')}"]` and the id the client wanted to
+    act on is gone. A plain `APIException` skips that machinery and the dict
+    arrives the shape it was written in.
+
+    This is the same trap, and the same fix, as
+    `moderation.drf.ObjectionableContent`.
+    """
+
+    status_code = 400
+    default_code = 'outside_region'
+
+    def __init__(self, message, suggestion):
+        super().__init__(message)
+        # Assigned *after* `super().__init__`, deliberately, and not passed to
+        # it. `APIException` runs its detail through `_get_error_details`, which
+        # recurses into dicts and lists and wraps every leaf in an
+        # `ErrorDetail` — a `str` subclass. That turns `id: 4` into `"4"` and,
+        # worse, `you_are_in: None` into the *string* `"None"`, which a client
+        # checking for null would happily act on. DRF's exception handler uses
+        # `exc.detail` verbatim when it is a dict, so setting it here is what
+        # gets the body onto the wire in the shape it was written.
+        self.detail = {
+            # Under the field name too, so a client that only knows how to show
+            # `zone_region[0]` keeps working unchanged.
+            'zone_region': [message],
+            'detail': message,
+            'code': 'outside_region',
+            'you_are_in': suggestion,
+        }
+
+
 class ZoneUpdateSerializer(serializers.ModelSerializer):
     zone_audio_url = serializers.SerializerMethodField()
     # Written by id, read back in full, so the client that just set a region
@@ -456,6 +495,51 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
     )
     zone_region_detail = RegionSummarySerializer(source='zone_region', read_only=True)
     effective_zone_mode = serializers.CharField(read_only=True)
+    #: Where the phone says it is, *for this check only*.
+    #:
+    #: The rule below — you can only cover a place you are in — used to be
+    #: tested against `user.latitude`, the position the server had stored. That
+    #: position is written by a different endpoint on a different schedule, so
+    #: the two disagree constantly: open the app straight into Settings → Zone
+    #: Size, or walk a few streets, and the zone screen is looking at a live
+    #: GPS fix while the validator is looking at wherever the map last ticked.
+    #: The result is being told you are not standing where you are standing,
+    #: with no reliable way to fix it — which is the bug this exists to remove
+    #: rather than paper over.
+    #:
+    #: **Never stored.** These fields are popped in `validate` and never reach
+    #: the instance, so setting a zone writes no position and a user with
+    #: sharing paused can configure one without broadcasting anything. That is
+    #: the same arrangement `proximity.views.NearbyQueryView` uses for private
+    #: browsing, and the same one `/api/regions/for-point/` already relies on —
+    #: the phone sends the raw fix there too.
+    #:
+    #: No weaker than what it replaces. The alternative to trusting this is
+    #: trusting the identical coordinate the same phone can PATCH to
+    #: `/api/proximity/location/` a moment earlier, which is what it had to do
+    #: before. The check is a guard against covering a city you are nowhere
+    #: near, not a proof of presence, and it was never the latter.
+    latitude = serializers.DecimalField(
+        max_digits=11, decimal_places=8, write_only=True, required=False,
+        allow_null=True,
+    )
+    longitude = serializers.DecimalField(
+        max_digits=11, decimal_places=8, write_only=True, required=False,
+        allow_null=True,
+    )
+    #: Metres of GPS error the phone reports for that fix, widening the check by
+    #: exactly the amount the fix is known to be wrong by. Clamped: an
+    #: unbounded value would let a client claim a kilometre of slack and cover
+    #: the next district over.
+    accuracy = serializers.FloatField(
+        write_only=True, required=False, allow_null=True, min_value=0,
+    )
+
+    #: Set by `validate`, read by `ZoneView.patch`. Defaults to None so a
+    #: serializer used without validation reads as "no anchor" rather than
+    #: raising — the same shape `ScreenedTextMixin.moderation_verdict` uses.
+    validation_anchor = None
+
     #: Read-only: nothing but the server may say a zone is behind. It is set on
     #: the location path when a following zone had nowhere to move to, and
     #: cleared the moment one resolves — a client that could write it could
@@ -501,6 +585,8 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
             'zone_type', 'zone_radius', 'zone_region', 'zone_region_detail',
             'zone_follows_location', 'zone_follow_stale',
             'effective_zone_mode',
+            # Write-only, validation-only, never stored — see the note above.
+            'latitude', 'longitude', 'accuracy',
             # One switch and one radius. `music_radius_m` used to sit here
             # resolving "separate or inherited" for the client; there is no
             # question left to resolve.
@@ -522,7 +608,88 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         # Two independent rulesets, kept apart because they have nothing to say
         # to each other: what the zone *is*, and which slice of its track loops.
-        return self._validate_loop(self._validate_zone(attrs))
+        attrs = self._validate_loop(self._validate_zone(attrs))
+        # Popped *after* validation and before `save()` ever sees them. These
+        # three are the only fields on this serializer that are not columns —
+        # leaving them in would try to write a position through a zone edit,
+        # which is precisely what this endpoint must not do.
+        for field in ('latitude', 'longitude', 'accuracy'):
+            attrs.pop(field, None)
+        return attrs
+
+    #: Ceiling on the slack a client's own accuracy figure may buy it. A fix
+    #: really can be a kilometre out indoors, and honouring that verbatim would
+    #: let anyone cover the next district by claiming a bad one. 750m is
+    #: comfortably past the worst genuinely useful urban fix and comfortably
+    #: short of a district.
+    MAX_ANCHOR_TOLERANCE_M = 750.0
+
+    def _anchor(self, attrs):
+        """`(lat, lon, tolerance_m)` to test containment against, or None.
+
+        Two sources, in this order, and the order is the whole fix:
+
+          1. **The position sent with this request.** The phone has a live fix
+             on screen — it drew the preview with it — so the check runs
+             against what the user is actually looking at. Tolerance is that
+             fix's own reported accuracy, which is the error that genuinely
+             exists, clamped.
+
+          2. **The position the server has stored**, for a client too old to
+             send one. Tolerance is `position_tolerance_m`: the error *we*
+             introduced by fuzzing an Approximate sharer's coordinates, and
+             zero for a precise one.
+
+        The stored position being second is the point. It is written by a
+        different endpoint on a different schedule, and every report of "it says
+        I am not where I am" traces back to reading it as though it were
+        current. It stays as a fallback rather than being deleted because an
+        installed build that does not send an anchor must keep working.
+        """
+        lat = attrs.get('latitude')
+        lon = attrs.get('longitude')
+        if lat is not None and lon is not None:
+            accuracy = attrs.get('accuracy') or 0.0
+            return (
+                float(lat), float(lon),
+                min(max(float(accuracy), 0.0), self.MAX_ANCHOR_TOLERANCE_M),
+            )
+
+        user = self.instance
+        stored_lat = getattr(user, 'latitude', None)
+        stored_lon = getattr(user, 'longitude', None)
+        if stored_lat is None or stored_lon is None:
+            return None
+        return (
+            float(stored_lat), float(stored_lon),
+            visibility.position_tolerance_m(user),
+        )
+
+    def _place_you_are_in(self, lat, lon, rejected):
+        """The region of the same size that *does* contain this position.
+
+        Returned with the refusal so the app can offer it. A rejection on its
+        own is a dead end — the user is told the place they chose is wrong and
+        left to guess which one is right, which for somebody who does not know
+        their district's official name is not a guess they can make. Naming it
+        turns the error into a one-tap correction.
+
+        Cache-only: this runs inside a validation failure, and reaching
+        Nominatim to explain a 400 would make the error slower than the success.
+        Returns None when nothing is cached, which the client renders as the
+        plain message.
+        """
+        from regions import places
+
+        try:
+            hierarchy = places.hierarchy_for_point(lat, lon, allow_upstream=False)
+        except Exception:  # noqa: BLE001 - explaining an error must not raise one
+            return None
+
+        for area in hierarchy.areas or ():
+            if area.kind == rejected.kind and area.pk != rejected.pk:
+                return {'id': area.pk, 'name': area.name, 'kind': area.kind}
+        return None
 
     def _validate_zone(self, attrs):
         # A polygon type needs a boundary: either arriving in this request or
@@ -582,34 +749,50 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
         # UI, because "only the place you are standing in" is the rule itself,
         # not a convenience: the endpoint takes a region id, and without this
         # any id would be accepted — someone in one city could blanket another.
-        # Only checked when a region is newly supplied, so moving out of your
-        # own city later does not start rejecting unrelated zone edits.
+        #
+        # Only when the region is actually **changing**. This used to fire
+        # whenever `zone_region` appeared in the payload, which is not the same
+        # thing and is the difference between a rule and a trap: re-sending the
+        # region you already have — which the app does the moment you tap the
+        # Place tab — was refused as soon as you left it. Refusing that does not
+        # un-set the zone, because it was already stored; all it does is block
+        # every edit that mentions it, including the one you came to make. The
+        # symptom is being unable to switch to the Place tab at all, and so
+        # being unable to reach the picker to choose the district you have
+        # moved into.
+        #
+        # Nothing is loosened by this. Leaving a place you cover was never
+        # supposed to be a refusal — the header comment above has said "moving
+        # out of your own city later does not start rejecting unrelated zone
+        # edits" since this was written, and this is the line that finally
+        # makes that true. Pointing the zone at a *new* place is still checked
+        # exactly as before.
+        anchor = self._anchor(attrs)
+        #: Read by `ZoneView.patch`. The position this request was validated
+        #: against is also the right one to re-point a following zone from —
+        #: re-resolving from the stored copy there would reintroduce the exact
+        #: staleness the anchor exists to sidestep.
+        self.validation_anchor = anchor
         incoming = attrs.get('zone_region')
-        if incoming is not None:
-            user = self.instance
-            lat, lon = getattr(user, 'latitude', None), getattr(user, 'longitude', None)
-            if lat is None or lon is None:
+        unchanged = (
+            incoming is not None
+            and self.instance is not None
+            and incoming.pk == self.instance.zone_region_id
+        )
+        if incoming is not None and not unchanged:
+            if anchor is None:
                 raise serializers.ValidationError(
                     {'zone_region': 'Aura needs your location before it can set a zone here.'}
                 )
-            # Tested against the position we *store*, which on Approximate
-            # sharing is a ~500m grid-cell centre rather than where the user is
-            # standing. Checking that strictly told people in Бостандық that
-            # they were not in Бостандық, because the cell centre had landed
-            # over the border in Алмалы. The tolerance is the error we
-            # introduced ourselves — zero for anyone sharing precisely — so the
-            # rule this exists to enforce, that you cannot blanket a city you
-            # are not in, is unchanged for them and only softened by a few
-            # hundred metres at the border for everyone else.
-            if not incoming.could_contain(
-                float(lat), float(lon), visibility.position_tolerance_m(user),
-            ):
-                raise serializers.ValidationError(
-                    {'zone_region': (
-                        f'You can only cover a place you are in, and the location Aura '
-                        f'has for you is not inside {incoming.name}. If you have just '
-                        f'moved, open the map for a moment so it can catch up.'
-                    )}
+            lat, lon, tolerance = anchor
+            if not incoming.could_contain(lat, lon, tolerance):
+                # Machine-readable, so the app can offer the place the user
+                # *is* in rather than dead-ending on an alert. See
+                # `_place_you_are_in` for why this is worth the query.
+                raise OutsideRegion(
+                    f'You can only cover a place you are in, and you do not seem '
+                    f'to be inside {incoming.name}.',
+                    self._place_you_are_in(lat, lon, incoming),
                 )
 
         # An upload clears an Apple track, which is the other way to fill the
