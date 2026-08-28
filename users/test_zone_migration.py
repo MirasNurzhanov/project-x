@@ -39,10 +39,23 @@ class ZoneTypeMigrationTests(TransactionTestCase):
         self.old_apps = executor.loader.project_state(self.migrate_from).apps
 
     def tearDown(self):
-        # Leave the database where the rest of the suite expects it, whatever
-        # this test did to it.
+        # Leave the database at **head**, not at `migrate_to`.
+        #
+        # This used to target `migrate_to`, which was the head when it was
+        # written. It has not been since 0027, and the consequence is invisible
+        # right up until it is not: every `TransactionTestCase` that runs after
+        # this one — they share a bucket, and Django runs the bucket in
+        # discovery order — inherits a schema missing every column added since
+        # 0026, and fails with "no such column" somewhere that has nothing to
+        # do with migrations. Whether it shows up at all depends on which app
+        # labels the run was given, so it hides in a full run and appears in a
+        # narrower one.
+        #
+        # Reading the head off the graph rather than naming it means this
+        # cannot rot again the next time a migration lands.
         executor = MigrationExecutor(connection)
-        executor.migrate(self.migrate_to)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
 
     def migrate_forward(self):
         executor = MigrationExecutor(connection)

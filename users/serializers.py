@@ -100,6 +100,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'discoverable_by_username', 'discoverable_by_interest',
             'zone_audio', 'zone_audio_url', 'zone_active',
             'zone_type', 'zone_radius', 'zone_region', 'zone_region_detail',
+            'zone_follows_location', 'zone_follow_stale',
             'push_token', 'connected_providers',
             'terms_version', 'terms_accepted_at', 'needs_terms',
         )
@@ -107,6 +108,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
         # `location_sharing`, kept so app builds predating the split keep working.
         read_only_fields = (
             'id', 'email', 'age_tier', 'date_joined', 'privacy_mode',
+            # Server-set: see the note on the field in ZoneUpdateSerializer.
+            'zone_follow_stale',
             # Acceptance is recorded by the server on the paths that actually
             # showed somebody the document. A PATCH must never be able to claim
             # it — that would make the gate bypassable from the client.
@@ -453,6 +456,12 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
     )
     zone_region_detail = RegionSummarySerializer(source='zone_region', read_only=True)
     effective_zone_mode = serializers.CharField(read_only=True)
+    #: Read-only: nothing but the server may say a zone is behind. It is set on
+    #: the location path when a following zone had nowhere to move to, and
+    #: cleared the moment one resolves — a client that could write it could
+    #: silence the only signal the zone screen has that the boundary on it is
+    #: no longer the one the user is standing in.
+    zone_follow_stale = serializers.BooleanField(read_only=True)
     # Declared explicitly to own the error message. Left to the model, DRF
     # derives the field from the MinValue/MaxValue validators and answers an
     # over-large radius with "ensure this value is less than or equal to
@@ -490,6 +499,7 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
         fields = (
             'zone_audio', 'zone_audio_url', 'zone_active',
             'zone_type', 'zone_radius', 'zone_region', 'zone_region_detail',
+            'zone_follows_location', 'zone_follow_stale',
             'effective_zone_mode',
             # One switch and one radius. `music_radius_m` used to sit here
             # resolving "separate or inherited" for the client; there is no

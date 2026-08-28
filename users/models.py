@@ -97,6 +97,40 @@ class User(AbstractUser):
         on_delete=models.SET_NULL,
         related_name='zoned_users',
     )
+
+    #: Whether `zone_region` should re-point itself as its owner moves.
+    #:
+    #: A polygon zone used to be a *pin*: whichever district you were standing
+    #: in when you pressed the button, forever. That is right for somebody who
+    #: chose a place deliberately and wrong for almost everybody else — move
+    #: across town and your zone keeps covering the neighbourhood you left,
+    #: with nothing on screen saying so, until you happen to reopen the zone
+    #: screen and set it again.
+    #:
+    #: With this on, every location report re-points the zone at the district
+    #: (or city) the position now falls in. It costs no upstream lookup: the
+    #: containing boundaries are already computed on that path for club
+    #: visibility — see `regions.places.refresh_quietly` — so this reads a
+    #: snapshot that exists either way.
+    #:
+    #: Defaults False so no existing zone changes under anybody. The client
+    #: turns it on for a zone set from "use my district", and leaves it off for
+    #: one picked by name, which is the distinction it actually encodes:
+    #: *where I am* versus *this place*.
+    zone_follows_location = models.BooleanField(default=False)
+
+    #: Set when a following zone had nowhere to move to — the user is somewhere
+    #: OSM has no district mapped for, so `zone_region` is still the last one
+    #: that resolved and no longer contains them.
+    #:
+    #: The zone deliberately keeps working in that state rather than emptying
+    #: itself: a zone that silently stops covering anybody is a worse answer
+    #: than one that is briefly behind, and widening it to the whole city
+    #: instead would hand somebody a far larger zone than they asked for
+    #: without being asked. The flag is what lets the zone screen say which of
+    #: the two is happening.
+    zone_follow_stale = models.BooleanField(default=False)
+
     zone_active = models.BooleanField(default=False)
 
     # ── Music zone ────────────────────────────────────────────────────────────

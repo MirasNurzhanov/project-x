@@ -427,11 +427,19 @@ def refresh_quietly(user):
     the field hits every thirty seconds, and a place lookup failing there must
     not fail the position write that the map, the zone and the alerts all
     depend on.
+
+    Returns the `UserPlace`, or None when there was no position to resolve or
+    the lookup failed. Returned rather than discarded because a second caller
+    on the same path — a zone that follows its owner, see
+    `users.zones.follow_location` — needs exactly this snapshot, and computing
+    it twice on the hottest endpoint in the app to avoid one return value would
+    be a poor trade.
     """
     try:
-        snapshot_for(user, allow_upstream=False)
+        return snapshot_for(user, allow_upstream=False)
     except Exception as exc:  # noqa: BLE001
         logger.warning('Place snapshot failed for user %s: %s', user.pk, exc)
+        return None
 
 
 # ─── Matching ─────────────────────────────────────────────────────────────────

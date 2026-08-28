@@ -398,7 +398,21 @@ class UpdateLocationView(APIView):
         # Which city/region/district this position falls in, recomputed only
         # when the user has actually left the area we had for them. Cache-only,
         # so it never reaches upstream on the hot path.
-        places.refresh_quietly(user)
+        place = places.refresh_quietly(user)
+        # And, for a zone that follows its owner, move the zone to match. This
+        # is the only place a zone re-points on its own, and it is deliberately
+        # on the *write* path rather than on any of the reads: a zone that
+        # changed shape depending on who was asking about it would be a
+        # different zone per viewer. Cheap by construction — it reuses the
+        # snapshot above and writes nothing for a user who has not left their
+        # district. See `users.zones.follow_location`.
+        try:
+            zones.follow_location(user, place)
+        except Exception as exc:  # noqa: BLE001
+            # Same contract as the snapshot above: the position write is what
+            # the map, the feed and the alerts all depend on, and a zone that
+            # failed to move must not take it down.
+            print(f'[Zone] follow failed for user {user.pk}: {exc}')
         _trigger_nearby_notifications(user)
         # Best-effort: a zone alert is a nice-to-have, and a failure inside it
         # must not fail the location write that every other feature depends on.

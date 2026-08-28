@@ -113,3 +113,116 @@ def zone_boundary_available(user) -> bool:
     if user.zone_type == User.ZoneType.CIRCLE:
         return user.latitude is not None and user.longitude is not None
     return user.zone_region_id is not None
+
+
+# ─── Following the user ───────────────────────────────────────────────────────
+# Containment above answers "is this point in the zone". This answers the other
+# half of the same question for a zone that moves: *which* boundary is the zone,
+# now that its owner has walked out of the last one.
+#
+# It is deliberately here rather than in `regions.places`. That module answers
+# "where is this person", which is a fact about geography and is computed the
+# same way for everybody. This is a decision about one user's zone — which tier
+# counts, when to hold, what to record — and it belongs next to the containment
+# rules it has to stay consistent with.
+
+def _tier_matching(place, zone_type):
+    """The user's current boundary for a zone of `zone_type`, or None.
+
+    Not simply `getattr(place, zone_type)`. `UserPlace`'s three tiers are
+    *positions in a containment chain* — city, widest sub-city area, narrowest
+    sub-city area — while `Region.kind` is what the place actually is. The two
+    disagree routinely: in a city with one mapped sub-area, that area fills the
+    `region` tier and the `district` tier is empty, and the area itself is very
+    often `kind='district'`.
+
+    Matching on `kind` rather than on tier name is what keeps this consistent
+    with `ZoneUpdateSerializer`, which refuses a `zone_region` whose kind does
+    not equal the zone type. A follow that ignored that could quietly install a
+    boundary the same user would be forbidden from choosing by hand — and every
+    containment check would honour it while the UI kept saying "district".
+
+    Narrowest first, because a district zone should be the smallest district
+    that fits, which is the same order the picker offers.
+    """
+    from regions.models import Region
+
+    if zone_type == 'city':
+        candidates = (place.city,)
+    else:
+        candidates = (place.district, place.region)
+    for region in candidates:
+        if region is not None and region.kind == zone_type:
+            return region
+    return None
+
+
+def follow_location(user, place):
+    """Re-point a following zone at the boundary its owner is now inside.
+
+    Returns the `Region` the zone ended up on, or None if nothing changed.
+
+    Called from the location-report path, which every phone in the field hits
+    every thirty seconds — so the cheap outcome has to be the common one. It is:
+    the two guards below reject every user who is not following a polygon zone
+    without touching the database, and `place` is a snapshot the caller already
+    had to compute for club visibility.
+
+    That call site is also what keeps this from being a tracking channel, and
+    it is worth being explicit about. `UpdateLocationView` refuses a report
+    from anyone whose sharing is paused — no position is stored at all — so a
+    paused user's zone simply stops moving. Which means a following zone never
+    reveals a movement that the map was not already showing: it can only change
+    while its owner is deliberately visible, and it freezes the moment they are
+    not. Moving this onto a read path, or into a background sweep over stored
+    positions, would break that property.
+
+    Three outcomes, and the third is the one worth reading twice:
+
+      moved      the snapshot names a boundary of the right kind and it is not
+                 the one stored -> the zone re-points, and any stale flag
+                 clears.
+      unchanged  same boundary -> nothing is written at all. A `save()` per
+                 location report for a user who has not left their district
+                 would be a write on the hottest path in the app.
+      nowhere    no boundary of the right kind where they now are -> the zone
+                 is **left exactly as it was** and marked stale. Holding a
+                 boundary the user has left is a compromise, and it is the
+                 lesser one: the alternatives are a zone that covers nobody, or
+                 a silent promotion to the whole city. Both change what a
+                 person's zone *does* without them asking; this only makes it
+                 briefly out of date, and says so.
+    """
+    from .models import User
+
+    if not user.zone_follows_location:
+        return None
+    if user.zone_type not in User.POLYGON_ZONE_TYPES:
+        return None
+    if place is None:
+        return None
+
+    region = _tier_matching(place, user.zone_type)
+
+    if region is None:
+        # Nowhere to move to. Flag it, but only write if the flag is actually
+        # changing — see the note about the hot path above.
+        if not user.zone_follow_stale:
+            User.objects.filter(pk=user.pk).update(zone_follow_stale=True)
+            user.zone_follow_stale = True
+        return None
+
+    if region.pk == user.zone_region_id and not user.zone_follow_stale:
+        return None
+
+    # `.update()` rather than `user.save()`: this runs inside a request that has
+    # already written the user's position, and a full save here would race that
+    # write and could resurrect stale field values held on the in-memory
+    # instance. Two columns, by primary key.
+    User.objects.filter(pk=user.pk).update(
+        zone_region=region, zone_follow_stale=False,
+    )
+    user.zone_region = region
+    user.zone_region_id = region.pk
+    user.zone_follow_stale = False
+    return region

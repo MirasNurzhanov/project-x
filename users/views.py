@@ -14,7 +14,8 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from friends.models import FriendRequest
 from moderation.views import ReportUserView
 from notifications.utils import notify_new_device
-from . import applemusic, socialauth, terms, visibility
+from regions import places
+from . import applemusic, socialauth, terms, visibility, zones
 from .links import LinkError, MAX_LINKS_PER_USER, normalize_link
 from .serializers import (
     RegisterSerializer, UserProfileSerializer, EditProfileSerializer,
@@ -616,7 +617,27 @@ class ZoneView(APIView):
     def patch(self, request):
         serializer = ZoneUpdateSerializer(request.user, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        user = serializer.save()
+        # Switching following on is a request for the zone to be where the user
+        # is, and waiting for the next location report to honour it would leave
+        # the switch looking broken for up to a poll interval. Doing it here
+        # rather than in the serializer keeps `save()` meaning "store what was
+        # sent"; this is a separate action that happens to be triggered by it.
+        #
+        # Upstream is deliberately not consulted: `allow_upstream=False` means
+        # this answers from boundaries already cached, so turning a switch on
+        # cannot block on a Nominatim round trip. Somewhere with nothing cached
+        # yet resolves on the next location report instead.
+        if user.zone_follows_location:
+            try:
+                zones.follow_location(
+                    user, places.snapshot_for(user, allow_upstream=False),
+                )
+            except Exception as exc:  # noqa: BLE001
+                # The setting is saved either way. A zone that could not move
+                # yet is the stale case, which the next report resolves.
+                print(f'[Zone] follow-on-save failed for user {user.pk}: {exc}')
+            serializer = ZoneUpdateSerializer(user)
         return Response(serializer.data)
 
 
