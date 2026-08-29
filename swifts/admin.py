@@ -270,7 +270,7 @@ class SwiftTrackAdmin(admin.ModelAdmin):
             'fields': ('source', 'licence', 'attribution'),
             'description': (
                 'A track is not published until somebody has read the licence. '
-                'Every row here is Aura-owned, licensed, or open — nothing is '
+                'Every row here is Approx-owned, licensed, or open — nothing is '
                 'scraped from a streaming service. Imported tracks arrive '
                 '<strong>inactive</strong> and stay that way until somebody '
                 'here has read the licence and published them.'

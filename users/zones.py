@@ -74,7 +74,7 @@ def is_location_inside_zone(user, lat, lon, *, tolerance_m=0.0) -> bool:
         # position has no circle — not an empty one.
         if user.latitude is None or user.longitude is None:
             raise ZoneBoundaryUnavailable(
-                'This zone follows your position, and Aura does not have one for you yet.'
+                'This zone follows your position, and Approx does not have one for you yet.'
             )
         metres = haversine(
             float(user.latitude), float(user.longitude), float(lat), float(lon),

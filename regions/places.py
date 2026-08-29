@@ -132,7 +132,7 @@ class Hierarchy:
 
 
 _UNRESOLVED_DETAIL = (
-    'Aura could not work out which area you are in. Open the map for a moment '
+    'Approx could not work out which area you are in. Open the map for a moment '
     'so it can catch up, or check that location access is on.'
 )
 

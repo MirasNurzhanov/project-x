@@ -169,7 +169,7 @@ class ClubListCreateView(APIView):
             return Response(
                 {
                     'detail': (
-                        f'Aura has no {level} boundary for where you are, so a club '
+                        f'Approx has no {level} boundary for where you are, so a club '
                         f'cannot be limited to one. Pick a wider option.'
                     ),
                     'available_levels': visibility.available_levels(place),

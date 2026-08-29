@@ -13,7 +13,7 @@ from regions.models import Region
 from regions.serializers import RegionSummarySerializer
 
 
-#: The floor Aura's terms set. Lives up here rather than inline in one
+#: The floor Approx's terms set. Lives up here rather than inline in one
 #: serializer because there are now two ways to first state a date of birth —
 #: registering, and filling it in after a Google/Apple sign-up, which arrives as
 #: an ordinary profile PATCH. A gate that only guards one of them is not a gate.
@@ -27,7 +27,7 @@ def age_on(dob, today=None):
 
 def validate_min_age(dob):
     if dob and age_on(dob) < MIN_AGE:
-        raise serializers.ValidationError(f'You must be at least {MIN_AGE} to use Aura.')
+        raise serializers.ValidationError(f'You must be at least {MIN_AGE} to use Approx.')
     return dob
 
 
@@ -782,7 +782,7 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
         if incoming is not None and not unchanged:
             if anchor is None:
                 raise serializers.ValidationError(
-                    {'zone_region': 'Aura needs your location before it can set a zone here.'}
+                    {'zone_region': 'Approx needs your location before it can set a zone here.'}
                 )
             lat, lon, tolerance = anchor
             if not incoming.could_contain(lat, lon, tolerance):

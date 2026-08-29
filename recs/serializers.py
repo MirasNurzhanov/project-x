@@ -48,7 +48,7 @@ class SwiftSignalSerializer(serializers.Serializer):
 
     def validate_kind(self, value):
         # `share` is declared on the model so that adding sharing later needs
-        # no migration, but nothing in Aura emits it. Accepting it now would
+        # no migration, but nothing in Approx emits it. Accepting it now would
         # mean accepting a signal whose meaning is not yet defined.
         if value == SwiftSignal.Kind.SHARE:
             raise serializers.ValidationError('Sharing is not available yet.')

@@ -1,9 +1,9 @@
-"""The three legal documents, served by Aura's own backend.
+"""The three legal documents, served by Approx's own backend.
 
 Not a marketing site. The app links these from the sign-up gate, from the
 mandatory agreement screen and from Settings, so they have to resolve on a host
 that exists and that ships with the code referencing them - and at the time this
-was written there was no Aura domain to point at. `LEGAL_BASE_URL` in settings
+was written there was no Approx domain to point at. `LEGAL_BASE_URL` in settings
 is what a future marketing domain would change, without touching any of this.
 
 Public, cacheable, and template-rendered rather than DRF: they are documents,

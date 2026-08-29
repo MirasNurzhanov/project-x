@@ -496,7 +496,7 @@ SWIFT_AI_MODERATION_SYNC = config(
 # Where the Terms of Use, Community Guidelines and Privacy pages live.
 #
 # This backend serves them itself, at /legal/ (see moderation/legal_views.py),
-# because Aura has no marketing domain and a legal document behind a URL that
+# because Approx has no marketing domain and a legal document behind a URL that
 # does not resolve is the same as not having one. The default is therefore this
 # service's own public origin.
 #
@@ -518,7 +518,7 @@ LEGAL_PRIVACY_URL = config('LEGAL_PRIVACY_URL', default='')
 #                                  is the one that ships the agreement on its
 #                                  sign-in screen.
 #   TERMS_ENFORCEMENT_ALLOW_LEGACY the compatibility window. True lets clients
-#                                  that send no `X-Aura-Build` header through,
+#                                  that send no `X-Approx-Build` header through,
 #                                  which is build 31 and older.
 #
 # **Set ALLOW_LEGACY to False once build 31 is off the store.** Until then there
@@ -548,7 +548,7 @@ MEDIA_ROOT = BASE_DIR / "media"
 # lookup volume ever stops being incidental.
 NOMINATIM_URL = config('NOMINATIM_URL', default='https://nominatim.openstreetmap.org')
 NOMINATIM_USER_AGENT = config(
-    'NOMINATIM_USER_AGENT', default='Aura/1.0 (support@aura-app.com)'
+    'NOMINATIM_USER_AGENT', default='Approx/1.0 (support@aura-app.com)'
 )
 
 # Load shaping. The defaults are the public instance's published policy — one
@@ -664,13 +664,13 @@ APPLE_MUSIC_STOREFRONT = config('APPLE_MUSIC_STOREFRONT', default='us')
 # Where they come from, and the part that is easy to get wrong: these are
 # issued under Epidemic Sound's **partner/API agreement**, not with an ordinary
 # subscription. A personal or commercial subscription licenses *you* to put
-# their music in *your* content; Aura is a platform whose users attach music to
-# videos Aura then redistributes, which is a different licence entirely. There
+# their music in *your* content; Approx is a platform whose users attach music to
+# videos Approx then redistributes, which is a different licence entirely. There
 # is no self-serve key for it — it comes from talking to them.
 #
 # Absent, the importer answers "not configured" and names the missing variable,
 # `python manage.py sync_music --status` says so, and the rest of Swifts is
-# untouched: the picker reads Aura's own `SwiftTrack` table either way, so a
+# untouched: the picker reads Approx's own `SwiftTrack` table either way, so a
 # hand-curated catalogue works with none of this set.
 EPIDEMIC_SOUND_CLIENT_ID = config('EPIDEMIC_SOUND_CLIENT_ID', default='')
 EPIDEMIC_SOUND_CLIENT_SECRET = config('EPIDEMIC_SOUND_CLIENT_SECRET', default='')

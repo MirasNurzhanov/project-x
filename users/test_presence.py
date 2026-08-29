@@ -274,7 +274,7 @@ class PresenceHeartbeatTests(TestCase):
         return User.objects.get(pk=self.me.pk).last_seen
 
     def test_foreground_header_marks_presence(self):
-        self.client.get('/api/users/me/', HTTP_X_AURA_PRESENCE='foreground')
+        self.client.get('/api/users/me/', HTTP_X_APPROX_PRESENCE='foreground')
         self.assertIsNotNone(self._last_seen())
 
     def test_request_without_the_header_does_not_mark_presence(self):
@@ -285,10 +285,10 @@ class PresenceHeartbeatTests(TestCase):
         self.assertIsNone(self._last_seen())
 
     def test_background_header_backdates_out_of_the_online_window(self):
-        self.client.get('/api/users/me/', HTTP_X_AURA_PRESENCE='foreground')
+        self.client.get('/api/users/me/', HTTP_X_APPROX_PRESENCE='foreground')
         self.assertTrue(visibility.is_online(User.objects.get(pk=self.me.pk)))
 
-        self.client.get('/api/users/me/', HTTP_X_AURA_PRESENCE='background')
+        self.client.get('/api/users/me/', HTTP_X_APPROX_PRESENCE='background')
         refreshed = User.objects.get(pk=self.me.pk)
         self.assertFalse(visibility.is_online(refreshed))
         # Backdated, not nulled: "last seen a moment ago" is true and still
@@ -299,26 +299,26 @@ class PresenceHeartbeatTests(TestCase):
         self.me.motion_class = User.MotionClass.FAST
         self.me.motion_updated_at = timezone.now()
         self.me.save()
-        self.client.get('/api/users/me/', HTTP_X_AURA_PRESENCE='background')
+        self.client.get('/api/users/me/', HTTP_X_APPROX_PRESENCE='background')
         refreshed = User.objects.get(pk=self.me.pk)
         self.assertEqual(refreshed.motion_class, User.MotionClass.STATIONARY)
         self.assertIsNone(refreshed.motion_updated_at)
 
     def test_writes_are_throttled(self):
-        self.client.get('/api/users/me/', HTTP_X_AURA_PRESENCE='foreground')
+        self.client.get('/api/users/me/', HTTP_X_APPROX_PRESENCE='foreground')
         first = self._last_seen()
-        self.client.get('/api/users/me/', HTTP_X_AURA_PRESENCE='foreground')
+        self.client.get('/api/users/me/', HTTP_X_APPROX_PRESENCE='foreground')
         self.assertEqual(self._last_seen(), first)
 
     def test_write_resumes_once_the_throttle_window_passes(self):
         stale = timezone.now() - WRITE_EVERY - timedelta(seconds=1)
         User.objects.filter(pk=self.me.pk).update(last_seen=stale)
-        self.client.get('/api/users/me/', HTTP_X_AURA_PRESENCE='foreground')
+        self.client.get('/api/users/me/', HTTP_X_APPROX_PRESENCE='foreground')
         self.assertGreater(self._last_seen(), stale)
 
     def test_anonymous_request_is_ignored(self):
         anon = APIClient()
-        response = anon.get('/api/users/me/', HTTP_X_AURA_PRESENCE='foreground')
+        response = anon.get('/api/users/me/', HTTP_X_APPROX_PRESENCE='foreground')
         self.assertEqual(response.status_code, 401)
 
 
@@ -426,3 +426,34 @@ class LogoutTests(TestCase):
         response = self.client.post('/api/users/logout/', {}, format='json')
         self.assertEqual(response.status_code, 400)
         self.assertIsNone(User.objects.get(pk=self.me.pk).push_token)
+
+
+class LegacyPresenceHeaderTests(TestCase):
+    """The header the app sent before it was renamed from Aura.
+
+    Renaming a wire header is not a rename, it is a second header — every build
+    already on a phone keeps sending the old name until its owner updates, and
+    for some of them that is never. Dropping it would have stopped counting the
+    entire installed base as present, which looks exactly like "presence is
+    broken" and nothing like "we renamed the app".
+    """
+
+    def setUp(self):
+        self.user = make_user('legacy-client')
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_the_old_header_still_marks_somebody_present(self):
+        self.client.get('/api/users/me/', HTTP_X_AURA_PRESENCE='foreground')
+        self.user.refresh_from_db()
+        self.assertIsNotNone(self.user.last_seen)
+
+    def test_the_new_header_marks_somebody_present(self):
+        self.client.get('/api/users/me/', HTTP_X_APPROX_PRESENCE='foreground')
+        self.user.refresh_from_db()
+        self.assertIsNotNone(self.user.last_seen)
+
+    def test_neither_header_marks_nobody(self):
+        self.client.get('/api/users/me/')
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.last_seen)

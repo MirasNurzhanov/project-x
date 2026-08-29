@@ -316,7 +316,7 @@ def resolve_user(provider_name, claims, full_name=''):
         # placeholder would create a row nobody can ever sign into again.
         raise SocialAuthError(
             'That account did not share an email address, so it cannot be used '
-            'to create an Aura account.',
+            'to create an Approx account.',
             code='email_required',
         )
 
@@ -371,7 +371,7 @@ def link_identity(user, provider_name, claims):
             return existing_link
         raise SocialAuthError(
             f'That {provider_name.title()} account is already connected to a '
-            f'different Aura account.',
+            f'different Approx account.',
             status=409,
             code='identity_already_linked',
         )

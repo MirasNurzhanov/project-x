@@ -23,7 +23,7 @@ from proximity.urls import map_urlpatterns
 urlpatterns = [
     path("admin/", admin.site.urls),
     # HTML, not API: the Terms, Community Guidelines and Privacy pages the
-    # app links from its sign-up gate. Served from here because Aura has no
+    # app links from its sign-up gate. Served from here because Approx has no
     # marketing domain, and a legal document behind a URL that does not
     # resolve is the same as not having one. See moderation/legal_views.py.
     path("legal/", include("moderation.legal_urls")),

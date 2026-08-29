@@ -1,4 +1,4 @@
-"""Tear down Aura points, quests and the market scaffold.
+"""Tear down Approx points, quests and the market scaffold.
 
 The `quests` and `market` apps are gone from INSTALLED_APPS, so their own
 migrations can never run again — nothing would ever drop their tables. This

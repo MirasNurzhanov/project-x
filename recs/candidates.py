@@ -25,7 +25,7 @@ is the guarantee.
 
 ## What each source is for
 
-    friends           the people you chose. Aura's analogue of in-network.
+    friends           the people you chose. Approx's analogue of in-network.
     affinity          creators you keep engaging with, and who they engage with.
     collaborative     viewers whose taste matches yours liked these.
     similarity        same interests, same audio, same neighbourhood of content.
@@ -137,7 +137,7 @@ def _pack(ids, source, hints_for=None):
 def from_friends(viewer, cap, *, base=None):
     """Recent Swifts from the viewer's accepted friends.
 
-    Aura has no follow graph — the social model is mutual friendship — so this
+    Approx has no follow graph — the social model is mutual friendship — so this
     is the in-network source, and `approved_ids_for` is the same helper every
     other friends-only surface in the app uses. Reverse-chronological within
     the source: recency is what people expect from the people they chose, and
@@ -271,9 +271,9 @@ def from_similarity(viewer, cap, *, base=None):
     """Swifts whose creator shares interests with the viewer, or whose audio
     the viewer has engaged with before.
 
-    Aura has no learned content embeddings and this does not pretend to have
+    Approx has no learned content embeddings and this does not pretend to have
     them — X's SimClusters and TwHIN are exactly what this stage is *not*. What
-    Aura does have is an explicit, curated interest taxonomy that every user
+    Approx does have is an explicit, curated interest taxonomy that every user
     has already filled in, which is a better similarity signal than an untrained
     embedding and costs one join.
     """

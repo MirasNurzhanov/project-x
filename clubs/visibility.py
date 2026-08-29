@@ -85,11 +85,11 @@ class Unresolved:
 
     MESSAGES = {
         NO_LOCATION: (
-            'Aura needs your location to show clubs near you. Turn on location '
+            'Approx needs your location to show clubs near you. Turn on location '
             'access and open the map for a moment.'
         ),
         STALE: (
-            'Aura has not had your location for a while. Open the map for a '
+            'Approx has not had your location for a while. Open the map for a '
             'moment so it can catch up.'
         ),
         INACCURATE: (
@@ -97,7 +97,7 @@ class Unresolved:
             'Move somewhere with a clearer view of the sky and try again.'
         ),
         UNMAPPED: (
-            'Aura could not work out which city you are in, so it cannot show '
+            'Approx could not work out which city you are in, so it cannot show '
             'clubs scoped to one yet.'
         ),
     }

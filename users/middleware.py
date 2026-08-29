@@ -10,7 +10,7 @@ The one thing this must not do is count traffic from an app that is not open.
 `backgroundLocation` keeps hitting the API every 30s with the app closed, so a
 naive "any authenticated request means online" would leave those users pinned
 online indefinitely. Presence is therefore opt-in per request: the client sets
-`X-Aura-Presence: foreground`, and the background task does not.
+`X-Approx-Presence: foreground`, and the background task does not.
 
 A header is safe here because it can only ever make you *look present*, which is
 the thing the user is choosing to reveal — it grants no access and reveals
@@ -27,7 +27,11 @@ from .visibility import ONLINE_WINDOW
 #: while collapsing the ~12 requests a minute the app makes into one UPDATE.
 WRITE_EVERY = timedelta(seconds=30)
 
-HEADER = 'HTTP_X_AURA_PRESENCE'
+HEADER = 'HTTP_X_APPROX_PRESENCE'
+#: What it was called before the app was renamed from Aura. Every build already
+#: on a phone still sends this one, and will until its owner updates — so
+#: dropping it would quietly stop counting the entire installed base as present.
+LEGACY_HEADER = 'HTTP_X_AURA_PRESENCE'
 FOREGROUND = 'foreground'
 #: Paths that must never mark anyone present, whatever header they carry.
 #:
@@ -70,7 +74,7 @@ class PresenceMiddleware:
     def _touch(self, request):
         from .models import User
 
-        state = request.META.get(HEADER)
+        state = request.META.get(HEADER) or request.META.get(LEGACY_HEADER)
         if state not in (FOREGROUND, BACKGROUND):
             return
         if request.path in PRESENCE_EXEMPT_PATHS:

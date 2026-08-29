@@ -58,7 +58,7 @@ class Migration(migrations.Migration):
                 ('cloudinary_id', models.CharField(blank=True, max_length=200)),
                 ('artwork_url', models.URLField(blank=True, max_length=500)),
                 ('duration_ms', models.PositiveIntegerField(default=0)),
-                ('source', models.CharField(choices=[('owned', 'Aura owned'), ('licensed', 'Licensed'), ('open', 'Open licence')], max_length=8)),
+                ('source', models.CharField(choices=[('owned', 'Approx owned'), ('licensed', 'Licensed'), ('open', 'Open licence')], max_length=8)),
                 ('licence', models.CharField(max_length=200)),
                 ('attribution', models.CharField(blank=True, max_length=200)),
                 ('is_active', models.BooleanField(db_index=True, default=False)),

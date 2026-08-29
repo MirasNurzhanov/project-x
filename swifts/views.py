@@ -909,7 +909,7 @@ class SwiftReportView(APIView):
 
 # ─── Music catalogue ──────────────────────────────────────────────────────────
 class SwiftTrackListView(APIView):
-    """Aura's own music catalogue, for the composer's track picker.
+    """Approx's own music catalogue, for the composer's track picker.
 
     Only `is_active` rows, ever. A track is inactive until somebody has looked
     at its licence and published it, and this endpoint is the only way a
@@ -973,7 +973,7 @@ class SwiftMusicProviderStatusView(APIView):
 
     Staff only. The list names environment variables, which is operational
     detail a creator has no use for and an attacker would enjoy — and the app
-    never needs it: the picker reads Aura's own catalogue whether an importer
+    never needs it: the picker reads Approx's own catalogue whether an importer
     is configured or not.
     """
 

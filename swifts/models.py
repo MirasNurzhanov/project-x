@@ -626,9 +626,9 @@ class SwiftReport(models.Model):
 
 
 class SwiftTrack(models.Model):
-    """A song a Swift may play, from Aura's own catalogue.
+    """A song a Swift may play, from Approx's own catalogue.
 
-    **Aura-owned or licensed only.** Nothing in this table is scraped, and the
+    **Approx-owned or licensed only.** Nothing in this table is scraped, and the
     schema is deliberately shaped so that it cannot quietly become a scraper's
     landing zone: there is no source URL a client can write, `audio_url` is
     only ever set by an operator through the admin or a seeding command, and
@@ -649,8 +649,8 @@ class SwiftTrack(models.Model):
     """
 
     class Source(models.TextChoices):
-        #: Commissioned or bought outright. Aura owns it.
-        OWNED = 'owned', 'Aura owned'
+        #: Commissioned or bought outright. Approx owns it.
+        OWNED = 'owned', 'Approx owned'
         #: Licensed from a rights holder or a production-music library.
         LICENSED = 'licensed', 'Licensed'
         #: Creative Commons or public domain, with the attribution the licence

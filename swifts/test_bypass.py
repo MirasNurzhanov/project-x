@@ -1,4 +1,4 @@
-"""Trying to get a coordinate out of Aura without using the reveal.
+"""Trying to get a coordinate out of Approx without using the reveal.
 
 The rest of the location suite tests the gate from the inside: given these
 conditions, does the reveal allow or refuse. This one attacks from the outside.

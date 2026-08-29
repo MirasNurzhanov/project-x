@@ -307,7 +307,7 @@ class FeedShapeTests(SwiftTestCase):
         self.assertEqual(response.status_code, 200)
 
     def test_unauthenticated_access_is_refused(self):
-        """Aura has no anonymous content surface; Swifts does not add one."""
+        """Approx has no anonymous content surface; Swifts does not add one."""
         anon = APIClient()
         for name, args in (
             ('swift-feed', []), ('swift-mine', []),

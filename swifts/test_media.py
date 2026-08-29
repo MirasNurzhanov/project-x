@@ -19,7 +19,7 @@ from .testing import SwiftTestCase, fake_image, fake_video, make_swift, make_use
 
 def make_track(**extra):
     fields = {
-        'title': 'Night Drive', 'artist': 'Aura Sounds', 'genre': 'Lo-fi',
+        'title': 'Night Drive', 'artist': 'Approx Sounds', 'genre': 'Lo-fi',
         'audio_url': 'https://cdn.example.com/a/night.mp3',
         'duration_ms': 120_000,
         'source': SwiftTrack.Source.OWNED,
@@ -128,17 +128,19 @@ class TrackCatalogueTests(SwiftTestCase):
         self.assertNotIn('source', raw)
 
     def test_attribution_is_sent_because_a_licence_may_require_it(self):
-        make_track(attribution='Night Drive by Aura Sounds (CC BY 4.0)')
+        make_track(attribution='Night Drive by Approx Sounds (CC BY 4.0)')
         body = self.client.get(reverse('swift-tracks')).json()
         self.assertEqual(
             body['results'][0]['attribution'],
-            'Night Drive by Aura Sounds (CC BY 4.0)')
+            'Night Drive by Approx Sounds (CC BY 4.0)')
 
     def test_search_matches_title_artist_and_genre(self):
-        make_track(title='Night Drive', artist='Aura Sounds', genre='Lo-fi')
+        make_track(title='Night Drive', artist='Approx Sounds', genre='Lo-fi')
         make_track(title='Sunrise', artist='Other', genre='Ambient')
 
-        for query, expected in (('night', 'Night Drive'), ('aura', 'Night Drive'),
+        # The middle case is the artist, matched case-insensitively — the point
+        # being that a search hits all three columns, not just the title.
+        for query, expected in (('night', 'Night Drive'), ('approx', 'Night Drive'),
                                 ('ambient', 'Sunrise')):
             with self.subTest(query=query):
                 body = self.client.get(f"{reverse('swift-tracks')}?q={query}").json()

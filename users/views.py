@@ -75,7 +75,7 @@ class _TermsRequired(Exception):
         super().__init__('Agreement to the Terms of Use is required.')
         self.detail = {
             'detail': (
-                'Please read and agree to the Aura Terms of Use and Community '
+                'Please read and agree to the Approx Terms of Use and Community '
                 'Guidelines to continue.'
             ),
             'code': 'terms_required',
@@ -204,7 +204,7 @@ class SocialLoginView(APIView):
     """Sign in — or sign up — with Google or Apple.
 
     One endpoint for both, and for both halves of the flow, because from here
-    they are the same request: a provider identity token comes in, an Aura
+    they are the same request: a provider identity token comes in, an Approx
     session goes out. Whether that meant creating a row or finding one is an
     outcome, not a different call — the app cannot know in advance which it
     will be, and a client that had to guess would get it wrong for exactly the

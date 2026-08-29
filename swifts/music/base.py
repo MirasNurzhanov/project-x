@@ -1,8 +1,8 @@
-"""What a music provider has to be, so that Aura is not tied to any one of them.
+"""What a music provider has to be, so that Approx is not tied to any one of them.
 
 A provider answers two questions: *what tracks are there*, and *where is the
 audio*. Everything else — licensing, publication, ordering, use counts — is
-Aura's, and lives on `SwiftTrack`.
+Approx's, and lives on `SwiftTrack`.
 
 The important structural decision is that providers **sync into the local
 catalogue rather than being proxied at request time.** A track picker that
@@ -23,7 +23,7 @@ class ProviderTrack:
     """One track as a provider describes it, before it becomes a SwiftTrack.
 
     Deliberately not a Django model. A provider returns facts about a track;
-    whether Aura *publishes* it is a separate decision made by a person, and
+    whether Approx *publishes* it is a separate decision made by a person, and
     keeping the two apart is what stops a sync silently putting unvetted audio
     in front of creators.
     """
@@ -52,7 +52,7 @@ class ProviderTrack:
         if not self.licence:
             raise ValueError(
                 f'track {self.external_id!r} has no licence statement — '
-                'a track Aura cannot say it has the right to use is not importable'
+                'a track Approx cannot say it has the right to use is not importable'
             )
 
 

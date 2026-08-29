@@ -9,7 +9,7 @@ Effect on existing accounts (deliberate, see the notes on each step):
                                re-snapped here so the precise position they had
                                on file is destroyed, not just hidden.
   * invisible  -> paused       no change
-  * stories, stats/Aura points and connection lists become Friends-only for
+  * stories, stats/Approx points and connection lists become Friends-only for
     everyone. Nobody's account becomes more open on these fields.
   * interests stay Everyone (they drive matching), leaderboard stays opt-out,
     search discoverability stays on.

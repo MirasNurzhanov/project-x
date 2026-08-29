@@ -627,7 +627,7 @@ class TermsTests(TestCase):
         path is exercised. It is a distinct case from any number - see
         `users.clientinfo.client_build`.
         """
-        headers = {} if build is None else {'HTTP_X_AURA_BUILD': str(build)}
+        headers = {} if build is None else {'HTTP_X_APPROX_BUILD': str(build)}
         return APIClient().post('/api/users/login/', {
             'email': user.email, 'password': 'pw-a-real-one-1', **extra,
         }, format='json', **headers)
@@ -872,7 +872,7 @@ class TermsTests(TestCase):
 
         for build in (None, 31, 32):
             with self.subTest(build=build):
-                headers = {} if build is None else {'HTTP_X_AURA_BUILD': str(build)}
+                headers = {} if build is None else {'HTTP_X_APPROX_BUILD': str(build)}
                 res = APIClient().post('/api/users/login/', {
                     'email': 'rightpw32@example.com', 'password': 'wrong-password',
                 }, format='json', **headers)

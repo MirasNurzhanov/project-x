@@ -120,7 +120,7 @@ class SourceQuotas:
     new_creator_floor: int = 1
     """Reserved exposure. A new creator's first Swifts are unrankable — no
     engagement history means every rate estimate is a prior — so they get slots
-    by reservation rather than by score. This is Aura's version of the
+    by reservation rather than by score. This is Approx's version of the
     exploration budget X spends through FRS."""
 
     cold_start_cap: int = 120

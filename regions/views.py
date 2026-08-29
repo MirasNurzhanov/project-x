@@ -222,7 +222,7 @@ class RegionTraceView(APIView):
         user = request.user
         if user.latitude is None or user.longitude is None:
             return Response(
-                {'detail': 'Aura needs your location before you can trace an area.'},
+                {'detail': 'Approx needs your location before you can trace an area.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

@@ -2,7 +2,7 @@
 
 One header, read in one place. The app sets it centrally in
 `services/api.ts` — on the axios instance's request interceptor, alongside
-`X-Aura-Presence`, and on the handful of calls that deliberately use bare axios
+`X-Approx-Presence`, and on the handful of calls that deliberately use bare axios
 because they run before a session exists. No screen sets it by hand.
 
 This exists because a server-side rule cannot be introduced to a shipped app
@@ -20,8 +20,21 @@ what a forged value can and cannot buy, and why the mitigation is closing the
 window rather than trying to make the header unforgeable.
 """
 
-#: WSGI form of `X-Aura-Build`.
-CLIENT_BUILD_HEADER = 'HTTP_X_AURA_BUILD'
+#: WSGI form of `X-Approx-Build`.
+CLIENT_BUILD_HEADER = 'HTTP_X_APPROX_BUILD'
+
+#: What the same header was called before the app was renamed from Aura.
+#:
+#: Read as a fallback, and this is not tidiness — it is the whole point of the
+#: mechanism above applied to itself. Every build already on a phone sends the
+#: old name and will keep sending it until its owner updates, which for some of
+#: them is never. Dropping the old name would make every one of those clients
+#: look like a client that predates the Terms gate entirely, and silently move
+#: the whole installed base onto the legacy path this module exists to shrink.
+#:
+#: Safe to delete once the oldest supported build sends the new name, which is
+#: the same condition `TERMS_ENFORCEMENT_ALLOW_LEGACY` is waiting on.
+LEGACY_CLIENT_BUILD_HEADER = 'HTTP_X_AURA_BUILD'
 
 
 def client_build(request):
@@ -40,6 +53,8 @@ def client_build(request):
     produce a 500 on the login endpoint.
     """
     raw = request.META.get(CLIENT_BUILD_HEADER)
+    if raw is None:
+        raw = request.META.get(LEGACY_CLIENT_BUILD_HEADER)
     if raw is None:
         return None
     try:

@@ -1,6 +1,6 @@
 """The only module in the project that talks to Cloudflare.
 
-Everything Aura-specific is deliberately absent: this file does not import a
+Everything Approx-specific is deliberately absent: this file does not import a
 model, does not know what a Swift is, and does not decide whether anything gets
 published. It turns bytes into a `ModerationResult` and raises a typed error
 when it cannot. `swifts.ai_moderation` is where those results become a

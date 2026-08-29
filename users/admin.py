@@ -94,7 +94,7 @@ class CustomUserAdmin(UserAdmin):
             user.suspended_at = now
             user.suspended_until = now + timedelta(days=days) if days else None
             user.suspension_reason = (
-                user.suspension_reason or 'Violation of the Aura Terms of Use.'
+                user.suspension_reason or 'Violation of the Approx Terms of Use.'
             )
             user.save(update_fields=[
                 'suspended_at', 'suspended_until', 'suspension_reason',

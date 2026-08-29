@@ -1,4 +1,4 @@
-"""Load profile for Aura's API, shaped like the app actually behaves.
+"""Load profile for Approx's API, shaped like the app actually behaves.
 
 Not a synthetic hammer on one URL. The weights below come from the client's own
 polling: the map ticks every 10s, the chat tab every 15s (and fetches *two* club
@@ -17,7 +17,7 @@ Headless, for a repeatable run in CI or before a deploy:
 
 Credentials come from the environment so no password is ever written down here:
 
-    AURA_LOAD_EMAIL=you@example.com AURA_LOAD_PASSWORD=... locust -f ...
+    APPROX_LOAD_EMAIL=you@example.com APPROX_LOAD_PASSWORD=... locust -f ...
 
 Point this at a staging database. It writes: locations move, encounters and
 nearby alerts get logged, and clubs get joined.
@@ -35,17 +35,17 @@ BASE_LAT, BASE_LON = 25.2048, 55.2708
 JITTER = 0.015
 
 
-class AuraUser(HttpUser):
+class ApproxUser(HttpUser):
     # The app is a poller, not a thinker. Short waits, because the intervals in
     # the tasks below are what actually shape the load.
     wait_time = between(1, 3)
 
     def on_start(self):
-        email = os.environ.get('AURA_LOAD_EMAIL')
-        password = os.environ.get('AURA_LOAD_PASSWORD')
+        email = os.environ.get('APPROX_LOAD_EMAIL')
+        password = os.environ.get('APPROX_LOAD_PASSWORD')
         if not email or not password:
             raise RuntimeError(
-                'Set AURA_LOAD_EMAIL and AURA_LOAD_PASSWORD before running.'
+                'Set APPROX_LOAD_EMAIL and APPROX_LOAD_PASSWORD before running.'
             )
         response = self.client.post(
             '/api/users/login/',
@@ -58,7 +58,7 @@ class AuraUser(HttpUser):
             # Marks the traffic as foregrounded, which is what the presence
             # middleware keys on — without it this load test would not exercise
             # the `last_seen` write path at all.
-            'X-Aura-Presence': 'foreground',
+            'X-Approx-Presence': 'foreground',
             'Accept-Encoding': 'gzip',
         })
         self.club_ids = []

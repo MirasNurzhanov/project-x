@@ -86,8 +86,8 @@ class Verdict:
         material does not need help finding the wording that gets through.
         """
         return (
-            'This breaks the Aura Community Guidelines and cannot be posted. '
-            'Aura has zero tolerance for objectionable content.'
+            'This breaks the Approx Community Guidelines and cannot be posted. '
+            'Approx has zero tolerance for objectionable content.'
         )
 
 

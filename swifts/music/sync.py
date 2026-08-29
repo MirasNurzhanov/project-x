@@ -12,7 +12,7 @@ gate decorative.
 **A re-sync updates, it does not duplicate.** Rows are matched on
 `(provider, provider_track_id)`, which is why those columns exist. And a
 re-sync deliberately leaves `is_active`, `priority` and `cloudinary_id` alone:
-those are Aura's editorial decisions about a track, not facts the provider owns,
+those are Approx's editorial decisions about a track, not facts the provider owns,
 and an upstream metadata change must not silently unpublish something or throw
 away a mirrored file.
 """
@@ -42,7 +42,7 @@ class SyncResult:
 
 
 #: Fields a re-sync is allowed to overwrite. Everything absent from this list
-#: is Aura's and survives an upstream change — see the module note.
+#: is Approx's and survives an upstream change — see the module note.
 PROVIDER_OWNED_FIELDS = (
     'title', 'artist', 'genre', 'duration_ms', 'audio_url', 'artwork_url',
     'licence', 'attribution',

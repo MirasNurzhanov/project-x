@@ -7,7 +7,7 @@ down rather than degrade one feature. That is the wrong trade here, because the
 runtime already fails in the safe direction on its own: with credentials
 missing, `cloudflare_ai.credentials()` raises, every job fails, and every new
 Swift stays `PENDING` and therefore invisible. Nothing gets published
-unscreened either way; the difference is whether the *rest* of Aura stays up
+unscreened either way; the difference is whether the *rest* of Approx stays up
 while somebody fixes a variable.
 
 What the warnings buy is that the misconfiguration is noticed at deploy time,

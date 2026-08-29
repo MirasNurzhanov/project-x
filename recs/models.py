@@ -51,7 +51,7 @@ class SwiftSignal(models.Model):
         REPOST = 'repost', 'Reposted'
         PROFILE_OPEN = 'profile_open', 'Opened creator profile'
         LOCATION_REVEAL = 'location_reveal', 'Revealed location'
-        #: Reserved. Aura has no share-to-elsewhere action today — repost is
+        #: Reserved. Approx has no share-to-elsewhere action today — repost is
         #: the in-app equivalent — so nothing emits this yet. Declared so that
         #: adding sharing later is a client change and not a migration.
         SHARE = 'share', 'Shared'
@@ -162,7 +162,7 @@ class SwiftSignal(models.Model):
 class CreatorAffinity(models.Model):
     """How much one viewer has liked one creator's work, so far.
 
-    The request-path summary of `SwiftSignal`, and Aura's stand-in for X's
+    The request-path summary of `SwiftSignal`, and Approx's stand-in for X's
     real-graph: a single number per (viewer, creator) pair predicting whether
     this viewer wants more from this creator.
 

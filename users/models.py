@@ -568,9 +568,9 @@ class User(AbstractUser):
         if not self.is_suspended(now):
             return None
         return {
-            'detail': 'This account is suspended for breaking the Aura Terms of Use.',
+            'detail': 'This account is suspended for breaking the Approx Terms of Use.',
             'code': 'account_suspended',
-            'reason': self.suspension_reason or 'Violation of the Aura Terms of Use.',
+            'reason': self.suspension_reason or 'Violation of the Approx Terms of Use.',
             'until': self.suspended_until.isoformat() if self.suspended_until else None,
             'permanent': self.suspended_until is None,
         }
@@ -611,7 +611,7 @@ class ProfileLink(models.Model):
 
 
 class SocialAccount(models.Model):
-    """A Google or Apple identity attached to an Aura account.
+    """A Google or Apple identity attached to an Approx account.
 
     Keyed on the provider's `sub`, not on the email. `sub` is the only value
     either provider promises never changes: Apple's is per-app and permanent,

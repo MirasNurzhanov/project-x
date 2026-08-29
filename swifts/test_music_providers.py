@@ -189,7 +189,7 @@ class SyncTests(SwiftTestCase):
         self.assertEqual(track.title, 'Renamed')
 
     def test_a_resync_keeps_a_mirrored_cloudinary_id(self):
-        """Aura's copy of the audio is Aura's, and re-importing metadata must
+        """Approx's copy of the audio is Approx's, and re-importing metadata must
         not throw it away."""
         sync.apply_tracks('epidemic', [provider_track()])
         SwiftTrack.objects.update(cloudinary_id='tracks/mirrored')

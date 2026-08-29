@@ -241,7 +241,7 @@ class LeavingAZoneYouAlreadyHaveTests(FollowFixture):
 
     So the picker that would have let you choose the new district is
     unreachable, and every attempt ends in an alert naming the *old* district,
-    which reads as "Aura will not let me leave this place".
+    which reads as "Approx will not let me leave this place".
 
     The check now runs only when the region is actually changing, and the app
     no longer re-sends an unchanged one. Either fix alone would close this;

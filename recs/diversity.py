@@ -8,7 +8,7 @@ individually the right answer. The feed is still wrong.
 
 X solves this with Maximal Marginal Relevance over learned embeddings — pick
 greedily, but penalise each candidate by its similarity to what has already
-been picked. This is MMR with a similarity function Aura can actually compute:
+been picked. This is MMR with a similarity function Approx can actually compute:
 
     same creator      1.0
     same audio track  0.6

@@ -4,7 +4,7 @@
 
 **Epidemic Sound's ordinary subscription does not cover this use.** A personal
 or commercial subscription licenses *you* to put their music in *your* content.
-Aura is a platform whose users attach music to videos Aura then redistributes,
+Approx is a platform whose users attach music to videos Approx then redistributes,
 which is a different thing and needs their **Partner / API agreement**. That
 agreement is what issues the credentials below; there is no self-serve key that
 makes this legal, and a subscription login is not a substitute for one.
@@ -21,7 +21,7 @@ configuration or a five-line edit rather than a rewrite. They are marked
 ## How it fits
 
 This provider does not serve the picker. It *syncs* into `SwiftTrack`, and the
-picker reads Aura's own table — see `swifts/music/base.py` for why. Nothing a
+picker reads Approx's own table — see `swifts/music/base.py` for why. Nothing a
 creator does causes a request to Epidemic Sound.
 """
 import time

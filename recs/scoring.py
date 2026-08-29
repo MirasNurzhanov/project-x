@@ -2,7 +2,7 @@
 
 ## This is not a model, and does not pretend to be one
 
-Aura has no trained ranker, because Aura has no training data yet — the table
+Approx has no trained ranker, because Approx has no training data yet — the table
 that will hold it (`SwiftSignal`) was created in this same change and is empty.
 So what follows is a **deterministic estimator**: each head is a hand-written
 function of the features, and the heads are combined with the weights in

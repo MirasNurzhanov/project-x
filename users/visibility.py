@@ -167,7 +167,7 @@ def is_approved_viewer(rel):
 #: It has a real consequence on Android and that consequence is correct. Android
 #: ships with `isAndroidBackgroundLocationEnabled: false`, so positions there
 #: stop the moment the app leaves the foreground; an Android user who backgrounds
-#: Aura drops off other people's maps about fifteen minutes later even though
+#: Approx drops off other people's maps about fifteen minutes later even though
 #: they are still checked in. That is the honest outcome — we genuinely do not
 #: know where they are — and `is_sharing` keeps them able to resume instantly by
 #: reopening the app, without touching the setting.
