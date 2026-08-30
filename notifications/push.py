@@ -23,6 +23,8 @@ import threading
 import requests
 from django.conf import settings
 
+from . import push_dispatcher
+
 EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send'
 
 #: Expo's documented ceiling for one request. Larger lists are chunked.
@@ -122,6 +124,19 @@ def _queue(messages):
         return 0
     if getattr(settings, 'PUSH_DISABLED', False):
         return len(messages)
+
+    # Prefer the Go dispatcher when one is configured — it bounds the work,
+    # rate-limits Expo and retries transient failures, none of which the
+    # thread below can do. See `notifications.push_dispatcher` for why the
+    # split is where it is.
+    #
+    # `send` returns False if the dispatcher is unreachable or shedding load,
+    # and then this falls through to the original path. That fallback is the
+    # whole reason this is safe to switch on: the worst case is the behaviour
+    # you have today.
+    if push_dispatcher.configured() and push_dispatcher.send(messages):
+        return len(messages)
+
     threading.Thread(target=_post, args=(messages,), daemon=True).start()
     return len(messages)
 

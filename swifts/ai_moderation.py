@@ -362,7 +362,7 @@ def _effective_duration_ms(swift):
 
 # ─── Recording the outcome ────────────────────────────────────────────────────
 @transaction.atomic
-def settle(job, decision, *, audio_checked=False):
+def settle(job, decision, *, audio_checked=False, model_used=None):
     """Write a finished decision to the Swift, the job and the queue.
 
     One transaction, because the three have to agree. A Swift quarantined with
@@ -377,7 +377,13 @@ def settle(job, decision, *, audio_checked=False):
     job.sampled_ms = ','.join(str(ms) for ms in decision.sampled_ms)[:200]
     job.frames_requested = decision.frames_requested
     job.frames_classified = decision.frames_classified
-    job.model_used = cloudflare_ai.vision_model()[:120]
+    # The model that actually ran. Defaults to this process's configured one,
+    # which is right when the in-process path did the work — but the Go worker
+    # in services/go-moderation is told which model to call in its lease, and
+    # that value can differ from what this process would have picked if the
+    # setting changed mid-flight. Recording what ran beats recording what we
+    # would have run.
+    job.model_used = (model_used or cloudflare_ai.vision_model())[:120]
     job.audio_checked = audio_checked
     job.state = SwiftModerationJob.State.DONE
     job.finished_at = timezone.now()

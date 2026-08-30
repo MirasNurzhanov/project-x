@@ -58,20 +58,47 @@ class Command(BaseCommand):
             self._status()
             return
 
-        if not ai_moderation.enabled():
-            self.stdout.write(self.style.WARNING(
-                'SWIFT_AI_MODERATION_ENABLED is off - nothing to do. '
-                'Existing queued jobs are left alone.'))
-            return
-
+        # One pass, by hand. Exiting when the feature is off is right here -
+        # somebody typed this and wants to be told nothing happened.
         if not options['loop']:
+            if not ai_moderation.enabled():
+                self.stdout.write(self.style.WARNING(
+                    'SWIFT_AI_MODERATION_ENABLED is off - nothing to do. '
+                    'Existing queued jobs are left alone.'))
+                return
             self._pass(options['limit'])
             return
 
+        # -- --loop: a supervised worker process ------------------------------
+        #
+        # The enabled() check moved *inside* the loop, and that is the whole
+        # reason this branch exists separately.
+        #
+        # This runs as `worker:` in the Procfile, under a supervisor whose job
+        # is to restart anything that exits. So "the feature is off, return" -
+        # correct for a human at a terminal - becomes an exit-0 crash loop: the
+        # process dies instantly, Railway restarts it, forever, about once a
+        # second. `SWIFT_AI_MODERATION_ENABLED` is off by default, so that is
+        # the worker's *default* behaviour rather than an edge case.
+        #
+        # Idling instead means the switch can be turned on without the worker
+        # needing to be redeployed to notice, and a disabled feature costs one
+        # settings read per interval instead of a restart.
         self.stdout.write(f'Sweeping every {options["interval"]}s. Ctrl-C to stop.')
+        idle_logged = False
         try:
             while True:
-                self._pass(options['limit'])
+                if ai_moderation.enabled():
+                    idle_logged = False
+                    self._pass(options['limit'])
+                elif not idle_logged:
+                    # Once per transition, not once per tick: a worker logging
+                    # every interval about a feature nobody turned on is a log
+                    # bill and nothing else.
+                    self.stdout.write(self.style.WARNING(
+                        'SWIFT_AI_MODERATION_ENABLED is off - idling. '
+                        'Turn it on to start sweeping; no restart needed.'))
+                    idle_logged = True
                 time.sleep(options['interval'])
         except KeyboardInterrupt:
             self.stdout.write('\nStopped.')

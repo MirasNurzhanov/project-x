@@ -485,12 +485,38 @@ SWIFT_AI_STALE_AFTER_S = config('SWIFT_AI_STALE_AFTER_S', default=900, cast=int)
 SWIFT_AI_AUDIO_MODERATION_ENABLED = config(
     'SWIFT_AI_AUDIO_MODERATION_ENABLED', default=False, cast=bool)
 
+#: Shared secret for the Go moderation worker (services/go-moderation).
+#:
+#: Blank means the `/api/internal/moderation/` endpoints refuse everything —
+#: closed rather than open, which is the opposite of the usual "unset disables
+#: the check" default. Getting that backwards would let anything on the network
+#: lease moderation jobs and forge verdicts, so the safe direction is the one
+#: that stops the worker rather than the one that stops the guard.
+MODERATION_WORKER_TOKEN = config('MODERATION_WORKER_TOKEN', default='')
+
 #: Set by `core.test_settings`. Stops the in-process worker thread from being
 #: started, so a test drives the pipeline synchronously and nothing outlives
 #: the case that spawned it — the same arrangement, and the same reason, as
 #: `PUSH_DISABLED` in `notifications.push`.
 SWIFT_AI_MODERATION_SYNC = config(
     'SWIFT_AI_MODERATION_SYNC', default=False, cast=bool)
+
+# ── Push dispatcher (the Go service in ../approx-push) ────────────────────────
+# Blank means "send pushes the way we always have", which is the default and is
+# what every existing deployment keeps doing. Set the URL and this hands
+# delivery to `approx-push`, which bounds the fan-out, rate-limits Expo and
+# retries transient failures — see notifications/push_dispatcher.py.
+#
+# In Kubernetes the URL is the Service's cluster DNS name; locally it is
+# whatever `go run .` is listening on.
+#
+#   PUSH_DISPATCHER_URL=http://approx-push.default.svc.cluster.local/v1/push
+#   PUSH_DISPATCHER_URL=http://127.0.0.1:8080/v1/push
+#
+# The token is the same value the Go service reads as PUSH_AUTH_TOKEN. Both
+# sides should read it from one secret rather than two copies that can drift.
+PUSH_DISPATCHER_URL = config('PUSH_DISPATCHER_URL', default='')
+PUSH_DISPATCHER_TOKEN = config('PUSH_DISPATCHER_TOKEN', default='')
 
 # ── Legal ─────────────────────────────────────────────────────────────────────
 # Where the Terms of Use, Community Guidelines and Privacy pages live.

@@ -1,0 +1,151 @@
+# Local development: Django, its two backing services, and the two Go services.
+#
+# This file is new. The app deploys to Railway from the Procfile and there was
+# no compose file before the Go services arrived — so this exists to run the
+# integration end to end on one machine, not to describe production. The
+# differences from production are called out at the bottom.
+#
+#   docker compose up --build
+#   docker compose logs -f go-moderation
+#
+# Everything works with no .env: the defaults below are development values and
+# there are no real credentials in this file.
+
+name: approx
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: approx
+      POSTGRES_USER: approx
+      POSTGRES_PASSWORD: approx
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Django and the Go workers both wait on this. Without it they race the
+      # database's first-boot initialisation and fail on the first connection,
+      # which looks like a bug in the app rather than a startup ordering issue.
+      test: ["CMD-SHELL", "pg_isready -U approx -d approx"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  django:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      sh -c "python manage.py migrate &&
+             uvicorn core.asgi:application --host 0.0.0.0 --port 8000 --reload"
+    environment:
+      SECRET_KEY: dev-only-not-a-real-secret
+      DEBUG: "True"
+      DATABASE_URL: postgres://approx:approx@postgres:5432/approx
+      REDIS_URL: redis://redis:6379
+
+      # Storage. R2 is not run locally, so these are placeholders that satisfy
+      # `config()` at import time — media uploads will not work in compose, and
+      # that is fine for exercising the moderation loop, which only needs URLs.
+      R2_ACCESS_KEY_ID: dev
+      R2_SECRET_ACCESS_KEY: dev
+      R2_BUCKET_NAME: dev
+      R2_ENDPOINT_URL: http://localhost:9000
+      R2_PUBLIC_URL: http://localhost:9000
+
+      # The shared secrets. One value each, read by both sides — see the
+      # matching entries on the Go services below.
+      MODERATION_WORKER_TOKEN: dev-moderation-token
+      PUSH_DISPATCHER_TOKEN: dev-push-token
+      PUSH_DISPATCHER_URL: http://go-push:8080/v1/push
+
+      # AI moderation stays OFF by default even here. Turning it on without
+      # real Cloudflare credentials holds every uploaded Swift at PENDING,
+      # which is correct behaviour and a confusing first experience.
+      SWIFT_AI_MODERATION_ENABLED: "False"
+    ports:
+      - "8000:8000"
+    volumes:
+      # Bind-mounted for --reload. The Go services deliberately do not do this:
+      # a compiled binary has nothing to hot-reload, and rebuilding the image is
+      # the edit-test loop.
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Go services ────────────────────────────────────────────────────────────
+
+  go-moderation:
+    build:
+      context: ./services/go-moderation
+    environment:
+      DJANGO_BASE_URL: http://django:8000
+      MODERATION_WORKER_TOKEN: dev-moderation-token
+
+      # Empty in compose. Every job then fails closed — Django leaves the Swift
+      # PENDING, which is invisible — and the worker says so at startup. Put
+      # real values here only if you want to spend real Cloudflare credits.
+      CLOUDFLARE_ACCOUNT_ID: ""
+      CLOUDFLARE_API_TOKEN: ""
+      CLOUDFLARE_MEDIA_TRANSFORM_BASE: ""
+
+      MOD_POLL_INTERVAL_S: "5"
+      MOD_MAX_JOBS: "4"
+      MOD_MAX_FRAMES: "6"
+      MOD_RATE_PER_SEC: "8"
+      MOD_DEBUG: "1"
+    ports:
+      # The probe/stats surface only. This service's real work is the outbound
+      # poll loop, so nothing needs to reach it.
+      - "8081:8081"
+    depends_on:
+      - django
+
+  go-push:
+    build:
+      context: ./services/go-push
+    environment:
+      PUSH_AUTH_TOKEN: dev-push-token
+      PUSH_WORKERS: "4"
+      PUSH_RATE_PER_SEC: "10"
+      PUSH_DEBUG: "1"
+      # Point at a local sink rather than Expo so `docker compose up` cannot
+      # send a real notification to a real phone. Swap for the real URL — the
+      # default in main.go — when you actually want delivery.
+      EXPO_PUSH_URL: http://django:8000/api/internal/does-not-exist/
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:
+
+# ─── How this differs from production ────────────────────────────────────────
+#
+# Django:  deploys to Railway from the Procfile, not from the Dockerfile here.
+#          The Dockerfile exists for this file's benefit only.
+#
+# Go:      each service is a static binary in a `scratch` image, so on Railway
+#          they are two additional services built from
+#          services/go-*/Dockerfile — no Procfile, no buildpack, no runtime to
+#          install. That is the deployment difference worth internalising:
+#          adding a Go service to the platform is "here is a container", while
+#          adding a Python one is "here is a container plus an interpreter plus
+#          a dependency set that must resolve at boot".
+#
+# Secrets: the tokens above are development literals. In production both sides
+#          of each pair read one secret from the platform, so they cannot drift.

@@ -1,0 +1,8 @@
+# Keep the build context tiny. Everything the image needs is .go files + go.mod.
+k8s/
+README.md
+*.md
+.git
+.gitignore
+Dockerfile
+.dockerignore

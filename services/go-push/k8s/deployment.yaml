@@ -1,0 +1,142 @@
+# Deployment for approx-push.
+#
+# Read this alongside what the Django deployment would need, because the
+# differences are the point of the exercise. Notes marked "vs Django" call them
+# out.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: approx-push
+  labels:
+    app.kubernetes.io/name: approx-push
+    app.kubernetes.io/part-of: approx
+spec:
+  # Three, so a rolling deploy always leaves somewhere for traffic to go.
+  #
+  # vs Django: replica count there is bounded by database connections — each
+  # gunicorn/uvicorn worker holds its own pool, so 3 pods × 4 workers × a pool
+  # of 12 is 144 connections against a Postgres that defaults to 100. This
+  # service opens no database connections at all, so replicas are bounded only
+  # by how much of Expo's rate limit you want to spend.
+  replicas: 3
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0 # never drop below `replicas` during a deploy
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: approx-push
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: approx-push
+    spec:
+      # Must exceed PUSH_DRAIN_WAIT_S below, or Kubernetes SIGKILLs the process
+      # part-way through draining and the in-memory queue is lost — which is
+      # the one failure mode this design is most exposed to. 20s drain inside a
+      # 30s grace leaves headroom.
+      terminationGracePeriodSeconds: 30
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: approx-push
+          image: ghcr.io/arcanix/approx-push:0.1.0 # replace with your registry
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8080
+
+          env:
+            - name: PUSH_ADDR
+              value: ":8080"
+            - name: PUSH_WORKERS
+              value: "8"
+            - name: PUSH_QUEUE_SIZE
+              value: "4096"
+            # Per *pod*, so the cluster-wide rate is this × replicas. Set it
+            # with that multiplication in mind — three pods at 30/s is 90/s at
+            # Expo, not 30.
+            - name: PUSH_RATE_PER_SEC
+              value: "30"
+            - name: PUSH_RATE_BURST
+              value: "60"
+            - name: PUSH_DRAIN_WAIT_S
+              value: "20"
+            - name: PUSH_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: approx-push
+                  key: auth-token
+
+          # vs Django: these numbers are the headline difference. A Django pod
+          # needs 256–512Mi before it does anything, because the interpreter,
+          # the imported world and each worker's copy of it all live in
+          # resident memory. This process is a static binary with a bounded
+          # queue; 64Mi is generous.
+          #
+          # requests == limits on memory is deliberate: it puts the pod in the
+          # Guaranteed QoS class, so it is the last thing evicted under node
+          # pressure. No CPU limit on purpose — CPU limits cause throttling
+          # that looks exactly like a slow dependency, and this workload is
+          # I/O-bound anyway.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 64Mi
+
+          # Liveness: "is the process wedged?" Failing this *kills* the pod, so
+          # it checks only that the HTTP loop is answering. Never point this at
+          # a dependency — a slow Expo would turn into a crash loop.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          # Readiness: "send me traffic?" Failing this only removes the pod
+          # from the Service, which is what you want when its queue is full —
+          # requests shift to a pod with room.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+
+          # vs Django: a Django pod usually needs a startupProbe with a
+          # generous failureThreshold, because loading Django, its apps and
+          # every model can take 5–15 seconds. This binary is listening in
+          # single-digit milliseconds, so there is nothing to wait for.
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true # the image has nothing to write to anyway
+            capabilities:
+              drop: ["ALL"]
+---
+# The Secret is shown for completeness. In practice generate it out of band —
+# `kubectl create secret generic approx-push --from-literal=auth-token=$(openssl rand -hex 32)`
+# — and keep it out of git. Django reads the same value from its own settings.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: approx-push
+type: Opaque
+stringData:
+  auth-token: "replace-me-with-a-real-random-value"

@@ -210,6 +210,28 @@ def combine_frames(results, *, requested, threshold=DEFAULT_UNSAFE_CONFIDENCE):
             frames_classified=len(classified),
         )
 
+    # Nothing came back at all. Guarded before the proportional rule below,
+    # because that rule compares against `min(needed, requested)` — and with
+    # `requested` zero the comparison is `0 < 0`, which is False, which would
+    # make "no frames were classified" an *approval*.
+    #
+    # That was unreachable while the only caller passed `requested=len(
+    # timestamps)`, which is never zero. Exposing the decision over HTTP to the
+    # Go worker made it reachable: an empty frame list would have published the
+    # Swift. Found by
+    # `swifts/test_worker_endpoints.py::test_a_worker_cannot_publish_a_swift_by_asserting_it_is_safe`.
+    #
+    # The rule stated positively: an approval requires evidence, and zero
+    # frames is not evidence.
+    if not classified:
+        return Decision(
+            outcome=FAILED,
+            basis=INSUFFICIENT_FRAMES,
+            frames_requested=requested,
+            frames_classified=0,
+            error='no frames were classified',
+        )
+
     needed = max(MIN_FRAMES, int(requested * MIN_FRAME_FRACTION + 0.999))
     if len(classified) < min(needed, requested):
         return Decision(

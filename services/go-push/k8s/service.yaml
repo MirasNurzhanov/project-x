@@ -1,0 +1,65 @@
+# The Service is what gives Django a stable address to POST to.
+#
+# ClusterIP, not LoadBalancer and not an Ingress: nothing outside the cluster
+# should ever reach this. The only client is Django, which lives in the same
+# cluster, and the bearer token is a second lock rather than the only one.
+#
+# Once this exists, Django's setting is simply:
+#
+#     PUSH_SERVICE_URL = "http://approx-push.default.svc.cluster.local:80/v1/push"
+#
+# Kubernetes' DNS resolves that name to whichever pods are currently passing
+# their readiness probe — so a saturated pod removes itself from this list and
+# stops receiving traffic without anything having to reconfigure Django.
+apiVersion: v1
+kind: Service
+metadata:
+  name: approx-push
+  labels:
+    app.kubernetes.io/name: approx-push
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: approx-push
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+---
+# Optional, and included because it is where the Go/Django difference shows up
+# most sharply.
+#
+# Scaling this service is genuinely elastic: pods start in milliseconds, hold
+# no database connections, and keep no state a new pod needs to warm up. So an
+# HPA can react to a burst and be useful before the burst is over.
+#
+# vs Django: autoscaling web pods is a much heavier decision. Each new pod
+# takes seconds to boot, then claims a block of Postgres connections — so
+# scaling out under load can exhaust the connection limit and make the incident
+# worse. That is the reason a Django deployment usually sits at a fixed replica
+# count with PgBouncer in front, rather than scaling on CPU.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: approx-push
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: approx-push
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Slow to scale down: a pod removed mid-drain loses whatever was queued
+      # in it. Five minutes of stability before shrinking is cheap insurance
+      # against a spiky workload thrashing the replica count.
+      stabilizationWindowSeconds: 300

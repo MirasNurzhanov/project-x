@@ -41,4 +41,9 @@ urlpatterns = [
     path("api/swifts/", include("swifts.urls")),
     # The recommender rides the same prefix as the feed it ranks — see recs/urls.
     path("api/swifts/", include("recs.urls")),
+    # Machine-to-machine only: the Go moderation worker in
+    # services/go-moderation. Gated by a shared secret, never a user session —
+    # see swifts/worker_views.py. Kept under its own prefix so it is obvious
+    # from this file that nothing here is part of the app's public surface.
+    path("api/internal/", include("swifts.worker_urls")),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
