@@ -99,7 +99,7 @@ class PresenceVisibilityTests(TestCase):
     def test_paused_sharing_hides_presence(self):
         # Paused is the old Invisible: off the map, and not announcing that
         # they are around either.
-        self.target.location_sharing = User.LocationSharing.PAUSED
+        self.target.ghost_mode = True
         self.target.visibility_presence = User.Audience.EVERYONE
         self.target.save()
         self.assertIsNone(visibility.presence_for(self.me, self.target))
@@ -179,16 +179,17 @@ class MotionVisibilityTests(TestCase):
         make_friends(self.me, self.target)
         self.assertEqual(visibility.motion_for(self.me, self.target), 'fast')
 
-    def test_connection_gets_motion(self):
-        make_connected(self.me, self.target)
-        self.assertEqual(visibility.motion_for(self.me, self.target), 'fast')
+    def test_a_connection_does_not_get_motion(self):
+        """A Hi connection sees a ~500m cell, and a heading drawn across those
+        cells would partly undo the fuzzing.
 
-    def test_approximate_sharing_suppresses_motion_for_friends(self):
-        # A directional trail across snapped 500m cells would partly undo the
-        # fuzzing the user asked for.
-        make_friends(self.me, self.target)
-        self.target.location_sharing = User.LocationSharing.APPROXIMATE
-        self.target.save()
+        This used to be allowed, back when precision was the target's own
+        setting and a connection could well be looking at a precise point.
+        Precision follows the relationship now and only friends are on the
+        precise side of it, so motion follows friendship rather than the wider
+        approved tier.
+        """
+        make_connected(self.me, self.target)
         self.assertIsNone(visibility.motion_for(self.me, self.target))
         # Presence itself survives — it is not a location claim.
         self.assertIsNotNone(visibility.presence_for(self.me, self.target))
@@ -207,7 +208,7 @@ class MotionVisibilityTests(TestCase):
 
     def test_paused_sharing_hides_motion(self):
         make_friends(self.me, self.target)
-        self.target.location_sharing = User.LocationSharing.PAUSED
+        self.target.ghost_mode = True
         self.target.save()
         self.assertIsNone(visibility.motion_for(self.me, self.target))
 

@@ -15,6 +15,7 @@ from interests.models import Interest
 from stories.models import Story
 from users.models import User
 from users.testing import share_location
+from proximity.utils import haversine
 from users.visibility import APPROX_GRID_M, snap_coordinates
 
 #: Stands in for "this user has a zone track" in tests that only care about
@@ -240,8 +241,8 @@ class FieldVisibilityTests(TestCase):
             expires_at=timezone.now() + timezone.timedelta(hours=5),
         )
         befriend(self.viewer, self.target)
-        self.target.location_sharing = User.LocationSharing.PAUSED
-        self.target.save(update_fields=['location_sharing'])
+        self.target.ghost_mode = True
+        self.target.save(update_fields=['ghost_mode'])
 
         feed = self.client.get('/api/stories/friends/').json()['results']
         self.assertIn(story.pk, {s['id'] for s in feed})
@@ -338,38 +339,79 @@ class ApproximateLocationTests(TestCase):
         self.user = make_user('walker')
         self.client.force_authenticate(self.user)
 
-    def test_precise_coordinates_are_never_stored_on_approximate(self):
-        self.user.location_sharing = User.LocationSharing.APPROXIMATE
-        self.user.save(update_fields=['location_sharing'])
-
+    def _report_position(self):
+        """Put a precise position on the row through the real endpoint."""
+        self.client.force_authenticate(self.user)
         self.client.patch(
             '/api/proximity/location/',
             {'latitude': '52.37021900', 'longitude': '4.89516700'},
             format='json',
         )
-        self.user.refresh_from_db()
-        self.assertNotEqual(self.user.latitude, Decimal('52.37021900'))
-        self.assertNotEqual(self.user.longitude, Decimal('4.89516700'))
 
-    def test_approximate_position_never_returned_precisely(self):
-        viewer = make_user('viewer', latitude='52.3702', longitude='4.8951')
-        self.user.location_sharing = User.LocationSharing.APPROXIMATE
+    def test_a_stranger_never_receives_the_precise_point(self):
+        """The load-bearing one.
+
+        The database holds the truth now, so this is the assertion standing
+        between a stranger and it. Written against the API response rather than
+        the serializer for the reason at the top of this file: the question is
+        what bytes went out.
+        """
+        viewer = make_user('stranger', latitude='52.3702', longitude='4.8951')
         self.user.latitude, self.user.longitude = Decimal('52.37021900'), Decimal('4.89516700')
         self.user.save()
-        # Re-apply storage rules the way an update would.
-        self.client.patch(
-            '/api/proximity/location/',
-            {'latitude': '52.37021900', 'longitude': '4.89516700'},
-            format='json',
-        )
+        self._report_position()
 
         self.client.force_authenticate(viewer)
-        befriend(viewer, self.user)
-        entries = {e['id']: e for e in self.client.get('/api/proximity/nearby/').json()}
-        entry = entries[self.user.pk]
+        entry = {
+            e['id']: e for e in self.client.get('/api/proximity/nearby/').json()
+        }[self.user.pk]
+
         self.assertEqual(entry['location_precision'], 'approximate')
         self.assertNotEqual(Decimal(entry['latitude']), Decimal('52.37021900'))
         self.assertNotEqual(Decimal(entry['longitude']), Decimal('4.89516700'))
+
+    def test_a_friend_receives_the_precise_point(self):
+        """The other half. A rule that hid the position from everybody would
+        pass the test above and still be wrong."""
+        viewer = make_user('friend', latitude='52.3702', longitude='4.8951')
+        befriend(viewer, self.user)
+        self.user.latitude, self.user.longitude = Decimal('52.37021900'), Decimal('4.89516700')
+        self.user.save()
+        self._report_position()
+
+        self.client.force_authenticate(viewer)
+        entry = {
+            e['id']: e for e in self.client.get('/api/proximity/nearby/').json()
+        }[self.user.pk]
+
+        self.assertEqual(entry['location_precision'], 'precise')
+        # Floats over the wire, so compared as floats: the point is that this
+        # is the reported position and not a cell centre.
+        self.assertAlmostEqual(float(entry['latitude']), 52.370219, places=6)
+        self.assertAlmostEqual(float(entry['longitude']), 4.895167, places=6)
+
+    def test_the_distance_a_stranger_sees_matches_the_pin_they_see(self):
+        """A coarse pin beside a precise distance is a precise pin.
+
+        Two or three readings of an exact distance to a known viewer position
+        trilaterate the point the pin was fuzzed to hide, so the number has to
+        be derived from the same cell the pin is drawn at.
+        """
+        viewer = make_user('measuring-stranger', latitude='52.3702', longitude='4.8951')
+        self.user.latitude, self.user.longitude = Decimal('52.37021900'), Decimal('4.89516700')
+        self.user.save()
+        self._report_position()
+
+        self.client.force_authenticate(viewer)
+        entry = {
+            e['id']: e for e in self.client.get('/api/proximity/nearby/').json()
+        }[self.user.pk]
+
+        expected = haversine(
+            52.3702, 4.8951,
+            float(entry['latitude']), float(entry['longitude']),
+        )
+        self.assertAlmostEqual(entry['distance_km'], round(expected, 2), places=2)
 
     def test_snapping_is_stable_and_within_a_cell(self):
         """Deterministic, not jittered: repeated readings inside one cell must
@@ -385,20 +427,27 @@ class ApproximateLocationTests(TestCase):
         offset_m = abs(float(first[0]) - 52.370219) * 111_320
         self.assertLess(offset_m, APPROX_GRID_M)
 
-    def test_switching_to_approximate_destroys_the_stored_precise_point(self):
+    def test_the_stored_point_stays_precise(self):
+        """The inversion, asserted at the row.
+
+        Fuzzing used to happen before storage, so an Approximate sharer had no
+        precise coordinate in the database at all. Friends are entitled to the
+        real point now, so the row holds it and the fuzzing moved to the read —
+        `test_a_stranger_never_receives_the_precise_point` is the other half of
+        this, and the one that would catch a leak.
+        """
         self.user.latitude, self.user.longitude = Decimal('52.37021900'), Decimal('4.89516700')
         self.user.save()
-        self.client.patch(
-            '/api/users/privacy/', {'location_sharing': 'approximate'}, format='json'
-        )
+        self.client.patch('/api/users/privacy/', {'ghost_mode': False}, format='json')
         self.user.refresh_from_db()
-        self.assertNotEqual(self.user.latitude, Decimal('52.37021900'))
+        self.assertEqual(self.user.latitude, Decimal('52.37021900'))
+        self.assertEqual(self.user.longitude, Decimal('4.89516700'))
 
-    def test_paused_removes_the_user_from_the_map_both_ways(self):
+    def test_ghost_removes_the_user_from_the_map_both_ways(self):
         viewer = make_user('viewer', latitude='10.0', longitude='10.0')
         befriend(viewer, self.user)
         self.user.latitude, self.user.longitude = Decimal('10.001'), Decimal('10.001')
-        self.user.location_sharing = User.LocationSharing.PAUSED
+        self.user.ghost_mode = True
         self.user.save()
 
         self.client.force_authenticate(viewer)
@@ -412,8 +461,8 @@ class ApproximateLocationTests(TestCase):
         """Location sharing and profile privacy are separate axes — pausing
         one must not silently apply the other."""
         viewer = make_user('viewer')
-        self.user.location_sharing = User.LocationSharing.PAUSED
-        self.user.save(update_fields=['location_sharing'])
+        self.user.ghost_mode = True
+        self.user.save(update_fields=['ghost_mode'])
         self.client.force_authenticate(viewer)
         response = self.client.get(f'/api/users/profile/{self.user.pk}/')
         self.assertEqual(response.status_code, 200)
@@ -462,7 +511,7 @@ class PrivacySettingsEndpointTests(TestCase):
     def test_get_returns_every_control(self):
         body = self.client.get('/api/users/privacy/').json()
         for key in (
-            'location_sharing', 'is_private', 'visibility_interests',
+            'ghost_mode', 'is_private', 'visibility_interests',
             'visibility_stories', 'visibility_stats', 'visibility_zone_audio',
             'visibility_connections',
             'discoverable_by_username', 'discoverable_by_interest',
@@ -480,19 +529,41 @@ class PrivacySettingsEndpointTests(TestCase):
         self.assertEqual(self.user.visibility_stats, 'nobody')
 
     def test_legacy_privacy_mode_still_accepted(self):
-        """App builds predating the split send active/ghost/invisible."""
+        """App builds predating Ghost Mode send active/ghost/invisible.
+
+        The collapse is lossy on purpose: old `ghost` meant "visible, but
+        fuzzed", and fuzzing for strangers is now automatic rather than a mode.
+        So it maps to visible, and the echo says `active` — the nearest true
+        thing, rather than pretending a setting still exists.
+        """
         response = self.client.patch(
             '/api/users/privacy/', {'privacy_mode': 'ghost'}, format='json'
         )
         self.user.refresh_from_db()
-        self.assertEqual(self.user.location_sharing, 'approximate')
-        self.assertEqual(response.json()['privacy_mode'], 'ghost')
+        self.assertFalse(self.user.ghost_mode)
+        self.assertEqual(response.json()['privacy_mode'], 'active')
+
+    def test_legacy_invisible_still_ghosts(self):
+        response = self.client.patch(
+            '/api/users/privacy/', {'privacy_mode': 'invisible'}, format='json'
+        )
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.ghost_mode)
+        self.assertEqual(response.json()['privacy_mode'], 'invisible')
+
+    def test_legacy_location_sharing_paused_still_ghosts(self):
+        """The other old spelling, from builds after the first split."""
+        self.client.patch(
+            '/api/users/privacy/', {'location_sharing': 'paused'}, format='json'
+        )
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.ghost_mode)
 
     def test_self_profile_still_exposes_legacy_privacy_mode(self):
         """`privacy_mode` is a model property now, not a column — confirm it
         still reaches old clients through both self endpoints."""
-        self.user.location_sharing = User.LocationSharing.PAUSED
-        self.user.save(update_fields=['location_sharing'])
+        self.user.ghost_mode = True
+        self.user.save(update_fields=['ghost_mode'])
         for url in ('/api/users/profile/', '/api/users/me/'):
             body = self.client.get(url).json()
             self.assertEqual(body['privacy_mode'], 'invisible', url)
@@ -510,14 +581,15 @@ class DefaultsTests(TestCase):
     def test_new_account_defaults(self):
         # `make_user` shares location for the rest of this module's benefit, so
         # the one assertion that is *about* the default builds its own user.
-        # The default itself is Paused, and proximity/test_map_visibility.py is
-        # where that is pinned from every direction.
+        # The default is *not* ghosted — sharing follows the OS permission the
+        # client already holds, and proximity/test_map_visibility.py is where
+        # that is pinned from every direction.
         user = User.objects.create_user(
             username='fresh-default', email='fresh-default@example.com',
             password='testpass-123',
         )
         self.assertFalse(user.is_private)
-        self.assertEqual(user.location_sharing, User.LocationSharing.PAUSED)
+        self.assertFalse(user.ghost_mode)
         # Interests stay open: they are the matching primitive.
         self.assertEqual(user.visibility_interests, User.Audience.EVERYONE)
         for field in ('visibility_stories', 'visibility_stats',

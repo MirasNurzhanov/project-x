@@ -316,12 +316,15 @@ def position_of(user):
     """The coordinates to resolve `user` against, with the error we know about.
 
     Returns `(lat, lon, tolerance_m)`, or None when there is nothing usable.
-    The tolerance is the larger of two errors we can name: the fuzz an
-    Approximate sharer's own privacy setting introduced, and whatever the phone
-    said about its fix. A fix worse than the cap is not a position at all.
-    """
-    from users import visibility as user_visibility
 
+    The only error left to name is the phone's own: what we store is the
+    precise fix, for everybody. This used to add the fuzz an Approximate
+    sharer's setting introduced before storage, and the case that made that
+    necessary — a snapped point landing over a district line and telling
+    somebody they were not standing where they stood — cannot arise now that
+    snapping happens on the way out to *other* viewers rather than on the way
+    in. A fix worse than the cap is not a position at all.
+    """
     if user.latitude is None or user.longitude is None:
         return None
 
@@ -329,8 +332,7 @@ def position_of(user):
     if accuracy > _conf('MAX_ACCURACY_M', DEFAULT_MAX_ACCURACY_M):
         return None
 
-    tolerance = max(user_visibility.position_tolerance_m(user), float(accuracy))
-    return float(user.latitude), float(user.longitude), tolerance
+    return float(user.latitude), float(user.longitude), float(accuracy)
 
 
 def _still_current(place, lat, lon, tolerance_m):

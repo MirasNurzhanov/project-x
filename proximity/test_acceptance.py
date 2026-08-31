@@ -50,10 +50,19 @@ class CheckInZoneMatrixTests(TestCase):
         self.client.force_authenticate(self.viewer)
 
     def subject(self, name, lat, lon, checked_in):
+        """`checked_in=False` now means ghosted, not merely un-opted-in.
+
+        There is no un-opted-in state left: sharing follows the OS permission,
+        so the only way to hold a position and still be off the map is Ghost
+        Mode. The parameter keeps its name because what it selects — visible or
+        not — is unchanged.
+        """
         user = make_user(name, latitude=str(lat), longitude=str(lon))
         user.interests.add(self.interest)
-        if checked_in:
-            share_location(user)
+        share_location(user)
+        if not checked_in:
+            user.ghost_mode = True
+            user.save(update_fields=['ghost_mode'])
         return user
 
     def visible_ids(self):
@@ -70,11 +79,11 @@ class CheckInZoneMatrixTests(TestCase):
         who = self.subject('in_out', *self.OUTSIDE, checked_in=True)
         self.assertNotIn(who.pk, self.visible_ids())
 
-    def test_checked_out_but_inside_the_zone_is_hidden(self):
-        """The cell the rejection was about.
+    def test_ghosted_but_inside_the_zone_is_hidden(self):
+        """The cell that matters most.
 
-        The geography would admit them. The only thing keeping them off the map
-        is that they never checked in.
+        The geography would admit them, and they have a position on file. The
+        only thing keeping them off the map is that they turned themselves off.
         """
         who = self.subject('out_in', *self.INSIDE, checked_in=False)
         self.assertNotIn(who.pk, self.visible_ids())
@@ -84,23 +93,25 @@ class CheckInZoneMatrixTests(TestCase):
         who = self.subject('out_out', *self.OUTSIDE, checked_in=False)
         self.assertNotIn(who.pk, self.visible_ids())
 
-    def test_the_same_person_appears_only_after_they_check_in(self):
+    def test_the_same_person_appears_only_after_they_leave_ghost_mode(self):
         """One subject, one position, one variable changed.
 
-        The tests above use four people; this proves the difference is the
-        check-in itself and not something about how each was constructed.
+        The tests above use four people; this proves the difference is Ghost
+        Mode itself and not something about how each was constructed.
         """
         who = self.subject('toggler', *self.INSIDE, checked_in=False)
         self.assertNotIn(who.pk, self.visible_ids())
 
-        share_location(who)
+        who.ghost_mode = False
+        who.save(update_fields=['ghost_mode'])
         self.assertIn(who.pk, self.visible_ids())
 
-    def test_checking_out_removes_them_from_the_very_next_request(self):
+    def test_ghosting_removes_them_from_the_very_next_request(self):
         """Immediately — not on a sweep, not at the next launch.
 
-        The teardown runs inside the PATCH, so the next read is already served
-        from a row with no position in it.
+        The row keeps its position, because a ghost still needs it for their
+        own clubs and region; what changes inside the PATCH is that every
+        query stops returning them.
         """
         who = self.subject('leaver', *self.INSIDE, checked_in=True)
         self.assertIn(who.pk, self.visible_ids())
@@ -108,17 +119,16 @@ class CheckInZoneMatrixTests(TestCase):
         their_client = APIClient()
         their_client.force_authenticate(who)
         response = their_client.patch(
-            PRIVACY, {'location_sharing': 'paused'}, format='json',
+            PRIVACY, {'ghost_mode': True}, format='json',
         )
         self.assertEqual(response.status_code, 200, response.content)
 
         self.assertNotIn(who.pk, self.visible_ids())
         who.refresh_from_db()
-        self.assertIsNone(who.latitude)
-        self.assertIsNone(who.longitude)
+        self.assertIsNotNone(who.latitude)
 
     def test_a_city_zone_widens_geography_and_nothing_else(self):
-        """A wider zone must not become a way to see people who never checked in."""
+        """A wider zone must not become a way to see people who are ghosted."""
         from regions.models import Region
 
         region = Region.objects.create(

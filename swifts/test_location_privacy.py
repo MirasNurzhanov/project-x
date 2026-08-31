@@ -175,10 +175,12 @@ class RevealRequiresAGenuineViewTests(SwiftTestCase):
         self.assertEqual(response.status_code, 200)
 
         body = response.json()
-        self.assertAlmostEqual(body['latitude'], float(LAT), places=6)
-        self.assertAlmostEqual(body['longitude'], float(LON), places=6)
+        # Snapped, because this viewer is not a friend of the author. Having
+        # earned the reveal is what gets them a location at all; how precise it
+        # is stays a question about the relationship, the same as on the map.
+        self.assertNotAlmostEqual(body['latitude'], float(LAT), places=5)
         self.assertEqual(body['place_name'], 'Kok-Tobe Park')
-        self.assertEqual(body['precision'], 'exact')
+        self.assertEqual(body['precision'], 'approximate')
         self.assertTrue(
             SwiftLocationReveal.objects.filter(
                 swift=self.swift, viewer=self.viewer).exists()
@@ -360,10 +362,10 @@ class WriteTimeLocationPolicyTests(SwiftTestCase):
         payload = {k: v for k, v in payload.items() if v is not None}
         return client.post(reverse('swift-create'), payload, format='multipart')
 
-    def test_paused_creator_stores_no_location_at_all(self):
+    def test_ghosted_creator_stores_no_location_at_all(self):
         """Not the coordinate, not the place name, not the flag."""
-        paused = make_user('paused', sharing=False)
-        response = self._post(paused)
+        ghosted = make_user('ghosted', sharing=False)
+        response = self._post(ghosted)
 
         self.assertEqual(response.status_code, 201)
         swift = SwiftVideo.objects.get(pk=response.json()['id'])
@@ -373,30 +375,49 @@ class WriteTimeLocationPolicyTests(SwiftTestCase):
         self.assertFalse(swift.location_shared)
         self.assertFalse(response.json()['location_available'])
 
-    def test_approximate_creator_has_the_point_snapped_before_storage(self):
-        """Fuzzing happens on the way in, so no later reader can undo it."""
-        user = make_user('approx')
-        user.location_sharing = User.LocationSharing.APPROXIMATE
-        user.save(update_fields=['location_sharing'])
+    def test_the_point_is_stored_precisely(self):
+        """The inversion: fuzzing moved from the write to the read.
+
+        It used to happen on the way in, keyed on the author's Approximate
+        setting, so no later reader could undo it. Friends are entitled to the
+        real point now, so the row keeps it and every reader is responsible for
+        coarsening — which is what the two tests below check from the outside.
+        """
+        user = make_user('precise-store')
 
         response = self._post(user)
         swift = SwiftVideo.objects.get(pk=response.json()['id'])
 
-        self.assertIsNotNone(swift.latitude)
-        self.assertNotEqual(str(swift.latitude), LAT)
-        self.assertNotEqual(str(swift.longitude), LON)
+        self.assertEqual(str(swift.latitude), LAT)
+        self.assertEqual(str(swift.longitude), LON)
 
-    def test_approximate_reveal_says_so(self):
-        """A fuzzed point returned as `exact` would be a lie the map draws."""
-        user = make_user('approx2')
-        user.location_sharing = User.LocationSharing.APPROXIMATE
-        user.save(update_fields=['location_sharing'])
-        swift_id = self._post(user).json()['id']
-
+    def _reveal_as(self, viewer, swift_id):
+        """Watch, then reveal — the reveal is gated on a genuine view."""
         client = APIClient()
-        client.force_authenticate(user)
-        body = client.post(reverse('swift-reveal-location', args=[swift_id])).json()
+        client.force_authenticate(viewer)
+        client.post(reverse('swift-view', args=[swift_id]))
+        return client.post(reverse('swift-reveal-location', args=[swift_id])).json()
+
+    def test_a_stranger_reveal_is_snapped_and_says_so(self):
+        """A fuzzed point returned as `exact` would be a lie the map draws."""
+        author = make_user('author-strange')
+        swift_id = self._post(author).json()['id']
+
+        body = self._reveal_as(make_user('stranger-strange'), swift_id)
+
         self.assertEqual(body['precision'], 'approximate')
+        self.assertNotAlmostEqual(body['latitude'], float(LAT), places=5)
+
+    def test_a_friend_reveal_is_exact_and_says_so(self):
+        author = make_user('author-friendly')
+        swift_id = self._post(author).json()['id']
+
+        friend = make_user('friend-friendly')
+        befriend(author, friend)
+        body = self._reveal_as(friend, swift_id)
+
+        self.assertEqual(body['precision'], 'exact')
+        self.assertAlmostEqual(body['latitude'], float(LAT), places=6)
 
     def test_live_creator_stores_what_was_sent(self):
         response = self._post(make_user('live'))
@@ -588,11 +609,13 @@ class EndToEndLocationJourneyTests(SwiftTestCase):
             201,
         )
 
-        # 4. Now the press works.
+        # 4. Now the press works — and answers at the precision this viewer is
+        #    entitled to, which for a non-friend is the ~500m cell.
         revealed = self.viewer_client.post(reveal_url)
         self.assertEqual(revealed.status_code, 200)
         body = revealed.json()
-        self.assertAlmostEqual(body['latitude'], float(LAT), places=6)
+        self.assertEqual(body['precision'], 'approximate')
+        self.assertNotAlmostEqual(body['latitude'], float(LAT), places=5)
         self.assertEqual(body['place_name'], 'Kok-Tobe Park')
 
         # 5. And the feed still carries nothing, afterwards as before.

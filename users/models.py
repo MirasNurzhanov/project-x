@@ -282,84 +282,46 @@ class User(AbstractUser):
     # The old three-way `privacy_mode` (active/ghost/invisible) conflated both;
     # see users/migrations/0010 for the mapping.
 
-    class LocationSharing(models.TextChoices):
-        """The one control over whether — and how precisely — you are on the map.
-
-        These three were once only about *precision*, sitting behind a separate
-        flag that decided whether you appeared at all. That flag is gone: it was
-        fully determined by this field, so keeping both meant two values that
-        had to agree and could drift. PAUSED is the off position now, and it is
-        the only off position.
-
-        App Review rejected 5.1.2(i) against the old arrangement, where a user
-        was on the map because they had granted the OS location permission.
-        Three things answer that, and all three live on this field:
-
-          * the default is PAUSED, so nobody is published until they choose to
-            be — including every account that predates the change,
-          * moving off PAUSED is a deliberate press against a consent screen
-            that says what it means (see the client's LocationSharingConsent),
-          * and it is the *only* way onto the map; nothing derives it, no
-            background task sets it, and granting a permission does not imply it.
-        """
-        LIVE = 'live', 'Live'
-        APPROXIMATE = 'approximate', 'Approximate'
-        PAUSED = 'paused', 'Paused'
-
-    location_sharing = models.CharField(
-        max_length=11,
-        choices=LocationSharing.choices,
-        default=LocationSharing.PAUSED,
-        db_index=True,
-    )
-
-    #: Which *run of the app* turned sharing on, or null while paused.
+    #: The one off switch for the map, and it cuts both ways.
     #:
-    #: Visibility does not expire, but it also does not survive the app being
-    #: closed: App Review's list of things that must not check somebody in ends
-    #: with "any previous preference says they were visible", and a mode that
-    #: outlived the session it was chosen in is exactly that. So going visible
-    #: mints a token here, the client holds it *in memory only*, and a client
-    #: that comes back without it is a client that has been restarted — see
-    #: proximity.views.EndSharingSessionView.
+    #: Ghost Mode is mutual by design: while it is on, this user is on nobody
+    #: else's map *and* nobody else is on theirs. Half of that is privacy and
+    #: half is fairness — a one-way ghost watches a map it has opted out of
+    #: appearing on.
     #:
-    #: A token rather than a flag, and compared rather than trusted, because
-    #: the call that ends a session races the tap that starts one. A user who
-    #: opens the app and immediately chooses Live must not be paused a moment
-    #: later by a startup effect that was already in flight; the token it
-    #: presents is the old one, does not match, and the mismatch is what makes
-    #: it safe to act on.
+    #: What it deliberately does *not* do is stop us storing a position. The
+    #: position still answers this user's own questions — which clubs they can
+    #: see and join, which region they are in — so ghosting hides you from the
+    #: map without logging you out of the product. The `paused` mode this
+    #: replaced wiped the stored coordinate, and an empty club list was the
+    #: result.
     #:
-    #: Deliberately not an expiry. Nothing here counts down, and backgrounding,
-    #: locking the phone and the background location task all leave it alone.
-    sharing_session = models.UUIDField(null=True, blank=True, editable=False)
-
-    def begin_sharing_session(self):
-        """Mint the token that ties this visibility to this run. No save."""
-        import uuid
-
-        self.sharing_session = uuid.uuid4()
-        return ['sharing_session']
-
-    def end_sharing_session(self):
-        """Forget it, so nothing can present a matching one later. No save."""
-        self.sharing_session = None
-        return ['sharing_session']
+    #: Precision is not a setting any more, and there is nothing about it here:
+    #: friends see a precise position and everybody else sees a ~500m cell,
+    #: decided per viewer at read time. See `visibility.coordinates_for`.
+    ghost_mode = models.BooleanField(default=False, db_index=True)
 
     def is_sharing(self):
-        """Whether this user has asked to be visible.
+        """Whether this user may be drawn on somebody else's map at all.
 
         The choice alone. Says nothing about whether we currently hold a
         position for them, which is exactly what the write path needs: refusing
         a location update because the position it replaces has gone stale would
         be a deadlock. SQL counterpart is `visibility.sharing_q`.
         """
-        return self.location_sharing != self.LocationSharing.PAUSED
+        return not self.ghost_mode
 
     def has_fresh_position(self, now=None):
         """Whether the position on this row is recent enough to publish.
 
-        `updated_at` is the fallback for rows predating the
+        There has to *be* one first. That check was previously redundant —
+        sharing defaulted to off, so a row with no coordinate was never asked —
+        but sharing defaults to on now, and `updated_at` ticks for reasons that
+        have nothing to do with location. Without it a brand-new account with
+        no position at all reads as freshly located, because it was freshly
+        *saved*.
+
+        `updated_at` stays as the fallback for rows predating the
         `location_updated_at` column — see `visibility.fresh_position_q`, which
         is the SQL half and carries the reasoning.
         """
@@ -367,6 +329,8 @@ class User(AbstractUser):
 
         from . import visibility
 
+        if self.latitude is None or self.longitude is None:
+            return False
         stamp = self.location_updated_at or self.updated_at
         if stamp is None:
             return False
@@ -527,19 +491,31 @@ class User(AbstractUser):
                     kwargs['update_fields'] = list(update_fields) + ['age_tier']
         super().save(*args, **kwargs)
 
-    # Old app builds still speak active/ghost/invisible. Read-only bridge so
-    # those clients keep working until they update; writes go through
-    # PrivacySettingsView, which translates.
-    LEGACY_PRIVACY_MODE = {
-        LocationSharing.LIVE: 'active',
-        LocationSharing.APPROXIMATE: 'ghost',
-        LocationSharing.PAUSED: 'invisible',
+    # Old app builds still speak active/ghost/invisible, and older ones still
+    # speak live/approximate/paused. Both collapse onto one boolean now, so the
+    # bridge is lossy in the only direction that matters and says so:
+    # `approximate` was a precision choice, and precision is no longer the
+    # user's to make — it follows the relationship. An old client asking for it
+    # gets visibility, which is the half of that value it can still have.
+    LEGACY_PRIVACY_MODE_REVERSE = {
+        'active': False,
+        'ghost': False,
+        'invisible': True,
+        'live': False,
+        'approximate': False,
+        'paused': True,
     }
-    LEGACY_PRIVACY_MODE_REVERSE = {v: k for k, v in LEGACY_PRIVACY_MODE.items()}
 
     @property
     def privacy_mode(self):
-        return self.LEGACY_PRIVACY_MODE.get(self.location_sharing, 'active')
+        return 'invisible' if self.ghost_mode else 'active'
+
+    @property
+    def location_sharing(self):
+        """What an old client called this. Read-only; there is no third state
+        left to report, so an Approximate build sees Live and is not wrong —
+        strangers still see it approximately."""
+        return 'paused' if self.ghost_mode else 'live'
 
     # ── Enforcement ───────────────────────────────────────────────────────────
     def is_suspended(self, now=None):

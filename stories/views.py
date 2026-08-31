@@ -329,7 +329,7 @@ class ReactToStoryView(APIView):
                 from proximity.views import CODE_SHARING_PAUSED
                 return Response(
                     {
-                        'detail': 'Location sharing is paused.',
+                        'detail': 'Ghost Mode is on.',
                         'code': CODE_SHARING_PAUSED,
                     },
                     status=status.HTTP_400_BAD_REQUEST,

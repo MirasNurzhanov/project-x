@@ -65,7 +65,7 @@ class ViewerZoneDiscoveryTests(TestCase):
         # Unless the caller said otherwise: one case below is specifically
         # about a paused person inside a city zone, and a default that
         # overwrote it would turn that test green without testing anything.
-        if 'location_sharing' in extra:
+        if 'ghost_mode' in extra:
             return u
         return share_location(u)
 
@@ -186,7 +186,7 @@ class ViewerZoneDiscoveryTests(TestCase):
         a = self.user('a', VIEWER_LAT, VIEWER_LON,
                       zone_type=User.ZoneType.CITY, zone_region=self.city)
         paused = self.user('paused', FAR_LAT, FAR_LON,
-                           location_sharing=User.LocationSharing.PAUSED)
+                           ghost_mode=True)
         self.assertNotIn(paused.pk, self.sees(a))
 
     # ── Tiers that are not the stranger tier ─────────────────────────────────

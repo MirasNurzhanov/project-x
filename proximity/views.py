@@ -12,7 +12,6 @@ from users import visibility, zones
 from users.models import User
 from friends.models import FriendRequest, HiRequest
 from .serializers import (
-    EndSharingSessionSerializer,
     LocationUpdateSerializer,
     NearbyQuerySerializer,
     NearbyUserSerializer,
@@ -62,8 +61,14 @@ def _build_relationships(user, nearby_ids):
 # The distinction they draw is the one that matters to the map. Both are "we
 # cannot answer you", and they mean opposite things about what to do next:
 
-#: Sharing is off. Nothing to answer with, and nothing to wait for — the user
-#: has to choose Live or Approximate first. Not a transient condition.
+#: Ghost Mode is on. Nothing to answer with, and nothing to wait for — the user
+#: has to leave Ghost Mode first. Not a transient condition.
+#:
+#: Ghost is mutual, so this is the answer to "show me the map" as well as the
+#: reason nobody else is shown this user: opting out of being seen is opting
+#: out of seeing. The wire value still reads `paused` because clients branch on
+#: the string and older builds are still doing so; the meaning behind it is the
+#: one thing that changed.
 CODE_SHARING_PAUSED = 'location_sharing_paused'
 
 #: Sharing is on, but no position has been reported yet. Transient by
@@ -338,12 +343,17 @@ def classify_speed(speed):
 class UpdateLocationView(APIView):
     """Where the phone says it is.
 
-    Reporting a position never changes who may see it: this view does not touch
-    `location_sharing`, so no amount of a phone sitting there reporting can put
-    its owner on the map. That separation is the whole of the fix for 5.1.2(i) —
-    a stored position is the anchor for the owner's *own* queries ("who is near
-    me", "which district am I in"), and `visible_users` decides independently
+    Reporting a position never changes who may see it. A stored position is the
+    anchor for the owner's *own* queries — who is near me, which district am I
+    in, which clubs can I join — and `visible_users` decides independently
     whether anybody else ever sees it.
+
+    That separation is why a ghost still reports. Ghost Mode is about the map,
+    not about the app: refusing the write would empty that user's club list and
+    region as collateral, which is the failure the mode replaced. What ghosting
+    does is remove them from everyone else's queries — see
+    `visibility.visible_users` — and it holds whether or not a fresh position
+    happens to be on the row.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -353,25 +363,10 @@ class UpdateLocationView(APIView):
         serializer.is_valid(raise_exception=True)
         user = request.user
 
-        # Paused means we hold no position at all, so there is nothing for this
-        # to write. The client already refuses to send one, which makes this
-        # unreachable from our own app — and that is exactly why it is here:
-        # the only caller that can reach it is one we did not write, and "the
-        # app would not do that" is not an access control.
-        #
-        # `is_sharing`, not `is_on_map`: this is the endpoint that *makes* a
-        # position fresh, so gating it on the freshness of the one it replaces
-        # would lock out precisely the users trying to fix it.
-        if not user.is_sharing():
-            return Response(
-                {
-                    'detail': 'Location sharing is paused.',
-                    'code': CODE_SHARING_PAUSED,
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        # The client fuzzes too, but it is not trusted to: on Approximate the
-        # precise value is discarded here, before anything is written.
+        # Stored precise, always. Fuzzing moved to the read, because a friend
+        # is entitled to the real point and the row can only hold one version
+        # of it — see `visibility.coordinates_for`, which is now the only place
+        # a position becomes something a stranger can see.
         user.latitude, user.longitude = visibility.store_coordinates(
             user,
             serializer.validated_data['latitude'],
@@ -513,32 +508,42 @@ def nearby_users(user, lat, lon, request):
     nearby = []
     seen = set()
 
-    # Distances are measured against whatever position is stored. For an
-    # Approximate user that is already the snapped point, so the number is
-    # coarse by construction rather than by being withheld.
+    # Every measurement below is taken against the position this viewer is
+    # allowed to *see*, not the one on the row. The database now holds the
+    # precise point for everybody — friends need it — so measuring against the
+    # stored value would hand a stranger an exact distance to a pin we drew
+    # coarsely, and two or three of those locate someone precisely. The pin and
+    # the number have to describe the same place.
+    def shown(candidate):
+        shown_lat, shown_lon = visibility.coordinates_for(user, candidate, friend_ids)
+        return float(shown_lat), float(shown_lon)
+
+    def distance_to(candidate):
+        shown_lat, shown_lon = shown(candidate)
+        return round(haversine(lat, lon, shown_lat, shown_lon), 2)
+
     for candidate in friend_candidates:
-        distances[candidate.pk] = round(
-            haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
+        distances[candidate.pk] = distance_to(candidate)
         nearby.append(candidate)
         seen.add(candidate.pk)
 
     # The exact test, for both gated tiers. The box above was a bounding
     # box; this is the boundary itself — a circle measured properly, or the
-    # ray cast against the real outline. Tolerance is the *candidate's*,
-    # because it is their stored position being tested and theirs that may
-    # have been snapped to a grid cell.
+    # ray cast against the real outline. Tolerance is the *candidate's* as this
+    # viewer sees them: zero for a friend, a grid cell for anybody else.
     def in_zone(candidate):
+        shown_lat, shown_lon = shown(candidate)
         return _viewer_zone_contains(
             user,
-            float(candidate.latitude), float(candidate.longitude),
-            visibility.position_tolerance_m(candidate),
+            shown_lat, shown_lon,
+            visibility.position_tolerance_for(user, candidate, friend_ids),
             anchor=(lat, lon),
         )
 
     for candidate in connected_candidates:
         if candidate.pk in seen:
             continue
-        dist = round(haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
+        dist = distance_to(candidate)
         # The 1km floor, or the zone if it reaches further. Either qualifies.
         if dist <= CONNECTED_RADIUS_KM or in_zone(candidate):
             distances[candidate.pk] = dist
@@ -550,8 +555,7 @@ def nearby_users(user, lat, lon, request):
             continue
         if not in_zone(candidate):
             continue
-        distances[candidate.pk] = round(
-            haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
+        distances[candidate.pk] = distance_to(candidate)
         nearby.append(candidate)
         seen.add(candidate.pk)
 
@@ -581,6 +585,9 @@ def nearby_users(user, lat, lon, request):
             'distances': distances,
             'relationships': relationships,
             'my_interest_ids': set(user_interest_ids),
+            # Built once above. Without it the serializer would resolve
+            # friendship per row, which is a query per person on the map.
+            'friend_ids': friend_ids,
         },
     )
     return serializer.data
@@ -623,74 +630,6 @@ class NearbyUsersView(APIView):
         return Response(nearby_users(
             user, float(user.latitude), float(user.longitude), request,
         ))
-
-
-class EndSharingSessionView(APIView):
-    """"This app just started, and I did not bring a sharing session with me."
-
-    The half of the manual check-in rule that no event handler can enforce,
-    because the event is the *absence* of one: the app starting up with nothing
-    in memory. App Review's list ends with "any previous preference says they
-    were visible", and a `location_sharing` that outlived the run it was chosen
-    in is precisely that preference. This is what stops it outliving.
-
-    Called once per launch by the UI, never by the background location task —
-    that task exists to keep a *current* session's position fresh, and having
-    it end the session would make backgrounding a check-out, which is the thing
-    we were told not to build.
-
-    Idempotent and safe to call at any moment, which is the whole reason it
-    takes a token rather than being a bare "pause me":
-
-        no session on the row       nothing to end, already paused
-        token matches               this run owns the visibility — left alone
-        token missing or stale      a different run chose it — paused
-
-    That last line is the one doing the work, and the middle line is what makes
-    it safe to fire on startup at all: a user who opens the app and immediately
-    taps Live has a token by the time this lands, so their tap survives a
-    startup effect that was already in flight.
-    """
-
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request):
-        serializer = EndSharingSessionSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        user = request.user
-        presented = serializer.validated_data.get('session')
-
-        if user.sharing_session is not None and presented == user.sharing_session:
-            # This process owns the current visibility. Nothing to do — and
-            # nothing said, so a client cannot tell a live session from a
-            # missing one by the shape of the answer.
-            return Response({'location_sharing': user.location_sharing})
-
-        # `is_sharing`: a session whose position has already gone stale still
-        # has to be torn down, and testing freshness here would skip exactly
-        # the rows most in need of clearing.
-        if user.is_sharing():
-            # Same teardown as choosing Paused by hand, and deliberately the
-            # same code path: a session ending must not leave a weaker trace
-            # than the button does.
-            user.location_sharing = User.LocationSharing.PAUSED
-            user.latitude = None
-            user.longitude = None
-            user.location_updated_at = None
-            user.location_accuracy_m = None
-            user.motion_class = User.MotionClass.STATIONARY
-            user.motion_updated_at = None
-            user.save(update_fields=[
-                'location_sharing', 'latitude', 'longitude',
-                'location_updated_at', 'location_accuracy_m',
-                'motion_class', 'motion_updated_at',
-            ] + user.end_sharing_session())
-        elif user.sharing_session is not None:
-            # Already paused but holding a stale token. Tidy rather than leave
-            # something a later request could match.
-            user.save(update_fields=user.end_sharing_session())
-
-        return Response({'location_sharing': user.location_sharing})
 
 
 class NearbyQueryView(APIView):
@@ -790,7 +729,7 @@ class NearbyMapView(APIView):
         if not user.is_sharing():
             return Response(
                 {
-                    'detail': 'Location sharing is paused.',
+                    'detail': 'Ghost Mode is on.',
                     'code': CODE_SHARING_PAUSED,
                 },
                 status=status.HTTP_400_BAD_REQUEST,

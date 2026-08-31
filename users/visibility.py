@@ -181,20 +181,26 @@ def position_max_age_s():
 
 
 def sharing_q(prefix=None):
-    """Q selecting rows whose owner has chosen to share their location.
+    """Q selecting rows whose owner may appear on somebody else's map.
 
     The choice alone — says nothing about whether we currently hold a position
     for them. `prefix` is the path from the row to the user, for tables that
     point at one (`'user'`, `'author'`); None when filtering users directly.
     """
-    from .models import User
-
     base = '' if prefix is None else f'{prefix}__'
-    return ~Q(**{f'{base}location_sharing': User.LocationSharing.PAUSED})
+    return Q(**{f'{base}ghost_mode': False})
 
 
 def fresh_position_q(prefix=None, now=None):
     """Q selecting rows whose stored position is recent enough to publish.
+
+    Requires a position to exist before asking how old it is. That was
+    redundant while sharing defaulted to off — such a row was never reached —
+    but sharing defaults to on now, and the `updated_at` fallback below ticks
+    for edits that have nothing to do with location, so a row with no
+    coordinate would otherwise read as freshly located because it was freshly
+    saved. Must agree with `User.has_fresh_position`, which carries the same
+    guard for the same reason.
 
     `location_updated_at` is the honest answer. `updated_at` is the fallback for
     rows written before that column existed (users/0018) — an upper bound on the
@@ -205,10 +211,15 @@ def fresh_position_q(prefix=None, now=None):
     """
     base = '' if prefix is None else f'{prefix}__'
     cutoff = (now or timezone.now()) - timedelta(seconds=position_max_age_s())
-    return Q(**{f'{base}location_updated_at__gte': cutoff}) | Q(**{
+    has_point = Q(**{
+        f'{base}latitude__isnull': False,
+        f'{base}longitude__isnull': False,
+    })
+    recent = Q(**{f'{base}location_updated_at__gte': cutoff}) | Q(**{
         f'{base}location_updated_at__isnull': True,
         f'{base}updated_at__gte': cutoff,
     })
+    return has_point & recent
 
 
 def on_map_q(prefix=None, now=None):
@@ -228,16 +239,20 @@ def visible_users(viewer, queryset=None, *, exclude_self=True,
     Always drops both directions of a block. The keyword flags add the
     surface-specific rules:
 
-    on_map          — drop anyone not currently sharing their location
-                      (proximity surfaces only)
+    on_map          — drop anyone not currently on the map, and — because Ghost
+                      Mode is mutual — return nobody at all when the *viewer*
+                      is ghosted
     discoverable_by — 'username' or 'interest'; drop anyone opted out of that
                       search surface
 
-    `on_map` is the gate App Review asked for under 5.1.2(i), and it is
-    deliberately the same keyword the map endpoints already passed: every
-    surface that publishes a position was routed through here already, so the
-    rule lives in one place and no new endpoint can reach a position without
-    opting into it.
+    `on_map` is the single gate every surface that publishes a position already
+    passed, so the rule lives in one place and no new endpoint can reach a
+    position without opting into it.
+
+    Mutuality is enforced here rather than at each map endpoint for exactly that
+    reason: a ghost who could still read the map would be opting out of being
+    seen while keeping the benefit of seeing, and putting the check anywhere
+    else means remembering it at every new caller.
     """
     from .models import User
 
@@ -246,6 +261,8 @@ def visible_users(viewer, queryset=None, *, exclude_self=True,
     if exclude_self:
         qs = qs.exclude(pk=viewer.pk)
     if on_map:
+        if getattr(viewer, 'ghost_mode', False):
+            return qs.none()
         qs = qs.filter(on_map_q())
     if discoverable_by == 'username':
         qs = qs.filter(discoverable_by_username=True)
@@ -400,11 +417,11 @@ def proximity_visible_ids(viewer, candidate_ids):
 
     rels = relationship_map(viewer, candidate_ids)
     allowed = set()
-    for pk, sharing, discoverable in User.objects.filter(
+    for pk, ghosted, discoverable in User.objects.filter(
         pk__in=candidate_ids,
-    ).values_list('pk', 'location_sharing', 'discoverable_by_interest'):
+    ).values_list('pk', 'ghost_mode', 'discoverable_by_interest'):
         rel = rels.get(pk, STRANGER)
-        if rel == BLOCKED or sharing == User.LocationSharing.PAUSED:
+        if rel == BLOCKED or ghosted:
             continue
         if rel in (FRIEND, CONNECTED) or discoverable:
             allowed.add(pk)
@@ -452,13 +469,10 @@ def presence_for(viewer, target, rel=None, now=None):
     state something false and make hiding detectable, since they would read as
     permanently offline. An absent key renders as no indicator at all.
     """
-    from .models import User
-
     if rel is None:
         rel = relationship(viewer, target)
-    # Paused is the old Invisible: off the map, and not broadcasting that they
-    # are around either.
-    if target.location_sharing == User.LocationSharing.PAUSED and rel != SELF:
+    # A ghost is off the map and not broadcasting that they are around either.
+    if target.ghost_mode and rel != SELF:
         return None
     if not can_view(viewer, target, 'presence', rel):
         return None
@@ -481,17 +495,17 @@ def motion_for(viewer, target, rel=None, now=None):
     * Approved tier only. "Someone nearby is online" is ambient; "that stranger
       is in a vehicle heading that way" is a targeting primitive, so this never
       reaches strangers regardless of the presence audience.
-    * Never while approximate. The position is snapped to a ~500m grid; a
-      directional trail across those cells would partly undo the fuzzing.
+    * Never to a viewer who is seeing a fuzzed position. Their pin is snapped
+      to a ~500m grid, and a directional trail across those cells would partly
+      undo the fuzzing. That used to mean "never while the target is on
+      Approximate"; precision follows the relationship now, so it means
+      friends and the user themselves — a Hi connection gets a cell, so it
+      does not get a heading to go with it.
     * Never when stale, and never when presence itself is hidden.
     """
-    from .models import User
-
     if rel is None:
         rel = relationship(viewer, target)
-    if rel not in (SELF, FRIEND, CONNECTED):
-        return None
-    if target.location_sharing == User.LocationSharing.APPROXIMATE and rel != SELF:
+    if rel not in (SELF, FRIEND):
         return None
     if presence_for(viewer, target, rel, now) is None:
         return None
@@ -539,38 +553,77 @@ def snap_coordinates(user, lat, lon):
     )
 
 
-def position_tolerance_m(user):
-    """How far the position we store for `user` may be from where they stand.
+def is_friend(viewer, target, friend_ids=None):
+    """Whether `viewer` and `target` are friends, cheaply if possible.
 
-    Zero for a precise sharer: what we hold is what their phone sent. For an
-    Approximate sharer it is half the diagonal of a grid cell, which is the
-    worst case for a point snapped to that cell's centre.
-
-    The error is ours and deliberate, so anything comparing a stored position
-    against a real-world boundary has to account for it rather than treat it as
-    truth. Setting a region zone is the case that found this: the fuzzed point
-    lands over a district border and the user is told they are not standing
-    where they are standing.
+    `friend_ids` is the set from `approved_ids_for(viewer)`. Pass it whenever
+    more than one target is being judged for the same viewer — list endpoints
+    must, or this is a query per row.
     """
-    from .models import User
+    if viewer is None or getattr(viewer, 'pk', None) is None:
+        return False
+    if target.pk == viewer.pk:
+        return True
+    if friend_ids is None:
+        friend_ids, _ = approved_ids_for(viewer)
+    return target.pk in friend_ids
 
-    if user.location_sharing == User.LocationSharing.APPROXIMATE:
-        # Half the diagonal of a square cell: sqrt(2)/2, rounded up a hair.
-        return APPROX_GRID_M * 0.708
-    return 0.0
+
+def coordinates_for(viewer, target, friend_ids=None):
+    """The position `viewer` is allowed to see for `target`.
+
+    **The one place a stored position becomes a published one.** Precision is
+    not a setting any more: a friend — and the user themselves — gets the
+    precise point, everybody else gets it snapped to a ~500m cell.
+
+    This is the read-time half of an inversion. Fuzzing used to happen before
+    storage, which meant a precise position for an Approximate user did not
+    exist to leak; friends needing the real point ended that, so the database
+    now holds the truth and *every* read has to come through here. A caller
+    that reaches for `target.latitude` directly is the bug this function exists
+    to make obvious.
+
+    `snap_coordinates` is deterministic per user, so repeated reads of the same
+    stored point return the identical cell. That is what makes fuzzing at read
+    time safe: an observer sampling a stranger a thousand times cannot average
+    the jitter away, because there is none.
+
+    Returns `(None, None)` for a target with no stored position, so callers can
+    treat "not shareable" and "not known" the same way.
+    """
+    if target.latitude is None or target.longitude is None:
+        return None, None
+    if is_friend(viewer, target, friend_ids):
+        return target.latitude, target.longitude
+    return snap_coordinates(target, target.latitude, target.longitude)
+
+
+def position_tolerance_for(viewer, target, friend_ids=None):
+    """How far the position `viewer` sees for `target` may be from the truth.
+
+    Zero when they are entitled to the precise point; otherwise half the
+    diagonal of a grid cell, which is the worst case for a point snapped to
+    that cell's centre.
+
+    The error is ours and deliberate, so anything comparing a *published*
+    position against a real-world boundary has to account for it rather than
+    treat it as truth.
+    """
+    if is_friend(viewer, target, friend_ids):
+        return 0.0
+    # Half the diagonal of a square cell: sqrt(2)/2, rounded up a hair.
+    return APPROX_GRID_M * 0.708
 
 
 def store_coordinates(user, lat, lon):
-    """Apply the user's location-sharing mode and return what to persist.
+    """What to persist for `user`. Always the precise pair.
 
-    Approximate users never have a precise position written to the database —
-    the fuzzing happens before storage, not on the way out, so a future
-    endpoint that reads `user.latitude` directly cannot leak it.
+    Kept as a named function though it no longer transforms anything: it is the
+    one write path, and having it makes "where does a position enter the
+    database" answerable in one grep. The fuzzing that used to live here moved
+    to `coordinates_for`, because friends need the real point and a row can
+    only hold one version of it.
     """
-    from .models import User
-
-    if user.location_sharing == User.LocationSharing.APPROXIMATE:
-        return snap_coordinates(user, lat, lon)
     return Decimal(str(lat)), Decimal(str(lon))
 
 

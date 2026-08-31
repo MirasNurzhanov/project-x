@@ -44,17 +44,24 @@ class SwiftTestCase(TestCase):
 def make_user(name, *, sharing=True, **extra):
     """A user, on the map by default.
 
-    `location_sharing` defaults to PAUSED (see `users.visibility`), and a
-    paused creator has every coordinate they send dropped at write time — which
-    is correct, and which would silently make every location test measure the
-    default instead of the thing it is about. Tests that care about the paused
+    A ghosted creator has every coordinate they send dropped at write time —
+    which is correct, and which would silently make a location test measure
+    that instead of the thing it is about. Tests that care about the ghosted
     path pass `sharing=False` and say so.
+
+    `sharing=False` sets `ghost_mode` explicitly rather than leaning on the
+    model default, which is now the opposite: sharing is on unless somebody
+    turns it off.
     """
     user = User.objects.create_user(
         username=name, email=f'{name}@example.com', password='testpass-123',
         date_of_birth=date(1995, 1, 1), **extra
     )
-    return share_location(user) if sharing else user
+    if not sharing:
+        user.ghost_mode = True
+        user.save(update_fields=['ghost_mode'])
+        return user
+    return share_location(user)
 
 
 def befriend(a, b):

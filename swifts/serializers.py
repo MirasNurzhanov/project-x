@@ -418,20 +418,46 @@ class SwiftLocationSerializer(serializers.Serializer):
     # coercing the way the old bridge did. Floats here, for the same reason
     # `StorySerializer` does it, so a revealed location can go straight onto a
     # map without the client normalising it first.
+    def _precise_for_viewer(self, obj):
+        """Whether this viewer is entitled to the point as recorded.
+
+        Same rule as a live position: a friend of the author sees the precise
+        coordinate, everybody else sees the ~500m cell. It used to be decided
+        before the row was written, by the author's own Approximate setting;
+        that setting is gone and precision follows the relationship now.
+
+        Unauthenticated falls to the coarse answer, which is the safe
+        direction — this serializer is reached through one guarded view, so
+        that branch should be unreachable rather than merely unlikely.
+        """
+        from users import visibility as user_visibility
+
+        viewer = getattr(self.context.get('request'), 'user', None)
+        if viewer is None or not viewer.is_authenticated:
+            return False
+        return user_visibility.is_friend(viewer, obj.author)
+
+    def _shown(self, obj):
+        from users import visibility as user_visibility
+
+        if obj.latitude is None or obj.longitude is None:
+            return None, None
+        if self._precise_for_viewer(obj):
+            return obj.latitude, obj.longitude
+        # Snapped against the *author*, so the grid is the same one their live
+        # position is fuzzed onto and the two agree.
+        return user_visibility.snap_coordinates(obj.author, obj.latitude, obj.longitude)
+
     def get_latitude(self, obj):
-        return None if obj.latitude is None else float(obj.latitude)
+        lat, _ = self._shown(obj)
+        return None if lat is None else float(lat)
 
     def get_longitude(self, obj):
-        return None if obj.longitude is None else float(obj.longitude)
+        _, lon = self._shown(obj)
+        return None if lon is None else float(lon)
 
     def get_precision(self, obj):
-        from users.models import User
-
-        return (
-            'approximate'
-            if obj.author.location_sharing == User.LocationSharing.APPROXIMATE
-            else 'exact'
-        )
+        return 'exact' if self._precise_for_viewer(obj) else 'approximate'
 
 
 class SwiftCommentSerializer(serializers.ModelSerializer):

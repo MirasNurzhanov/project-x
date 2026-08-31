@@ -36,13 +36,21 @@ def make_user(name, **extra):
     )
 
 
-class PausedBrowsingTests(TestCase):
-    """A paused user can see, and cannot be seen."""
+class PrivateBrowsingTests(TestCase):
+    """Browsing on an anchor you supply, without publishing one.
+
+    The case this covers used to be "paused". Ghost Mode is mutual, so a ghost
+    is not a private browser — they see nothing either, and
+    `test_a_ghost_cannot_browse` pins that. What is left, and what the private
+    query is actually for, is the user who has simply not reported a position
+    yet: they can still ask who is nearby by handing over a coordinate for the
+    length of one request.
+    """
 
     def setUp(self):
         self.client = APIClient()
-        # Paused by default, and deliberately given no stored position: this is
-        # the state a paused user is actually in after users/0029.
+        # Sharing, and deliberately given no stored position: the state
+        # somebody is in before their first report lands.
         self.me = make_user('me')
         self.neighbour = share_location(
             make_user('neighbour', latitude='10.0005', longitude='10.0005'))
@@ -58,28 +66,33 @@ class PausedBrowsingTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         return response
 
-    def test_a_paused_user_can_browse(self):
+    def test_someone_without_a_position_can_still_browse(self):
         self.assertIn(self.neighbour.pk, {row['id'] for row in self.query().json()})
 
-    def test_the_stored_route_still_returns_nothing_for_them(self):
-        """The two paths are not interchangeable, and the GET is the one that
-        needs an anchor it does not have.
+    def test_a_ghost_cannot_browse(self):
+        """Ghost Mode is mutual, so it is not a way to watch unobserved.
 
-        Empty rather than an error, and deliberately unlike the not-yet-
-        reported case below: being paused is a working state, not a failure.
+        This is the case that changed. Being off the map used to leave the
+        private query open, which was the point of it; opting out of being seen
+        is opting out of seeing now, and the private query is for the
+        position-less rather than the hidden.
         """
-        response = self.client.get('/api/proximity/nearby/')
+        self.me.ghost_mode = True
+        self.me.save(update_fields=['ghost_mode'])
+        response = self.client.post(
+            QUERY_URL, {'latitude': '10.0', 'longitude': '10.0'}, format='json',
+        )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
 
-    def test_a_sharing_user_with_no_position_yet_gets_a_400(self):
-        """The gap right after choosing Live, which the client falls back on.
+    def test_the_stored_route_returns_a_400_without_a_position(self):
+        """The two paths are not interchangeable, and the GET is the one that
+        needs an anchor it does not have.
 
         The two empty-handed cases have to be distinguishable: an empty list
         means "nobody is around" and the map draws it, a 400 means "ask again
         with your own coordinate".
         """
-        share_location(self.me)
         response = self.client.get('/api/proximity/nearby/')
         self.assertEqual(response.status_code, 400)
 
@@ -91,10 +104,12 @@ class PausedBrowsingTests(TestCase):
         self.assertIsNone(self.me.location_updated_at)
         self.assertIsNone(self.me.location_accuracy_m)
 
-    def test_browsing_does_not_start_sharing(self):
+    def test_browsing_does_not_put_the_browser_on_the_map(self):
+        """The anchor is used for this request and never stored, so asking who
+        is nearby is not a way of announcing yourself."""
         self.query()
         self.me.refresh_from_db()
-        self.assertEqual(self.me.location_sharing, User.LocationSharing.PAUSED)
+        self.assertIsNone(self.me.latitude)
         self.assertFalse(self.me.is_on_map())
 
     def test_browsing_does_not_touch_motion(self):
@@ -139,14 +154,26 @@ class PausedBrowsingTests(TestCase):
         self.me.refresh_from_db()
         self.assertIsNone(self.me.last_seen)
 
-    def test_a_paused_user_still_cannot_write_a_position(self):
-        """The protection this feature had to be built around, not through."""
+    def test_reporting_is_a_separate_act_from_browsing(self):
+        """Browsing never writes; reporting is what does.
+
+        This used to assert the write was refused outright while paused. It is
+        allowed now — a ghost needs their own position for clubs and region —
+        so what is worth pinning is that the *private query* is not a back door
+        into it: the anchor above stored nothing, and only an explicit report
+        puts a coordinate on the row.
+        """
+        self.me.refresh_from_db()
+        self.assertIsNone(self.me.latitude)
+
         response = self.client.patch(
             '/api/proximity/location/',
             {'latitude': '10.0', 'longitude': '10.0'},
             format='json',
         )
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 200)
+        self.me.refresh_from_db()
+        self.assertEqual(float(self.me.latitude), 10.0)
 
 
 class QueryAnchorTests(TestCase):
@@ -189,10 +216,15 @@ class QueryAnchorTests(TestCase):
         self.me.save(update_fields=['zone_radius'])
         self.assertIn(far.pk, self.ids_from(10.0, 10.0))
 
-    def test_paused_people_are_not_returned_to_a_private_browser_either(self):
+    def test_ghosts_are_not_returned_to_a_private_browser_either(self):
         """Browsing privately does not buy a wider view than browsing openly."""
-        hidden = make_user('hidden', latitude='10.0005', longitude='10.0005')
+        hidden = share_location(
+            make_user('hidden', latitude='10.0005', longitude='10.0005'))
         hidden.interests.set(self.me.interests.all())
+        self.assertIn(hidden.pk, self.ids_from(10.0, 10.0))
+
+        hidden.ghost_mode = True
+        hidden.save(update_fields=['ghost_mode'])
         self.assertNotIn(hidden.pk, self.ids_from(10.0, 10.0))
 
     def test_coordinates_are_required_and_validated(self):
@@ -265,7 +297,7 @@ class MapQueryTests(TransactionTestCase):
         )
         self.me.refresh_from_db()
         self.assertIsNone(self.me.latitude)
-        self.assertEqual(self.me.location_sharing, User.LocationSharing.PAUSED)
+        self.assertFalse(self.me.is_on_map())
         self.assertEqual(Encounter.objects.count(), 0)
 
     def test_the_exempt_path_list_matches_the_route(self):

@@ -1,15 +1,31 @@
-"""The App Store compliance matrix, asserted end to end.
+"""The privacy promises the API makes, asserted end to end.
 
-Everything here restates a promise made to App Review under 5.1.2(i) rather
-than a piece of internal behaviour. They overlap with the other proximity
-suites on purpose: those test units, this tests the promises, and a promise
-that survives a refactor of the unit under it is the thing worth keeping.
+These overlap with the other proximity suites on purpose: those test units,
+this tests the promises, and a promise that survives a refactor of the unit
+under it is the thing worth keeping.
+
+This file used to assert a different product. Sharing was a per-launch
+decision — a mode chosen against a consent sheet, torn down again by the next
+cold start — and most of what was here pinned that teardown from every angle.
+Sharing now follows the OS permission and persists, the way Find My and Snap
+Map do, so those assertions were deleted rather than adjusted: they described
+behaviour that is deliberately gone, and a test kept limping past a product
+decision is worse than no test.
+
+What replaced them is the pair of promises the new model actually makes:
+
+    precision follows the relationship   friends get the point, everybody
+                                         else gets a ~500m cell, and the
+                                         distance agrees with the pin
+    Ghost Mode is mutual                 a ghost is on nobody's map and has
+                                         nobody on theirs, and it still has
+                                         its clubs
 
 The three states the whole API turns on:
 
-    paused                  200 []          nothing to show, working as chosen
-    live, no position yet   400 + code      transient; ask again with a fix
-    live, with a position   200 [rows]      the normal answer
+    ghosted                  200 []          nothing to show, working as chosen
+    sharing, no position     400 + code      transient; ask again with a fix
+    sharing, with a position 200 [rows]      the normal answer
 """
 from unittest import mock
 
@@ -74,7 +90,9 @@ class ApiStateMatrixTests(TestCase):
         self.me = make_user('me')
         self.client.force_authenticate(self.me)
 
-    def test_paused_is_an_empty_list_not_an_error(self):
+    def test_ghosted_is_an_empty_list_not_an_error(self):
+        self.me.ghost_mode = True
+        self.me.save(update_fields=['ghost_mode'])
         response = self.client.get(NEARBY)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
@@ -94,12 +112,23 @@ class ApiStateMatrixTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIsInstance(response.json(), list)
 
-    def test_a_paused_update_is_refused_with_its_own_code(self):
+    def test_a_ghost_may_still_report_a_position(self):
+        """Ghost Mode is about the map, not about the app.
+
+        The write used to be refused outright, which also emptied the ghost's
+        club list and region, because those resolve from the same stored
+        position. Ghosting hides you from other people; it does not take the
+        product away from you. `visible_users` is what keeps the position
+        unpublished — see `test_ghost_is_mutual`.
+        """
+        self.me.ghost_mode = True
+        self.me.save(update_fields=['ghost_mode'])
         response = self.client.patch(
             LOCATION, {'latitude': '10.0', 'longitude': '10.0'}, format='json',
         )
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()['code'], CODE_SHARING_PAUSED)
+        self.assertEqual(response.status_code, 200)
+        self.me.refresh_from_db()
+        self.assertIsNotNone(self.me.latitude)
 
     def test_the_two_codes_are_distinct(self):
         """The client draws a different screen for each, so they must never
@@ -120,37 +149,28 @@ class ApiStateMatrixTests(TestCase):
 
 
 class ColdInstallTests(TestCase):
-    """Nothing about arriving puts anybody on the map."""
+    """What arriving does, and what it still does not do."""
 
-    def test_a_new_account_is_paused_and_has_no_position(self):
+    def test_a_new_account_shares_but_has_no_position_yet(self):
+        """Not ghosted, and not on the map either.
+
+        The default flipped: sharing follows the OS permission now rather than
+        an in-app choice, so a fresh row is willing to be seen. It is still
+        absent from every map until a position arrives, which is the half that
+        did not change and the half that does the work on a cold install.
+        """
         user = make_user('fresh')
-        self.assertEqual(user.location_sharing, User.LocationSharing.PAUSED)
+        self.assertFalse(user.ghost_mode)
         self.assertIsNone(user.latitude)
         self.assertFalse(user.is_on_map())
 
-    def test_granting_the_os_permission_changes_nothing_server_side(self):
-        """There is no API for it, and that is the point.
+    def test_browsing_alone_still_publishes_nothing(self):
+        """Reading the map is a read.
 
-        The OS permission is a device fact. The server never hears about it and
-        has no field for it, so it cannot be mistaken for consent to publish —
-        which is precisely the confusion App Review rejected.
+        Sharing is automatic now, but *being on* the map still takes a position
+        this user reported, and the private query deliberately reports nothing.
+        Somebody who only ever browses stays off it.
         """
-        user = make_user('permitted')
-        client = APIClient()
-        client.force_authenticate(user)
-
-        # The most an app with permission can do without the user choosing to
-        # share: report a position. It is refused.
-        response = client.patch(
-            LOCATION, {'latitude': '10.0', 'longitude': '10.0'}, format='json',
-        )
-        self.assertEqual(response.status_code, 403)
-
-        user.refresh_from_db()
-        self.assertFalse(user.is_on_map())
-
-    def test_opening_the_map_changes_nothing(self):
-        """Browsing is a read. It must not be a way onto the map."""
         user = make_user('browser')
         client = APIClient()
         client.force_authenticate(user)
@@ -166,8 +186,8 @@ class ColdInstallTests(TestCase):
         self.assertIsNone(user.latitude)
 
 
-class StopSharingTests(TestCase):
-    """The explicit stop conditions, and what each one takes with it."""
+class GhostModeTests(TestCase):
+    """The one off switch, and exactly how much it takes with it."""
 
     def setUp(self):
         self.client = APIClient()
@@ -187,51 +207,81 @@ class StopSharingTests(TestCase):
         self.assertIsNotNone(self.me.location_updated_at)
         self.assertEqual(self.me.motion_class, User.MotionClass.FAST)
 
-    def test_stop_sharing_removes_every_public_trace(self):
-        response = self.client.patch(
-            PRIVACY, {'location_sharing': 'paused'}, format='json',
-        )
+    def test_ghosting_takes_you_off_every_map(self):
+        response = self.client.patch(PRIVACY, {'ghost_mode': True}, format='json')
         self.assertEqual(response.status_code, 200)
 
         self.me.refresh_from_db()
         self.assertFalse(self.me.is_on_map())
-        self.assertIsNone(self.me.latitude)
-        self.assertIsNone(self.me.longitude)
-        self.assertIsNone(self.me.location_updated_at)
-        self.assertIsNone(self.me.location_accuracy_m)
-        self.assertEqual(self.me.motion_class, User.MotionClass.STATIONARY)
-        self.assertIsNone(self.me.motion_updated_at)
 
-    def test_sign_out_pauses_server_side(self):
-        """The client PATCHes this before tearing the session down. Asserted
-        against the endpoint it actually calls, so a change to either side
-        shows up here."""
-        response = self.client.patch(
-            PRIVACY, {'location_sharing': 'paused'}, format='json',
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['location_sharing'], 'paused')
+        watcher = share_location(make_user('watcher', latitude='10.0', longitude='10.0'))
+        befriend(watcher, self.me)
+        other = APIClient()
+        other.force_authenticate(watcher)
+        seen = {row['id'] for row in other.get(NEARBY).json()}
+        self.assertNotIn(self.me.pk, seen)
+
+    def test_ghost_is_mutual(self):
+        """Opting out of being seen is opting out of seeing.
+
+        Half privacy and half fairness: a one-way ghost watches a map it has
+        removed itself from.
+        """
+        neighbour = share_location(
+            make_user('neighbour', latitude='10.0', longitude='10.0'))
+        neighbour_client = APIClient()
+        neighbour_client.force_authenticate(neighbour)
+        neighbour_client.patch(
+            LOCATION, {'latitude': '10.0', 'longitude': '10.0'}, format='json')
+
+        # Visible to each other first, or the assertion below proves nothing.
+        self.assertIn(
+            neighbour.pk, {row['id'] for row in self.client.get(NEARBY).json()})
+
+        self.client.patch(PRIVACY, {'ghost_mode': True}, format='json')
+        self.assertEqual(self.client.get(NEARBY).json(), [])
+
+    def test_ghosting_keeps_the_position_it_stops_publishing(self):
+        """The narrow promise, and the reason this mode exists.
+
+        Pausing used to wipe the row, which also emptied the user's own club
+        list and region — they resolve from the same coordinate. Ghosting
+        leaves it, and `visible_users` is what keeps it unpublished.
+        """
+        self.client.patch(PRIVACY, {'ghost_mode': True}, format='json')
 
         self.me.refresh_from_db()
-        self.assertFalse(self.me.is_on_map())
-        self.assertIsNone(self.me.latitude)
+        self.assertIsNotNone(self.me.latitude)
+        self.assertIsNotNone(self.me.longitude)
+        self.assertIsNotNone(self.me.location_updated_at)
 
-    def test_signing_back_in_does_not_restore_sharing(self):
-        """No 'resume where you left off'. There is nowhere for it to be
-        remembered, which is the point — the previous choice is overwritten by
-        Paused rather than parked."""
-        self.client.patch(PRIVACY, {'location_sharing': 'paused'}, format='json')
+    def test_ghosting_survives_a_new_session(self):
+        """It is a setting, not a per-run state — in both directions.
 
-        # A fresh session for the same account, as a later login would be.
+        Sharing persisting across launches is the headline change; a ghost
+        being un-ghosted by reopening the app would be the same bug wearing the
+        opposite sign.
+        """
+        self.client.patch(PRIVACY, {'ghost_mode': True}, format='json')
+
         again = APIClient()
         again.force_authenticate(self.me)
-        response = again.get(PRIVACY)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['location_sharing'], 'paused')
+        self.assertTrue(again.get(PRIVACY).json()['ghost_mode'])
+        self.assertEqual(again.get(NEARBY).json(), [])
 
-        response = again.get(NEARBY)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), [])
+    def test_sharing_survives_a_new_session(self):
+        """The headline change, asserted from the outside.
+
+        A cold launch used to end the previous session and leave the user
+        paused, so this is the assertion that would fail if any of that came
+        back.
+        """
+        again = APIClient()
+        again.force_authenticate(self.me)
+        self.assertFalse(again.get(PRIVACY).json()['ghost_mode'])
+
+        self.me.refresh_from_db()
+        self.assertTrue(self.me.is_on_map())
 
 
 class BlockingThroughEveryPathTests(TransactionTestCase):
@@ -289,8 +339,8 @@ class BlockingThroughEveryPathTests(TransactionTestCase):
     def test_a_paused_blocker_is_still_hidden_from_the_person_they_blocked(self):
         """Blocking is mutual invisibility, and pausing does not weaken it."""
         BlockedUser.objects.create(blocker=self.a, blocked=self.b)
-        self.a.location_sharing = User.LocationSharing.PAUSED
-        self.a.save(update_fields=['location_sharing'])
+        self.a.ghost_mode = True
+        self.a.save(update_fields=['ghost_mode'])
 
         self.assertNotIn(
             self.a.pk,
@@ -361,246 +411,147 @@ class ZoneRulesStillApplyTests(TestCase):
         self.assertNotIn('interests', row)
 
 
-class NoAutomaticVisibilityTests(TestCase):
-    """Nothing on the server makes a user visible except their own request.
+class GhostIsOnlyChangedDeliberatelyTests(TestCase):
+    """Nothing on the server flips Ghost Mode except a request that asks it to.
 
-    The client half of this lives in
-    services/__tests__/noAutomaticVisibility.test.ts. Both are needed: the
-    client one bounds what the app can ask for, this one bounds what the API
-    will do if something asks anyway.
+    This class used to be `NoAutomaticVisibilityTests`, and it asserted the
+    opposite of the current product: that no event could ever make somebody
+    visible, because visibility had to be chosen against a consent sheet each
+    run. Sharing follows the OS permission now, so that premise is gone.
 
-    App Review's list — app open, login, permission granted, GPS fix, map
-    opened, foreground, background start, location change, zone entry — is all
-    the same shape of thing: an event that reaches an endpoint. So rather than
-    simulate each, these pin that the endpoints those events reach cannot
-    change the sharing mode at all.
+    What survives is the narrower and still-worth-having half: `ghost_mode` has
+    exactly one writable route, so a user who has turned themselves off cannot
+    be turned back on by a side effect of using the app. The direction of the
+    danger reversed, the shape of the guard did not.
     """
 
     def setUp(self):
         self.client = APIClient()
         self.me = make_user('me')
+        self.me.ghost_mode = True
+        self.me.save(update_fields=['ghost_mode'])
         self.client.force_authenticate(self.me)
 
-    def assert_still_paused(self, note):
+    def assert_still_ghosted(self, note):
         self.me.refresh_from_db()
-        self.assertEqual(
-            self.me.location_sharing, User.LocationSharing.PAUSED, note,
-        )
+        self.assertTrue(self.me.ghost_mode, note)
         self.assertFalse(self.me.is_on_map(), note)
 
-    def test_reporting_a_position_cannot_check_anyone_in(self):
-        """"a GPS position is obtained" and "the user's location changes"."""
+    def test_reporting_a_position_does_not_unghost(self):
         for _ in range(3):
             self.client.patch(
                 LOCATION, {'latitude': '10.0', 'longitude': '10.0', 'speed': 3.0},
                 format='json',
             )
-        self.assert_still_paused('a location report changed the sharing mode')
+        self.assert_still_ghosted('a location report cleared Ghost Mode')
 
-    def test_browsing_the_map_cannot_check_anyone_in(self):
-        """"the map screen opens", and every poll it makes afterwards."""
+    def test_browsing_the_map_does_not_unghost(self):
         for _ in range(3):
             self.client.post(
                 NEARBY_QUERY, {'latitude': '10.0', 'longitude': '10.0'},
                 format='json',
             )
             self.client.get(NEARBY)
-        self.assert_still_paused('browsing the map changed the sharing mode')
+        self.assert_still_ghosted('browsing cleared Ghost Mode')
 
-    def test_reading_the_privacy_screen_cannot_check_anyone_in(self):
-        """"the application opens" — this is what it fetches on launch."""
-        for _ in range(3):
-            self.assertEqual(self.client.get(PRIVACY).status_code, 200)
-        self.assert_still_paused('reading privacy changed the sharing mode')
+    def test_reading_the_privacy_screen_does_not_unghost(self):
+        self.client.get(PRIVACY)
+        self.assert_still_ghosted('reading the privacy screen cleared Ghost Mode')
 
-    def test_other_privacy_settings_do_not_drag_sharing_with_them(self):
-        """A PATCH that says nothing about location must not imply one."""
-        response = self.client.patch(
-            PRIVACY, {'is_private': True, 'visibility_stories': 'nobody'},
-            format='json',
+    def test_other_privacy_settings_do_not_drag_ghost_with_them(self):
+        self.client.patch(PRIVACY, {'is_private': True}, format='json')
+        self.assert_still_ghosted('an unrelated privacy write cleared Ghost Mode')
+
+    def test_a_zone_change_does_not_unghost(self):
+        self.client.patch(
+            '/api/users/zone/', {'zone_active': True}, format='json',
         )
+        self.assert_still_ghosted('a zone change cleared Ghost Mode')
+
+    def test_the_privacy_endpoint_is_the_one_that_can(self):
+        """The other side of every assertion above. A field nothing can write
+        is not protected, it is broken."""
+        response = self.client.patch(PRIVACY, {'ghost_mode': False}, format='json')
         self.assertEqual(response.status_code, 200)
-        self.assert_still_paused('an unrelated privacy change turned sharing on')
-
-    def test_a_zone_change_cannot_check_anyone_in(self):
-        """"the user enters a zone" — and setting one up, which is the only
-        zone action a paused user can take."""
-        response = self.client.patch(
-            '/api/users/zone/', {'zone_active': True, 'zone_radius': 1000},
-            format='json',
-        )
-        self.assertIn(response.status_code, (200, 400))
-        self.assert_still_paused('a zone change turned sharing on')
-
-    def test_only_the_privacy_endpoint_can_turn_sharing_on(self):
-        """The positive case, so the tests above cannot pass by the endpoint
-        being broken for everyone."""
-        response = self.client.patch(
-            PRIVACY, {'location_sharing': 'live'}, format='json',
-        )
-        self.assertEqual(response.status_code, 200)
-
         self.me.refresh_from_db()
-        self.assertTrue(self.me.is_on_map())
+        self.assertFalse(self.me.ghost_mode)
 
     def test_the_serializer_is_the_only_place_the_field_is_writable(self):
-        """Static backstop for an endpoint nobody has written yet.
+        """Static, so it also covers the endpoint nobody has written yet."""
+        from rest_framework import serializers as drf
 
-        A new view that spreads `request.data` onto the user — the usual way
-        this kind of hole appears — would have to add the field to a serializer
-        to work, and there is only one that accepts it.
-        """
-        from users.serializers import (
-            PrivacySettingsSerializer,
-            UserProfileSerializer,
-        )
+        from users import serializers as user_serializers
 
-        self.assertIn('location_sharing', PrivacySettingsSerializer().fields)
+        writable = []
+        for name in dir(user_serializers):
+            attr = getattr(user_serializers, name)
+            if not isinstance(attr, type) or not issubclass(attr, drf.BaseSerializer):
+                continue
+            meta = getattr(attr, 'Meta', None)
+            fields = getattr(meta, 'fields', ()) or ()
+            read_only = getattr(meta, 'read_only_fields', ()) or ()
+            if 'ghost_mode' in fields and 'ghost_mode' not in read_only:
+                writable.append(name)
 
-        profile = UserProfileSerializer().fields['location_sharing']
-        self.assertFalse(
-            profile.read_only,
-            'If /me ever becomes writable for this field it needs the same '
-            'consent story as the privacy screen, or it is a second door.',
-        )
+        self.assertEqual(writable, ['PrivacySettingsSerializer'])
 
 
-class SharingSessionTests(TestCase):
-    """Visibility belongs to the run of the app that chose it.
+class PrecisionFollowsTheRelationshipTests(TestCase):
+    """Friends get the point. Everybody else gets a ~500m cell.
 
-    App Review's last bullet — never check somebody in because "any previous
-    preference says they were visible" — is the one a persistent setting cannot
-    satisfy on its own. The token is how it is satisfied: minted on going
-    visible, held in memory by the client, and gone the moment the process is.
-
-    What it must *not* do is turn backgrounding into a check-out. Nothing here
-    counts down and nothing expires; only a run that cannot produce the token
-    ends the session.
+    The promise that replaced the Live/Approximate setting, and the one that
+    the storage inversion makes load-bearing: the row holds the precise
+    position now, so these are the assertions standing between it and a
+    stranger.
     """
-
-    END = '/api/proximity/sharing-session/end/'
 
     def setUp(self):
         self.client = APIClient()
-        self.me = make_user('me')
-        self.client.force_authenticate(self.me)
-
-    def go_visible(self):
-        response = self.client.patch(
-            PRIVACY, {'location_sharing': 'live'}, format='json',
-        )
-        self.assertEqual(response.status_code, 200)
-        self.me.refresh_from_db()
-        return response.json()['sharing_session']
-
-    def test_going_visible_mints_a_token(self):
-        token = self.go_visible()
-        self.assertIsNotNone(token)
-        self.assertEqual(str(self.me.sharing_session), token)
-
-    def test_a_cold_launch_presents_nothing_and_is_paused(self):
-        """The whole feature, in one test."""
-        self.go_visible()
-        self.client.patch(
-            LOCATION, {'latitude': '10.0', 'longitude': '10.0'}, format='json',
-        )
-
-        response = self.client.post(self.END, {'session': None}, format='json')
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['location_sharing'], 'paused')
-
-        self.me.refresh_from_db()
-        self.assertFalse(self.me.is_on_map())
-        self.assertIsNone(self.me.latitude)
-        self.assertIsNone(self.me.sharing_session)
-
-    def test_omitting_the_field_entirely_is_the_same_as_null(self):
-        """An older client, or one that lost the token some other way."""
-        self.go_visible()
-        response = self.client.post(self.END, {}, format='json')
-        self.assertEqual(response.json()['location_sharing'], 'paused')
-
-    def test_the_run_that_owns_the_session_is_left_alone(self):
-        """Why it is a token and not a bare "pause me".
-
-        The startup call races the user's own tap. Somebody who opens the app
-        and immediately chooses Live has the current token by the time it
-        lands, and must not be paused by it.
-        """
-        token = self.go_visible()
-
-        response = self.client.post(self.END, {'session': token}, format='json')
-        self.assertEqual(response.json()['location_sharing'], 'live')
-
-        self.me.refresh_from_db()
-        self.assertTrue(self.me.is_on_map())
-        self.assertIsNotNone(self.me.sharing_session)
-
-    def test_a_stale_token_from_a_previous_run_does_not_match(self):
-        stale = self.go_visible()
-        self.client.patch(PRIVACY, {'location_sharing': 'paused'}, format='json')
-        self.go_visible()
-
-        response = self.client.post(self.END, {'session': stale}, format='json')
-        self.assertEqual(response.json()['location_sharing'], 'paused')
-
-    def test_pausing_by_hand_also_clears_the_token(self):
-        """Otherwise a token could outlive the visibility it was minted for and
-        be replayed against the next one."""
-        self.go_visible()
-        self.client.patch(PRIVACY, {'location_sharing': 'paused'}, format='json')
-
-        self.me.refresh_from_db()
-        self.assertIsNone(self.me.sharing_session)
-
-    def test_resuming_mints_a_fresh_token(self):
-        first = self.go_visible()
-        self.client.patch(PRIVACY, {'location_sharing': 'paused'}, format='json')
-        second = self.go_visible()
-        self.assertNotEqual(first, second)
-
-    def test_calling_it_while_already_paused_is_a_no_op(self):
-        response = self.client.post(self.END, {'session': None}, format='json')
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['location_sharing'], 'paused')
-
-    def test_it_is_idempotent(self):
-        self.go_visible()
-        for _ in range(3):
-            response = self.client.post(self.END, {'session': None}, format='json')
-            self.assertEqual(response.json()['location_sharing'], 'paused')
-
-    def test_the_token_is_not_writable_through_the_privacy_endpoint(self):
-        """A client that could choose its own token could keep any session
-        alive forever."""
-        token = self.go_visible()
-        self.client.patch(
-            PRIVACY,
-            {'sharing_session': '00000000-0000-0000-0000-000000000000'},
+        self.target = share_location(make_user('target'))
+        reporter = APIClient()
+        reporter.force_authenticate(self.target)
+        reporter.patch(
+            LOCATION, {'latitude': '10.00000000', 'longitude': '10.00000000'},
             format='json',
         )
-        self.me.refresh_from_db()
-        self.assertEqual(str(self.me.sharing_session), token)
+        self.target.refresh_from_db()
 
-    def test_nothing_about_it_expires(self):
-        """No clock, no countdown, no backgrounding rule. The session ends when
-        a run without the token says so, and at no other time."""
-        token = self.go_visible()
-        self.client.patch(
-            LOCATION, {'latitude': '10.0', 'longitude': '10.0'}, format='json',
-        )
+    def row_for(self, viewer):
+        client = APIClient()
+        client.force_authenticate(viewer)
+        client.patch(
+            LOCATION, {'latitude': '10.0', 'longitude': '10.0'}, format='json')
+        rows = {r['id']: r for r in client.get(NEARBY).json()}
+        return rows.get(self.target.pk)
 
-        # Stands in for time passing and for the app being backgrounded: the
-        # background task keeps reporting and never touches the session.
-        for _ in range(5):
-            self.client.patch(
-                LOCATION, {'latitude': '10.0', 'longitude': '10.0'}, format='json',
-            )
-            self.assertEqual(self.client.get(NEARBY).status_code, 200)
+    def test_the_row_itself_is_precise(self):
+        """Otherwise the two tests below would agree for the wrong reason."""
+        self.assertEqual(float(self.target.latitude), 10.0)
 
-        self.me.refresh_from_db()
-        self.assertTrue(self.me.is_on_map())
-        self.assertEqual(str(self.me.sharing_session), token)
+    def test_a_friend_gets_the_point(self):
+        friend = share_location(make_user('friend'))
+        befriend(friend, self.target)
+        row = self.row_for(friend)
+        self.assertEqual(row['location_precision'], 'precise')
+        self.assertAlmostEqual(float(row['latitude']), 10.0, places=7)
+
+    def test_a_stranger_gets_a_cell(self):
+        row = self.row_for(share_location(make_user('stranger')))
+        self.assertEqual(row['location_precision'], 'approximate')
+        self.assertNotAlmostEqual(float(row['latitude']), 10.0, places=5)
+
+    def test_a_strangers_distance_agrees_with_the_pin_they_were_given(self):
+        """A coarse pin beside a precise distance is a precise pin.
+
+        Two or three exact distances from known vantage points trilaterate the
+        point the cell was meant to hide, so the number has to be measured to
+        the cell rather than to the truth.
+        """
+        from proximity.utils import haversine
+
+        row = self.row_for(share_location(make_user('measurer')))
+        expected = haversine(10.0, 10.0, float(row['latitude']), float(row['longitude']))
+        self.assertAlmostEqual(row['distance_km'], round(expected, 2), places=2)
 
 
 class StoryLocationTests(TestCase):
@@ -646,7 +597,7 @@ class StoryLocationTests(TestCase):
         return (client or self.author_client).post(self.STORIES, body, format='json')
 
     def pause(self, client):
-        response = client.patch(PRIVACY, {'location_sharing': 'paused'}, format='json')
+        response = client.patch(PRIVACY, {'ghost_mode': True}, format='json')
         self.assertEqual(response.status_code, 200)
 
     def map_story_ids(self):
@@ -804,7 +755,7 @@ class StoryLocationTests(TestCase):
         self.pause(self.author_client)
         self.assertNotIn(story_id, self.map_story_ids())
 
-        self.author_client.patch(PRIVACY, {'location_sharing': 'live'}, format='json')
+        self.author_client.patch(PRIVACY, {'ghost_mode': False}, format='json')
         self.assertIn(story_id, self.map_story_ids())
 
     def test_a_paused_author_still_sees_their_own(self):
@@ -908,39 +859,47 @@ class StoryLocationTests(TestCase):
         )
 
     # -- precision ------------------------------------------------------------
-    def test_approximate_fuzzes_the_pin_as_well_as_the_dot(self):
-        """Otherwise the setting is undone by using the app.
+    def test_a_friend_sees_the_story_pin_precisely(self):
+        """Stories are friends-only to begin with, so this is the case that
+        actually happens: the audience for a pin is the audience entitled to
+        the precise point, and it gets it."""
+        story_id = self.post_story().json()['id']
+        row = next(
+            s for s in self.viewer_client.get('/api/stories/nearby/').json()
+            if s['id'] == story_id
+        )
 
-        Someone whose dot is snapped to a ~500m cell would hand back the exact
-        point by posting, under their own name - a worse leak than the one the
-        setting exists to prevent, because it is a place they chose to stop at.
+        self.assertAlmostEqual(row['latitude'], 10.0, places=6)
+        self.assertAlmostEqual(row['longitude'], 10.0, places=6)
+
+    def test_the_serializer_still_coarsens_for_a_non_friend(self):
+        """Defence in depth, asserted at the serializer.
+
+        No endpoint currently shows a story to a non-friend — `placed_q` gates
+        on friendship well before this — so this is the one assertion in the
+        file with no route to it through the API. It is here because the pin is
+        stored precisely now, and "the audience filter upstream happens to be
+        strict" is the kind of guarantee that quietly stops being true when the
+        audience widens.
         """
+        from rest_framework.test import APIRequestFactory
+
         from stories.models import Story
+        from stories.serializers import StorySerializer
         from users.visibility import snap_coordinates
 
-        share_location(self.author, User.LocationSharing.APPROXIMATE)
         story_id = self.post_story().json()['id']
+        stranger = share_location(make_user('story-stranger'))
+        request = APIRequestFactory().get('/')
+        request.user = stranger
 
-        story = Story.objects.get(pk=story_id)
-        self.assertNotEqual(
-            (str(story.latitude), str(story.longitude)),
-            (self.HERE['latitude'], self.HERE['longitude']),
-            'an Approximate author posted a precise pin',
-        )
-        # And it is the same cell their dot is snapped to, not a second scheme.
-        snapped_lat, snapped_lon = snap_coordinates(self.author, 10.0, 10.0)
-        self.assertEqual(float(story.latitude), round(float(snapped_lat), 6))
-        self.assertEqual(float(story.longitude), round(float(snapped_lon), 6))
+        row = StorySerializer(
+            Story.objects.get(pk=story_id), context={'request': request},
+        ).data
 
-    def test_live_pins_are_not_fuzzed(self):
-        """The negative half, so the test above cannot pass by the coordinate
-        being mangled for everybody."""
-        from stories.models import Story
-
-        story_id = self.post_story().json()['id']
-        story = Story.objects.get(pk=story_id)
-        self.assertEqual(float(story.latitude), 10.0)
-        self.assertEqual(float(story.longitude), 10.0)
+        snapped_lat, _ = snap_coordinates(self.author, 10.0, 10.0)
+        self.assertNotAlmostEqual(row['latitude'], 10.0, places=5)
+        self.assertAlmostEqual(row['latitude'], float(snapped_lat), places=6)
 
 
 class StalePositionTests(TestCase):
@@ -1034,20 +993,17 @@ class StalePositionTests(TestCase):
         self.go_stale()
         self.assertNotIn(self.me.pk, self.nearby_ids())
 
-    def test_stale_and_paused_are_indistinguishable_from_outside(self):
-        """A viewer must not be able to tell "stopped reporting" from "checked
-        out" — the two look identical, which is what stops the gap being a
-        side channel for whether somebody's phone died."""
+    def test_stale_and_ghosted_are_indistinguishable_from_outside(self):
+        """A viewer must not be able to tell "stopped reporting" from "turned
+        themselves off" — the two look identical, which is what stops the gap
+        being a side channel for whether somebody's phone died."""
         self.go_stale()
         stale_view = self.viewer_client.get(NEARBY).json()
 
-        User.objects.filter(pk=self.me.pk).update(
-            location_sharing=User.LocationSharing.PAUSED,
-            latitude=None, longitude=None, location_updated_at=None,
-        )
-        paused_view = self.viewer_client.get(NEARBY).json()
+        User.objects.filter(pk=self.me.pk).update(ghost_mode=True)
+        ghosted_view = self.viewer_client.get(NEARBY).json()
 
-        self.assertEqual(stale_view, paused_view)
+        self.assertEqual(stale_view, ghosted_view)
 
     def test_a_stale_user_can_still_report_a_position(self):
         """The deadlock this split exists to avoid.
@@ -1061,7 +1017,7 @@ class StalePositionTests(TestCase):
         self.assertEqual(response.status_code, 200)
         # And they are back, without having touched the setting.
         self.me.refresh_from_db()
-        self.assertEqual(self.me.location_sharing, User.LocationSharing.LIVE)
+        self.assertFalse(self.me.ghost_mode)
         self.assertIn(self.me.pk, self.nearby_ids())
 
     def test_a_stale_user_can_still_ask_who_is_nearby(self):
@@ -1070,18 +1026,25 @@ class StalePositionTests(TestCase):
         self.go_stale()
         self.assertEqual(self.client_me.get(NEARBY).status_code, 200)
 
-    def test_checking_out_while_stale_still_tears_down(self):
-        """The rows most in need of clearing are exactly the stale ones, so the
-        teardown must not test freshness before running."""
+    def test_ghosting_while_stale_takes_them_off_the_map(self):
+        """Ghosting is a setting, not a teardown.
+
+        This used to assert the position was wiped. It is kept now — a ghost
+        still needs it for their own clubs and region — so what is asserted is
+        the part that matters to everybody else: they are gone from the map,
+        stale or not.
+        """
         self.go_stale()
         response = self.client_me.patch(
-            PRIVACY, {'location_sharing': 'paused'}, format='json',
+            PRIVACY, {'ghost_mode': True}, format='json',
         )
         self.assertEqual(response.status_code, 200)
         self.me.refresh_from_db()
-        self.assertIsNone(self.me.latitude)
-        self.assertIsNone(self.me.location_updated_at)
-        self.assertIsNone(self.me.sharing_session)
+        self.assertTrue(self.me.ghost_mode)
+        self.assertFalse(self.me.is_on_map())
+        self.assertNotIn(self.me.pk, self.nearby_ids())
+        # Still theirs to use.
+        self.assertIsNotNone(self.me.latitude)
 
     def test_the_python_and_sql_halves_agree(self):
         """`is_on_map` and `on_map_q` are twins and drift is the failure mode

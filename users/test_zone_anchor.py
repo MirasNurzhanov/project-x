@@ -84,8 +84,8 @@ class ContainmentAnchorTests(FollowFixture):
         """Setting up a zone should not require broadcasting where you are.
         Same arrangement as private browsing in `NearbyQueryView`: a coordinate
         used for one request and never stored."""
-        self.user.location_sharing = User.LocationSharing.PAUSED
-        self.user.save(update_fields=['location_sharing'])
+        self.user.ghost_mode = True
+        self.user.save(update_fields=['ghost_mode'])
         lat, lon = self.IN_ORBITA
         response = self.patch(
             zone_type='district', zone_region=self.orbita.pk,

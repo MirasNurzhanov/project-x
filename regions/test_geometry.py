@@ -11,6 +11,7 @@ from django.core.cache import cache
 from django.test import SimpleTestCase, TestCase
 from rest_framework.test import APIClient
 
+from friends.models import FriendRequest
 from users import visibility
 
 from . import geometry, nominatim
@@ -273,17 +274,32 @@ class ToleranceTests(TestCase):
 
 
 class PositionToleranceTests(TestCase):
-    """Which users get slack, and how much."""
+    """Which *viewers* get slack, and how much.
 
-    def test_a_precise_sharer_gets_none(self):
-        user = make_user('precise')
-        user.location_sharing = 'live'
-        self.assertEqual(visibility.position_tolerance_m(user), 0.0)
+    The question moved. It used to be a property of the person being looked
+    at — an Approximate sharer's stored point was a grid centre, so anything
+    comparing it against a boundary had to allow for that. Nothing is fuzzed
+    before storage now, so the slack belongs to the pair: a friend sees the
+    real point and needs none, everybody else sees a cell and needs half its
+    diagonal.
+    """
 
-    def test_an_approximate_sharer_gets_half_a_cell_diagonal(self):
-        user = make_user('fuzzy')
-        user.location_sharing = 'approximate'
-        tolerance = visibility.position_tolerance_m(user)
+    def test_a_friend_gets_none(self):
+        target = make_user('precise')
+        friend = make_user('their-friend')
+        FriendRequest.objects.create(
+            sender=friend, receiver=target, status=FriendRequest.Status.ACCEPTED,
+        )
+        self.assertEqual(visibility.position_tolerance_for(friend, target), 0.0)
+
+    def test_looking_at_yourself_gets_none(self):
+        user = make_user('self-view')
+        self.assertEqual(visibility.position_tolerance_for(user, user), 0.0)
+
+    def test_a_stranger_gets_half_a_cell_diagonal(self):
+        target = make_user('fuzzy')
+        stranger = make_user('a-stranger')
+        tolerance = visibility.position_tolerance_for(stranger, target)
         # Enough to cover the worst case of a 500m grid snap, and not much more.
         self.assertGreater(tolerance, 350)
         self.assertLess(tolerance, 400)
@@ -291,12 +307,14 @@ class PositionToleranceTests(TestCase):
     def test_the_tolerance_covers_the_worst_snap_it_has_to_explain(self):
         """The number is only defensible if it actually bounds the error the
         snapping introduces, so this measures one rather than trusting it."""
-        user = make_user('measured')
-        user.location_sharing = 'approximate'
+        target = make_user('measured')
+        stranger = make_user('measuring-stranger')
         lat, lon = 43.2380, 76.9450          # Almaty, near a district border
-        snapped_lat, snapped_lon = visibility.snap_coordinates(user, lat, lon)
+        snapped_lat, snapped_lon = visibility.snap_coordinates(target, lat, lon)
         moved_m = math.hypot(
             (float(snapped_lat) - lat) * 111_320.0,
             (float(snapped_lon) - lon) * 111_320.0 * math.cos(math.radians(lat)),
         )
-        self.assertLessEqual(moved_m, visibility.position_tolerance_m(user))
+        self.assertLessEqual(
+            moved_m, visibility.position_tolerance_for(stranger, target),
+        )

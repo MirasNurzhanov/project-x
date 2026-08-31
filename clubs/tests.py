@@ -1116,31 +1116,35 @@ class DeepenChainTests(GeoFixture):
 
 # ─── Borders, fuzz and the shape of the data ──────────────────────────────────
 class BoundaryConditionTests(GeoFixture):
-    def test_approximate_sharing_does_not_push_someone_out_of_their_district(self):
-        """The fuzz is ours, so the tolerance is ours to allow for.
+    def test_a_district_is_resolved_from_the_precise_position(self):
+        """No slack, because there is no longer any fuzz of ours to allow for.
 
-        An Approximate sharer's stored position is snapped to a ~500m grid
-        before it is written, which near a border lands outside the district
-        they are standing in. Testing that strictly is the bug
-        users/serializers.py already documents for zones.
+        This used to cut the other way. An Approximate sharer's position was
+        snapped to a ~500m grid *before* storage, so near a border the stored
+        point landed outside the district they were standing in, and
+        `places.position_of` had to widen by half a cell to put them back. The
+        snapping moved to the read — it applies to what other viewers see, not
+        to what we hold — so the row is the truth and resolving it strictly is
+        now the correct answer rather than the bug.
+
+        Someone genuinely outside the border is therefore outside it, which is
+        the case that would silently regress if the old tolerance came back.
         """
-        user = self.make_user('approx')
-        user.location_sharing = User.LocationSharing.APPROXIMATE
-        # Just outside Orbita's eastern edge — well within the grid error.
-        user.latitude, user.longitude = 0.1, 0.2009
-        user.location_updated_at = timezone.now()
-        user.save()
+        outside = self.make_user('just-outside')
+        # Just outside Orbita's eastern edge — inside the *old* grid tolerance.
+        outside.latitude, outside.longitude = 0.1, 0.2009
+        outside.location_updated_at = timezone.now()
+        outside.save()
 
-        place = places.snapshot_for(user, force=True)
-        self.assertEqual(place.district_id, self.orbita.pk)
-
-        precise = self.make_user('precise')
-        precise.latitude, precise.longitude = 0.1, 0.2009
-        precise.location_updated_at = timezone.now()
-        precise.save()
-        # Same coordinates, no fuzz to allow for: strictly outside.
         self.assertNotEqual(
-            places.snapshot_for(precise, force=True).district_id, self.orbita.pk,
+            places.snapshot_for(outside, force=True).district_id, self.orbita.pk,
+        )
+
+        inside = self.make_user('just-inside', at=self.IN_ORBITA)
+        inside.location_updated_at = timezone.now()
+        inside.save()
+        self.assertEqual(
+            places.snapshot_for(inside, force=True).district_id, self.orbita.pk,
         )
 
     def test_two_districts_with_the_same_name_in_different_cities(self):

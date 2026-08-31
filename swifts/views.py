@@ -92,28 +92,26 @@ def _position_for(user, validated):
     """The location fields to persist for a Swift `user` is posting.
 
     The whole coupling between Swifts and location sharing lives here, and it
-    runs one way: what the creator's `location_sharing` says decides what gets
-    stored, and posting is never refused over it.
+    runs one way: whether the creator is on the map at all decides whether a
+    location is stored, and posting is never refused over it.
 
-    Paused        nothing. Not the coordinate the client sent, not the one
+    Ghost Mode    nothing. Not the coordinate the client sent, not the one
                   their private map queries travel with, not the last one we
-                  held. A Swift posted while paused carries no location, and
+                  held. A Swift posted while ghosted carries no location, and
                   the place name goes with the coordinate because it is one.
                   `location_shared` is forced off as well: there is nothing to
                   share, and leaving the flag on would publish a reveal button
-                  over an empty row.
+                  over an empty row. A ghost dropping a pin by posting would be
+                  the mode undone by using the app.
 
-    Approximate   snapped to its ~500m cell by the same function the location
-                  endpoint uses. Otherwise the setting is undone by using the
-                  app — someone whose dot is fuzzed hands back the exact point
-                  by posting, under their own name, at a place they chose to
-                  stop at.
-
-    Live          what they sent.
+    Otherwise     what they sent, precisely. *Who* may see it precisely is not
+                  decided here any more: friends do, everybody else gets the
+                  ~500m cell, applied on the way out by
+                  `SwiftLocationSerializer`.
 
     Enforced server-side because the client is not the one making the promise.
     An old build, or a modified one, that keeps sending coordinates while
-    paused gets them dropped.
+    ghosted gets them dropped.
     """
     blank = {
         'latitude': None, 'longitude': None, 'place_name': '', 'location_shared': False,
@@ -584,7 +582,12 @@ class RevealSwiftLocationView(APIView):
                     swift=swift, viewer=request.user,
                 ).update(reveal_count=F('reveal_count') + 1)
 
-        return Response(SwiftLocationSerializer(swift).data)
+        # Context is not optional here: precision is the viewer's relationship
+        # to the author, so a serializer without a request has no way to tell
+        # the creator from a stranger and coarsens the answer for everybody.
+        return Response(
+            SwiftLocationSerializer(swift, context={'request': request}).data
+        )
 
 
 class SwiftLocationRevealAuditView(APIView):

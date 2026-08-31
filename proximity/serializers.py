@@ -6,7 +6,7 @@ from interests.serializers import InterestSerializer
 
 
 class NotOnMap(Exception):
-    """Raised when a row reaches NearbyUserSerializer with sharing paused.
+    """Raised when a row reaches NearbyUserSerializer that should not be drawn.
 
     Never expected — the querysets filter on it — so it is a bug signal rather
     than control flow. It is caught one level up and the row is dropped, which
@@ -33,16 +33,6 @@ class LocationUpdateSerializer(serializers.Serializer):
     #: with a two-kilometre radius cannot place anyone in a district.
     #: expo-location reports -1 when it has no estimate.
     accuracy = serializers.FloatField(required=False, allow_null=True, min_value=-1)
-
-
-class EndSharingSessionSerializer(serializers.Serializer):
-    """The token a starting app claims to be carrying, if any.
-
-    Optional and nullable on purpose: a cold launch has nothing to present, and
-    that absence is the signal rather than an error. See EndSharingSessionView.
-    """
-
-    session = serializers.UUIDField(required=False, allow_null=True)
 
 
 class NearbyQuerySerializer(serializers.Serializer):
@@ -88,9 +78,10 @@ class NearbyUserSerializer(serializers.Serializer):
     used to send `zone_audio_url` to everyone and rely on the client to hide
     it, which is exactly the failure mode this shape prevents.
 
-    Coordinates are whatever is stored. Users on Approximate never have a
-    precise position in the database at all (see users.visibility), so there is
-    nothing here to redact.
+    Coordinates are **not** whatever is stored. The database holds the precise
+    point for everybody, because friends are entitled to it; what a given
+    viewer may see is decided here, per row, by `visibility.coordinates_for`.
+    Reaching for `obj.latitude` in this file would hand a stranger the truth.
     """
 
     @cached_property
@@ -119,7 +110,7 @@ class NearbyUserSerializer(serializers.Serializer):
         rel = self.context.get('relationships', {}).get(obj.pk, visibility.STRANGER)
 
         # The querysets feeding this serializer all go through
-        # `visible_users(on_map=True)`, so nobody paused should ever reach here.
+        # `visible_users(on_map=True)`, so no ghost should ever reach here.
         # Checked rather than assumed: this is the last line before coordinates
         # leave the process, and a future caller assembling its own list is
         # exactly the mistake that would put someone back on the map without
@@ -128,20 +119,25 @@ class NearbyUserSerializer(serializers.Serializer):
         if not obj.is_on_map():
             raise NotOnMap(obj.pk)
 
+        # Precision is the viewer's relationship to this row, not a setting on
+        # it. `friend_ids` comes down in the context already built by the view;
+        # without it this would be a query per person on the map.
+        friend_ids = self.context.get('friend_ids')
+        latitude, longitude = visibility.coordinates_for(me, obj, friend_ids)
+        precise = visibility.is_friend(me, obj, friend_ids)
+
         data = {
             'id': obj.id,
             'username': obj.username,
             'profile_picture': obj.profile_picture.url if obj.profile_picture else None,
             'is_private': obj.is_private,
             'relationship': rel,
-            'latitude': obj.latitude,
-            'longitude': obj.longitude,
+            'latitude': latitude,
+            'longitude': longitude,
+            # Derived from the same fuzzed point the pin uses — see the view. A
+            # coarse pin beside a precise distance is a precise pin.
             'distance_km': self.context.get('distances', {}).get(obj.pk),
-            'location_precision': (
-                'approximate'
-                if obj.location_sharing == User.LocationSharing.APPROXIMATE
-                else 'precise'
-            ),
+            'location_precision': 'precise' if precise else 'approximate',
         }
 
         # Presence sits above the private-account gate because `can_view`

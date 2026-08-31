@@ -463,73 +463,42 @@ class PrivacySettingsView(APIView):
         user = request.user
         data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
 
-        # Builds predating the location/profile split still send the old
-        # active/ghost/invisible values; translate rather than reject them.
-        legacy = data.pop('privacy_mode', None)
-        if legacy is not None:
+        # Builds predating Ghost Mode still send `privacy_mode`
+        # (active/ghost/invisible) or `location_sharing`
+        # (live/approximate/paused); both collapse onto one boolean. Translate
+        # rather than reject, and note the collapse is lossy in one direction
+        # only: an old client asking for `approximate` gets visibility, because
+        # precision is no longer a thing it can ask for.
+        for key in ('privacy_mode', 'location_sharing'):
+            legacy = data.pop(key, None)
+            if legacy is None:
+                continue
             legacy_value = legacy[0] if isinstance(legacy, (list, tuple)) else legacy
             mapped = User.LEGACY_PRIVACY_MODE_REVERSE.get(legacy_value)
             if mapped is None:
-                raise ValidationError({'privacy_mode': f"'{legacy_value}' is not a valid choice."})
-            data.setdefault('location_sharing', mapped)
+                raise ValidationError({key: f"'{legacy_value}' is not a valid choice."})
+            data.setdefault('ghost_mode', mapped)
 
         serializer = PrivacySettingsSerializer(user, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
-        previous_sharing = user.location_sharing
         user = serializer.save()
 
-        # Switching to Approximate must destroy the precise position already on
-        # file, not merely stop reporting it.
-        if (
-            user.location_sharing != previous_sharing
-            and user.location_sharing == User.LocationSharing.APPROXIMATE
-            and user.latitude is not None
-            and user.longitude is not None
-        ):
-            user.latitude, user.longitude = visibility.snap_coordinates(
-                user, user.latitude, user.longitude
-            )
-            user.save(update_fields=['latitude', 'longitude'])
-
-        # Pausing is the strongest statement on this screen — "I am not out
-        # there at all" — so it forgets the position already on file rather than
-        # only stopping new ones. Pausing used to leave the last reported
-        # position sitting in the row, which meant the map stopped drawing you
-        # but the database still knew exactly where you had been.
+        # Nothing is torn down here, and that is the deliberate part.
         #
-        # Motion goes with it: a speed trail is drawn from a published position,
-        # so leaving one behind would outlive the position it belongs to.
+        # Pausing used to wipe the stored position — the strongest reading of "I
+        # am not out there at all". Ghost Mode makes a narrower promise on
+        # purpose: you are off the map, in both directions, and the position
+        # stays because it is also what answers your *own* questions. Wiping it
+        # emptied the ghost's club list and region as collateral, which is the
+        # failure this mode was built to stop repeating.
         #
-        # Done here, on the server, so a client that never gets the memo — or
-        # never runs again — changes nothing about the outcome.
-        if (
-            user.location_sharing != previous_sharing
-            and user.location_sharing == User.LocationSharing.PAUSED
-        ):
-            user.latitude = None
-            user.longitude = None
-            user.location_updated_at = None
-            user.location_accuracy_m = None
-            user.motion_class = User.MotionClass.STATIONARY
-            user.motion_updated_at = None
-            user.save(update_fields=[
-                'latitude', 'longitude', 'location_updated_at', 'location_accuracy_m',
-                'motion_class', 'motion_updated_at',
-            ] + user.end_sharing_session())
-
-        # Going visible ties this run of the app to the choice that was just
-        # made. Minted on every transition off Paused rather than only the
-        # first, so a user who pauses and resumes gets a new token and the old
-        # one can never be replayed to keep them visible. See
-        # `User.sharing_session`.
-        if (
-            user.location_sharing != previous_sharing
-            and user.location_sharing != User.LocationSharing.PAUSED
-        ):
-            user.save(update_fields=user.begin_sharing_session())
-
+        # It is safe to keep because nothing publishes it: `visible_users`
+        # drops a ghost from every map query, and `motion_for` and
+        # `presence_for` are gated on the same visibility, so a speed trail
+        # cannot outlive the position it belongs to either.
         payload = PrivacySettingsSerializer(user).data
         payload['privacy_mode'] = user.privacy_mode
+        payload['location_sharing'] = user.location_sharing
         return Response(payload)
 
 

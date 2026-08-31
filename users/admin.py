@@ -34,16 +34,16 @@ class ReportsAgainstInline(admin.TabularInline):
 class CustomUserAdmin(UserAdmin):
     list_display = (
         'username', 'email', 'age_tier', 'enforcement', 'open_reports',
-        'location_sharing', 'is_private', 'date_joined',
+        'ghost_mode', 'is_private', 'date_joined',
     )
     list_filter = (
-        'suspended_at', 'age_tier', 'location_sharing', 'is_private', 'is_staff',
+        'suspended_at', 'age_tier', 'ghost_mode', 'is_private', 'is_staff',
     )
     inlines = [ReportsAgainstInline]
     actions = ('action_suspend_7d', 'action_ban', 'action_reinstate')
     fieldsets = UserAdmin.fieldsets + (
         ('Profile', {'fields': ('bio', 'date_of_birth', 'age_tier', 'profile_picture')}),
-        ('Location', {'fields': ('location_sharing', 'latitude', 'longitude')}),
+        ('Location', {'fields': ('ghost_mode', 'latitude', 'longitude')}),
         ('Profile privacy', {
             'fields': (
                 'is_private',

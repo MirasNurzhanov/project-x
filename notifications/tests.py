@@ -20,10 +20,18 @@ from users.testing import share_location
 
 
 def make_user(name, **kwargs):
-    # On the map by default. `location_sharing` defaults to Paused now (see
-    # users.visibility), so a fixture for a test about anything else has to opt
-    # in or it measures the default instead of its own subject.
-    # proximity/test_map_visibility.py owns the assertions about the default.
+    """On the map by default.
+
+    A coordinate as well as a fresh stamp, because being on the map takes
+    both — `has_fresh_position` requires a position to exist before asking how
+    old it is. These fixtures used to get away without one: sharing defaulted
+    to off so nothing asked, and the freshness fallback reads `updated_at`,
+    which a brand-new row has. Sharing defaults to on now and the guard is
+    explicit, so a user with no coordinate is correctly not on any map — and a
+    nearby-alert test built on one would measure that instead of its subject.
+    """
+    kwargs.setdefault('latitude', '10.0')
+    kwargs.setdefault('longitude', '10.0')
     return share_location(User.objects.create_user(
         username=name, email=f'{name}@example.com', password='pw',
         date_of_birth=date(1995, 1, 1), **kwargs
@@ -73,8 +81,8 @@ class NearbyMatchAlertTests(TestCase):
 
     def test_paused_sender_is_not_announced(self):
         """Each direction is gated on the sender's own setting, not the pair's."""
-        self.other.location_sharing = User.LocationSharing.PAUSED
-        self.other.save(update_fields=['location_sharing'])
+        self.other.ghost_mode = True
+        self.other.save(update_fields=['ghost_mode'])
 
         notify_nearby_matches(self.me, [(self.other, 0.2)])
         # Nothing about the paused user reaches me...

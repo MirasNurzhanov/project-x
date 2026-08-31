@@ -1,4 +1,5 @@
 from django.db.models import Count
+from django.utils.functional import cached_property
 from moderation.drf import ScreenedTextMixin
 from rest_framework import serializers
 from .models import Story, StoryReaction
@@ -38,13 +39,57 @@ class StorySerializer(serializers.ModelSerializer):
             return obj.image_url
         return obj.image.url if obj.image else None
 
+    @cached_property
+    def _friend_ids(self):
+        """The viewer's friends, resolved once for the whole response.
+
+        `many=True` wraps one child instance and calls it per row, so caching
+        on `self` means one pair of queries per request rather than per story.
+        Without it this is a straightforward N+1 — the nearby-stories budget
+        test measures exactly that.
+        """
+        from users import visibility as user_visibility
+
+        viewer = getattr(self.context.get('request'), 'user', None)
+        if viewer is None or not viewer.is_authenticated:
+            return frozenset()
+        friend_ids, _ = user_visibility.approved_ids_for(viewer)
+        return frozenset(friend_ids)
+
+    def _shown(self, obj):
+        """The pin this viewer may have for this story.
+
+        Same rule as a live position, and the same functions behind it: the row
+        holds the precise point it was posted from, a friend of the author sees
+        that, everybody else sees the ~500m cell. Fuzzing used to happen before
+        the row was written, keyed on the author's own Approximate setting;
+        that setting is gone and precision follows the relationship now.
+
+        Snapped against the *author*, so a story pin and its author's own dot
+        land in the same cell rather than in two unrelated ones.
+        """
+        from users import visibility as user_visibility
+
+        if obj.latitude is None or obj.longitude is None:
+            return None, None
+        viewer = getattr(self.context.get('request'), 'user', None)
+        if (
+            viewer is not None
+            and viewer.is_authenticated
+            and user_visibility.is_friend(viewer, obj.user, self._friend_ids)
+        ):
+            return obj.latitude, obj.longitude
+        return user_visibility.snap_coordinates(obj.user, obj.latitude, obj.longitude)
+
     def get_latitude(self, obj):
-        # None for a story posted while location sharing was paused. Those
-        # carry no position at all - see stories/models.Story.latitude.
-        return None if obj.latitude is None else float(obj.latitude)
+        # None for a story posted while ghosted. Those carry no position at
+        # all - see stories/models.Story.latitude.
+        lat, _ = self._shown(obj)
+        return None if lat is None else float(lat)
 
     def get_longitude(self, obj):
-        return None if obj.longitude is None else float(obj.longitude)
+        _, lon = self._shown(obj)
+        return None if lon is None else float(lon)
 
     def get_author(self, obj):
         from django.utils import timezone

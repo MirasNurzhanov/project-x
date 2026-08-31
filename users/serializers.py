@@ -94,6 +94,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'id', 'username', 'email', 'bio', 'profile_picture',
             'date_of_birth', 'age_tier', 'nationality', 'profession', 'interests',
             'latitude', 'longitude',
+            'ghost_mode',
+            # Both derived, read-only, and kept for builds predating Ghost
+            # Mode: `privacy_mode` is the active/ghost/invisible spelling and
+            # `location_sharing` the live/approximate/paused one.
             'location_sharing', 'privacy_mode', 'date_joined', 'links',
             'is_private',
             'visibility_interests', 'visibility_stories', 'visibility_stats',
@@ -105,10 +109,17 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'push_token', 'connected_providers',
             'terms_version', 'terms_accepted_at', 'needs_terms',
         )
-        # `privacy_mode` is the legacy active/ghost/invisible view of
-        # `location_sharing`, kept so app builds predating the split keep working.
+        # `privacy_mode` and `location_sharing` are the legacy spellings of
+        # `ghost_mode`, kept readable so app builds predating it keep working.
+        #
+        # `ghost_mode` is readable here and writable only through
+        # PrivacySettingsSerializer. One writable route is what stops a user who
+        # has turned themselves off being turned back on by a side effect of
+        # some unrelated profile PATCH — see
+        # `GhostIsOnlyChangedDeliberatelyTests`, which asserts this statically.
         read_only_fields = (
             'id', 'email', 'age_tier', 'date_joined', 'privacy_mode',
+            'ghost_mode',
             # Server-set: see the note on the field in ZoneUpdateSerializer.
             'zone_follow_stale',
             # Acceptance is recorded by the server on the paths that actually
@@ -393,24 +404,18 @@ class PrivacySettingsSerializer(serializers.ModelSerializer):
     """Everything on the Privacy & safety screen, read and written as one
     object so the client never has to guess which endpoint owns a setting.
 
-    `location_sharing` is the writable field that decides whether this user is
-    on the map at all, and this is the endpoint that writes it. That is a
-    settings PATCH doing something App Review cares about, so the surrounding
-    conditions carry the weight: the field defaults to PAUSED, the client puts
-    a consent screen in front of every move off PAUSED, and moving *to* PAUSED
-    is always allowed and takes effect at once. See PrivacySettingsView, which
-    is where the side effects of the transition live.
+    `ghost_mode` is the writable field that decides whether this user is on the
+    map at all, and this is the endpoint that writes it. It replaced a
+    three-way `location_sharing`; the precision half of that value is gone
+    entirely, because friends see a precise position and everybody else a
+    ~500m cell and neither is the sharer's to pick. Turning Ghost *on* is
+    always allowed and takes effect at once.
     """
 
     class Meta:
         model = User
         fields = (
-            'location_sharing',
-            # Read-only, and read *once*: the client keeps it in memory for the
-            # life of the process and never writes it to disk. Persisting it
-            # would rebuild the thing it exists to prevent — a token that
-            # survives a restart is a preference that says you were visible.
-            'sharing_session',
+            'ghost_mode',
             'is_private',
             'visibility_interests',
             'visibility_stories',
@@ -422,7 +427,6 @@ class PrivacySettingsSerializer(serializers.ModelSerializer):
             'discoverable_by_username',
             'discoverable_by_interest',
         )
-        read_only_fields = ('sharing_session',)
 
 
 class NotificationSettingsSerializer(serializers.ModelSerializer):
@@ -636,9 +640,11 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
              exists, clamped.
 
           2. **The position the server has stored**, for a client too old to
-             send one. Tolerance is `position_tolerance_m`: the error *we*
-             introduced by fuzzing an Approximate sharer's coordinates, and
-             zero for a precise one.
+             send one. Its tolerance is zero: what we store is the precise fix,
+             for everybody. It used to carry the error *we* introduced by
+             fuzzing an Approximate sharer before storage, which no longer
+             happens — fuzzing moved to the read, where it applies to other
+             viewers and not to the owner checking their own zone.
 
         The stored position being second is the point. It is written by a
         different endpoint on a different schedule, and every report of "it says
@@ -660,10 +666,7 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
         stored_lon = getattr(user, 'longitude', None)
         if stored_lat is None or stored_lon is None:
             return None
-        return (
-            float(stored_lat), float(stored_lon),
-            visibility.position_tolerance_m(user),
-        )
+        return (float(stored_lat), float(stored_lon), 0.0)
 
     def _place_you_are_in(self, lat, lon, rejected):
         """The region of the same size that *does* contain this position.

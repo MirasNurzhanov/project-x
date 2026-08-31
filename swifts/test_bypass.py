@@ -196,7 +196,15 @@ class LocationBypassTests(SwiftTestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertAlmostEqual(response.json()['latitude'], float(LAT), places=5)
+        body = response.json()
+        # A coordinate, and the right *kind* of coordinate. This viewer is a
+        # stranger to the author, so what the reveal earns them is the ~500m
+        # cell rather than the point: near enough to be the same place, far
+        # enough not to be the same doorway. Asserting only that a number came
+        # back would pass just as happily on a leak.
+        self.assertEqual(body['precision'], 'approximate')
+        self.assertAlmostEqual(body['latitude'], float(LAT), places=1)
+        self.assertNotAlmostEqual(body['latitude'], float(LAT), places=5)
 
 
 class UnwatchableSwiftTests(SwiftTestCase):

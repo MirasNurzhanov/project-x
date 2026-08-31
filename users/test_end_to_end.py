@@ -62,20 +62,20 @@ class HidingMyLocationTests(TestCase):
 
     # ── Paused ──────────────────────────────────────────────────────────────
     def test_paused_hides_me_from_others_even_when_they_move(self):
-        self.me.location_sharing = User.LocationSharing.PAUSED
-        self.me.save(update_fields=['location_sharing'])
+        self.me.ghost_mode = True
+        self.me.save(update_fields=['ghost_mode'])
 
         self.ping(self.their_client, '10.0010', '10.0010')
         self.assertNotIn(self.me.pk, self.nearby_ids(self.their_client))
 
     def test_paused_hides_others_from_me(self):
-        self.me.location_sharing = User.LocationSharing.PAUSED
-        self.me.save(update_fields=['location_sharing'])
+        self.me.ghost_mode = True
+        self.me.save(update_fields=['ghost_mode'])
         self.assertEqual(self.nearby_ids(self.my_client), set())
 
     def test_paused_produces_no_notification_from_either_side(self):
-        self.me.location_sharing = User.LocationSharing.PAUSED
-        self.me.save(update_fields=['location_sharing'])
+        self.me.ghost_mode = True
+        self.me.save(update_fields=['ghost_mode'])
 
         self.ping(self.my_client, '10.0000', '10.0000')
         self.ping(self.their_client, '10.0010', '10.0010')
@@ -90,8 +90,8 @@ class HidingMyLocationTests(TestCase):
         )
 
     def test_paused_produces_no_encounter(self):
-        self.me.location_sharing = User.LocationSharing.PAUSED
-        self.me.save(update_fields=['location_sharing'])
+        self.me.ghost_mode = True
+        self.me.save(update_fields=['ghost_mode'])
 
         self.ping(self.my_client, '10.0000', '10.0000')
         self.ping(self.their_client, '10.0010', '10.0010')

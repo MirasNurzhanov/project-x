@@ -147,7 +147,7 @@ class QueryBudgetTests(TestCase):
             # paths for people who are actually on the map. `location_sharing`
             # defaults to Paused, and a fixture full of paused users would
             # measure the early returns rather than the work.
-            location_sharing=User.LocationSharing.LIVE,
+            ghost_mode=False,
         )
         user.interests.set(cls.interests[: (i % 4) + 2])
         return user
@@ -239,7 +239,12 @@ class QueryBudgetTests(TestCase):
         self.assertWithinBudget(20, 'get', '/api/proximity/nearby/')
 
     def test_nearby_stories_is_a_fixed_number_of_queries(self):
-        self.assertWithinBudget(13, 'get', '/api/stories/nearby/')
+        # 14 rather than 13 since story pins became viewer-dependent: a friend
+        # of the author sees the precise point, everybody else the ~500m cell,
+        # and deciding that costs one friend-set lookup. Fixed, not per story —
+        # `StorySerializer` caches the set for the whole response, and without
+        # that cache this same request reads about 106.
+        self.assertWithinBudget(14, 'get', '/api/stories/nearby/')
 
     def test_friend_stories_are_a_fixed_number_of_queries(self):
         """The chat screen polls this for its story rings, so it is a hot path
