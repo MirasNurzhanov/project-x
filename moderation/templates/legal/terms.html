@@ -101,12 +101,28 @@
 
 <h2>6. Location</h2>
 <p>
-  Approx shows people near you. Your location is published to other users
-  <strong>only</strong> when you choose Live or Approximate yourself, on a screen
-  that explains what that means. Every account starts Paused, and sharing ends
-  when you choose Paused or close the app. Granting the operating system's
-  location permission does not by itself put you on anybody's map.
+  Approx shows people near you. Visibility is governed by one control,
+  <strong>Ghost Mode</strong>, which is off by default — an ordinary account is
+  on the map — and which is mutual: while it is on you are on nobody's map and
+  nobody is on yours. Sharing persists between sessions and does not reset when
+  you close the app.
 </p>
+<p>
+  Before your device transmits a position at all, Approx shows you a screen
+  explaining what being on the map means. Until you have seen it, nothing is
+  sent. Granting the operating system's location permission does not by itself
+  put you on anybody's map.
+</p>
+<p>
+  Your device sends your precise position and we store it. How precisely other
+  people see it is decided by us, per viewer, at the moment they look: your
+  friends see where you actually are, and everyone else sees you snapped to a
+  grid cell roughly 500 metres across. A position stops being published once it
+  is about fifteen minutes old. The
+  <a href="{% url 'legal-privacy' %}">Privacy &amp; Safety</a> notice sets this
+  out in full, and you should read it before relying on any of it.
+</p>
+
 
 <h2>7. Ending it</h2>
 <p>

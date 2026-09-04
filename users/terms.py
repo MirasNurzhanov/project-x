@@ -20,7 +20,7 @@ module says, and the app opens what it is given.
 from django.conf import settings
 
 #: Bump when the substance of the agreement changes. ISO date of publication.
-CURRENT_VERSION = '2026-08-25'
+CURRENT_VERSION = '2026-09-04'
 
 #: Where the documents live. This backend serves them itself at /legal/ - see
 #: moderation/legal_views.py for why - so the default is its own origin, and

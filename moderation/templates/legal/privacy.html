@@ -21,7 +21,7 @@ delete this file rather than letting both drift.
 <h2>What Approx collects</h2>
 <ul>
   <li><strong>Account</strong> — username, email address, date of birth, and anything you choose to put on your profile.</li>
-  <li><strong>Location</strong> — latitude and longitude reported by your device, only while you have chosen to share it.</li>
+  <li><strong>Location</strong> — the precise latitude and longitude your device reports, stored while you are not in Ghost Mode, plus how accurate that fix was. What other people are shown is decided per viewer; see below.</li>
   <li><strong>Content</strong> — Swifts, stories, comments, messages, and the images you attach to them.</li>
   <li><strong>Social graph</strong> — your friends, connections, and your block list.</li>
   <li><strong>Safety</strong> — reports you file, reports filed about you, blocks, and moderation decisions.</li>
@@ -30,38 +30,84 @@ delete this file rather than letting both drift.
 
 <h2>Location, in detail</h2>
 <p>
-  This is the part worth reading twice.
+  This is the part worth reading twice, and it changed in September 2026. If you
+  read an earlier version of this policy, read this section again — what your
+  device sends us is not what it used to be.
 </p>
 <ul>
   <li>
-    Every account starts <strong>Paused</strong>. While Paused, your position is
-    used only to answer your own searches — it is never stored on our servers and
-    never shown to anybody.
+    There is one control, <strong>Ghost Mode</strong>, and it is off by default:
+    an ordinary account is visible on the map. Turning Ghost Mode on takes you
+    off it. There is no longer a Live / Approximate / Paused choice.
   </li>
   <li>
-    You appear on other people's maps only after you choose <strong>Live</strong>
-    or <strong>Approximate</strong> yourself, on a screen explaining what that
-    means. Granting the operating system's location permission does not do this.
+    <strong>Sharing persists between sessions.</strong> It does not reset when
+    you close Approx. It stays as you left it until you change it.
   </li>
   <li>
-    <strong>Approximate</strong> rounds your position to a grid roughly 500m
-    across <em>before</em> it is stored, so a precise position never reaches our
-    database at all.
+    Nothing is transmitted until you have been shown a screen explaining what
+    being on the map means, once per installation. Until you have seen it your
+    device sends no position at all, and an account with no position is on
+    nobody's map. Granting the operating system's location permission does not
+    by itself put you on anybody's map.
   </li>
   <li>
-    Sharing ends when you choose Paused or close the app. It does not persist
-    across launches: you choose again each time.
+    <strong>Your device sends your precise position, and we store it.</strong>
+    This is a deliberate change and it is a real widening of what leaves your
+    phone. Approx used to round your coordinates on the device before sending
+    them, so a precise position never reached us. It does now, because your
+    friends are entitled to see where you actually are and your phone cannot
+    know who will ask.
   </li>
   <li>
-    If you allow background location, Approx keeps your position current while the
-    app is closed <em>only while you are sharing</em>. Choosing Paused stops it
-    immediately, and this permission is optional — everything works while the app
-    is open without it.
+    <strong>Precision is decided per viewer, by us, when they look</strong> —
+    not by a setting you pick:
+    <ul>
+      <li>You, and people you are friends with, see your precise position.</li>
+      <li>
+        Everybody else sees it snapped to a grid cell roughly 500 metres across.
+      </li>
+    </ul>
   </li>
   <li>
-    People you have blocked never see you, in any mode.
+    That snapping is deterministic and the grid is offset differently for every
+    account. Watching a stranger repeatedly does not narrow their position down:
+    every reading inside a cell returns the same coordinate, and there is no
+    shared grid whose cell centres are public knowledge. The distance shown to
+    someone who is not your friend is measured to that same cell, not to where
+    you really are.
+  </li>
+  <li>
+    <strong>A position goes stale after about fifteen minutes.</strong> Once it
+    does you are off the map until your device reports a newer one — including
+    if Approx was force-closed or lost connectivity.
+  </li>
+  <li>
+    <strong>Ghost Mode is mutual.</strong> While it is on you are on nobody's
+    map and nobody is on yours. It does not delete the position we hold, which
+    still answers features that are only about you, such as which clubs and
+    region you belong to — but no other person receives it.
+  </li>
+  <li>
+    People you have blocked never see you, and you never see them. That applies
+    in both directions and regardless of any other setting.
+  </li>
+  <li>
+    Background location is optional and separate. If you allow it, Approx keeps
+    your position current while the app is closed, and only while you are
+    sharing. Turning on Ghost Mode stops it. Everything else works without it.
+  </li>
+  <li>
+    Two things ride alongside a position. <strong>Speed</strong> is sorted into
+    a coarse class — roughly, whether you are still, walking or moving quickly
+    — and the number your phone reported is discarded; no numeric speed is ever
+    stored or shown to anyone. <strong>Accuracy</strong> (how well your phone
+    knows where it is) is stored, because a fix with a two-kilometre margin
+    cannot answer which district you are standing in; it says nothing about
+    where you are.
   </li>
 </ul>
+
 
 <h2>Who receives your data</h2>
 <p>
@@ -74,7 +120,10 @@ delete this file rather than letting both drift.
 
 <h2>Retention and deletion</h2>
 <p>
-  Deleting your account from Settings removes your profile, content and stored
+  A stored position is replaced by each newer one and is not kept as a history
+  of where you have been; once it is about fifteen minutes old it stops being
+  published to anyone. Ghost Mode hides you but does not delete it. Deleting
+  your account from Settings removes your profile, content and stored
   position. Where an account has been reported, blocked or removed for abuse we
   may keep the safety record — the report, the content it concerned, and the
   decision — because deleting it would erase the evidence that a decision was
@@ -83,7 +132,7 @@ delete this file rather than letting both drift.
 
 <h2>Your controls</h2>
 <ul>
-  <li>Location sharing: Live, Approximate or Paused, changeable at any moment.</li>
+  <li>Ghost Mode, which takes you off the map entirely and is mutual. Changeable at any moment.</li>
   <li>Per-field visibility for interests, stories, stats, connections, links and presence.</li>
   <li>A private account, so only approved people see anything beyond your name and picture.</li>
   <li>Discoverability switches for search by username and by interest.</li>
