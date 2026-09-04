@@ -10,9 +10,9 @@ And it is the *default* path, not an edge case: `SWIFT_AI_MODERATION_ENABLED`
 is off unless somebody turns it on.
 """
 from io import StringIO
-from unittest.mock import patch
+from unittest.mock import call, patch
 
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.test import SimpleTestCase, override_settings
 
 
@@ -97,3 +97,49 @@ class LoopTests(SimpleTestCase):
             _, ticks = self.run_loop(4)
         self.assertEqual(ticks, 4)
         self.assertEqual(sweep.call_count, 2, 'the switch was only read at startup')
+
+
+@override_settings(SWIFT_AI_MODERATION_ENABLED=True)
+class ExplicitRetryTests(SimpleTestCase):
+    def test_only_returned_job_ids_are_run(self):
+        with patch('swifts.ai_moderation.retry_failed', return_value=[701, 702]) as retry, \
+                patch('swifts.ai_moderation.run', return_value=None) as run, \
+                patch('swifts.ai_moderation.sweep') as sweep:
+            call_command('moderate_swifts', '--retry-failed', '22', '23',
+                         stdout=StringIO())
+        retry.assert_called_once_with([22, 23])
+        self.assertEqual(run.call_args_list, [call(701), call(702)])
+        sweep.assert_not_called()
+
+    def test_ineligible_ids_do_not_run_anything(self):
+        out = StringIO()
+        with patch('swifts.ai_moderation.retry_failed', return_value=[]), \
+                patch('swifts.ai_moderation.run') as run, \
+                patch('swifts.ai_moderation.sweep') as sweep:
+            call_command('moderate_swifts', '--retry-failed', '22', stdout=out)
+        run.assert_not_called()
+        sweep.assert_not_called()
+        self.assertIn('Requeued 0 failed job(s); skipped 1', out.getvalue())
+
+    def test_retry_rejects_loop_status_and_nonpositive_ids_before_mutation(self):
+        for args in (
+            ('--retry-failed', '22', '--loop'),
+            ('--retry-failed', '22', '--status'),
+            ('--retry-failed', '0'),
+            ('--retry-failed', '-1'),
+        ):
+            with self.subTest(args=args), \
+                    patch('swifts.ai_moderation.retry_failed') as retry, \
+                    patch('swifts.ai_moderation.run') as run:
+                with self.assertRaises(CommandError):
+                    call_command('moderate_swifts', *args, stdout=StringIO())
+                retry.assert_not_called()
+                run.assert_not_called()
+
+    @override_settings(SWIFT_AI_MODERATION_ENABLED=False)
+    def test_disabled_retry_leaves_failed_jobs_alone(self):
+        with patch('swifts.ai_moderation.retry_failed') as retry:
+            with self.assertRaises(CommandError):
+                call_command('moderate_swifts', '--retry-failed', '22',
+                             stdout=StringIO())
+        retry.assert_not_called()

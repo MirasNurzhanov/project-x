@@ -538,6 +538,171 @@ class RetryTests(AIModerationTestCase):
             raise CloudflareError('cloudflare is down', retryable=retryable)
         return frame
 
+
+    def exhausted_job(self):
+        swift, job = self.failing_job()
+        job.attempts = 3
+        job.save(update_fields=['attempts'])
+        ai_moderation._fail(job, 'credentials unavailable', retryable=False)
+        swift.refresh_from_db()
+        job.refresh_from_db()
+        return swift, job
+
+    def test_failed_jobs_need_an_explicit_retry(self):
+        swift, job = self.exhausted_job()
+        with patch.object(ai_moderation, '_classify') as classify:
+            self.assertEqual(ai_moderation.sweep(), 0)
+        classify.assert_not_called()
+        job.refresh_from_db()
+        self.assertEqual(job.state, SwiftModerationJob.State.FAILED)
+
+    def test_retry_resets_only_selected_failed_job_and_keeps_it_private(self):
+        swift, job = self.exhausted_job()
+        other, untouched = self.exhausted_job()
+        self.assertEqual(ai_moderation.retry_failed([swift.pk, swift.pk]), [job.pk])
+        swift.refresh_from_db()
+        job.refresh_from_db()
+        untouched.refresh_from_db()
+        self.assertEqual(swift.moderation, Moderation.PENDING)
+        self.assertNotIn(swift.pk, self.feed_ids())
+        self.assertEqual(job.state, SwiftModerationJob.State.QUEUED)
+        self.assertEqual(job.attempts, 0)
+        self.assertIsNone(job.next_attempt_at)
+        self.assertIsNone(job.finished_at)
+        self.assertEqual(job.last_error, '')
+        self.assertEqual(untouched.state, SwiftModerationJob.State.FAILED)
+        self.assertEqual(ai_moderation.retry_failed([swift.pk]), [])
+
+    def test_retry_approval_publishes_and_closes_failure_report(self):
+        swift, job = self.exhausted_job()
+        report_id = job.report_id
+        ai_moderation.retry_failed([swift.pk])
+        with patched_cloudflare():
+            ai_moderation.run(job.pk)
+        swift.refresh_from_db()
+        report = SwiftReport.objects.get(pk=report_id)
+        self.assertEqual(swift.moderation, Moderation.OK)
+        self.assertIn(swift.pk, self.feed_ids())
+        self.assertEqual(report.state, SwiftReport.State.REVIEWED)
+        self.assertIsNotNone(report.reviewed_at)
+        self.assertIsNone(report.reviewed_by)
+        self.assertEqual(SwiftReport.objects.filter(swift=swift).count(), 1)
+
+    def test_unsafe_retry_reuses_report_with_current_evidence(self):
+        swift, job = self.exhausted_job()
+        report_id = job.report_id
+        ai_moderation.retry_failed([swift.pk])
+        with patched_cloudflare(classify=unsafe_classifier(['sexual_content'], 0.92)):
+            ai_moderation.run(job.pk)
+        swift.refresh_from_db()
+        job.refresh_from_db()
+        report = SwiftReport.objects.get(pk=report_id)
+        self.assertEqual(swift.moderation, Moderation.QUARANTINED)
+        self.assertEqual(job.report_id, report_id)
+        self.assertEqual(report.state, SwiftReport.State.OPEN)
+        self.assertEqual(report.reason, SwiftReport.Reason.NUDITY)
+        self.assertIn('sexual_content', report.note)
+        self.assertNotIn(policy.INSUFFICIENT_FRAMES, report.note)
+        self.assertEqual(SwiftReport.objects.filter(swift=swift).count(), 1)
+        self.assertEqual(ai_moderation.retry_failed([swift.pk]), [])
+
+    @override_settings(SWIFT_AI_MAX_ATTEMPTS=2)
+    def test_explicit_retry_has_a_fresh_automatic_retry_budget(self):
+        swift, job = self.exhausted_job()
+        ai_moderation.retry_failed([swift.pk])
+        with patched_cloudflare(frame=self.boom()):
+            ai_moderation.run(job.pk)
+        job.refresh_from_db()
+        swift.refresh_from_db()
+        self.assertEqual(job.attempts, 1)
+        self.assertEqual(job.state, SwiftModerationJob.State.QUEUED)
+        self.assertIsNotNone(job.next_attempt_at)
+        self.assertEqual(swift.moderation, Moderation.PENDING)
+
+    def test_retry_skips_removed_restored_and_deleted_swifts(self):
+        from django.utils import timezone
+
+        for changes in (
+            {'moderation': Moderation.REMOVED}, {'moderation': Moderation.OK},
+            {'moderation': Moderation.FLAGGED}, {'deleted_at': timezone.now()},
+            {'video': ''},
+        ):
+            with self.subTest(changes=changes):
+                swift, job = self.exhausted_job()
+                SwiftVideo.objects.filter(pk=swift.pk).update(**changes)
+                self.assertEqual(ai_moderation.retry_failed([swift.pk]), [])
+                job.refresh_from_db()
+                self.assertEqual(job.state, SwiftModerationJob.State.FAILED)
+                swift.refresh_from_db()
+                for field, value in changes.items():
+                    self.assertEqual(getattr(swift, field), value)
+
+    def test_retry_skips_reviewed_or_unrelated_reports(self):
+        from django.utils import timezone
+
+        for changes in (
+            {'state': SwiftReport.State.REVIEWED},
+            {'state': SwiftReport.State.ACTIONED},
+            {'reviewed_at': timezone.now()},
+            {'reviewed_by': self.stranger},
+            {'action_taken': 'user_warned'},
+            {'moderator_note': 'Leave for manual review'},
+            {'source': SwiftReport.Source.REPORT},
+        ):
+            with self.subTest(changes=changes):
+                swift, job = self.exhausted_job()
+                SwiftReport.objects.filter(pk=job.report_id).update(**changes)
+                self.assertEqual(ai_moderation.retry_failed([swift.pk]), [])
+                swift.refresh_from_db()
+                self.assertEqual(swift.moderation, Moderation.QUARANTINED)
+
+    def test_retry_requires_its_failure_report_and_no_independent_reports(self):
+        for independent in (False, True):
+            with self.subTest(independent=independent):
+                swift, job = self.exhausted_job()
+                if independent:
+                    SwiftReport.objects.create(
+                        swift=swift, reporter=self.stranger, reason='spam')
+                else:
+                    SwiftModerationJob.objects.filter(pk=job.pk).update(report=None)
+                self.assertEqual(ai_moderation.retry_failed([swift.pk]), [])
+
+    def test_retry_does_not_undo_a_later_moderator_removal(self):
+        from django.utils import timezone
+
+        swift, job = self.exhausted_job()
+        ai_moderation.retry_failed([swift.pk])
+        SwiftVideo.objects.filter(pk=swift.pk).update(moderation=Moderation.REMOVED)
+        SwiftReport.objects.filter(pk=job.report_id).update(
+            state=SwiftReport.State.ACTIONED, reviewed_by=self.stranger,
+            reviewed_at=timezone.now(), action_taken='content_removed',
+            moderator_note='Removed after review',
+        )
+        with patched_cloudflare():
+            ai_moderation.run(job.pk)
+        swift.refresh_from_db()
+        report = SwiftReport.objects.get(pk=job.report_id)
+        self.assertEqual(swift.moderation, Moderation.REMOVED)
+        self.assertEqual(report.state, SwiftReport.State.ACTIONED)
+        self.assertEqual(report.moderator_note, 'Removed after review')
+
+    def test_retry_command_processes_only_selected_swifts(self):
+        from io import StringIO
+        from django.core.management import call_command
+
+        swift, job = self.exhausted_job()
+        other, untouched = self.failing_job()
+        out = StringIO()
+        with patched_cloudflare():
+            call_command('moderate_swifts', '--retry-failed', str(swift.pk), stdout=out)
+        swift.refresh_from_db()
+        untouched.refresh_from_db()
+        self.assertEqual(swift.moderation, Moderation.OK)
+        self.assertEqual(untouched.state, SwiftModerationJob.State.QUEUED)
+        self.assertEqual(untouched.attempts, 0)
+        self.assertIn('Requeued 1 failed job(s); skipped 0', out.getvalue())
+        self.assertIn(f'Swift {swift.pk}: done', out.getvalue())
+
     def test_a_retryable_failure_reschedules(self):
         swift, job = self.failing_job()
         with patched_cloudflare(frame=self.boom()):
@@ -629,13 +794,13 @@ class ExistingContentTests(AIModerationTestCase):
         legacy = make_swift(self.creator, moderation=Moderation.PENDING)
         self.assertIsNone(ai_moderation.enqueue(legacy))
 
-    def test_reports_on_existing_swifts_still_flag_rather_than_hide(self):
+    def test_reports_on_existing_swifts_withhold_them_until_review(self):
         published = make_swift(self.creator)
         self.other.post(
             reverse('swift-report', args=[published.pk]), {'reason': 'spam'})
         published.refresh_from_db()
         self.assertEqual(published.moderation, Moderation.FLAGGED)
-        self.assertTrue(published.is_live)
+        self.assertFalse(published.is_live)
 
 
 # ─── The switch ───────────────────────────────────────────────────────────────

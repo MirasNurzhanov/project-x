@@ -80,11 +80,8 @@ class Moderation(models.TextChoices):
     #: In `HIDDEN_STATES` below, which is the whole point: nothing reaches a
     #: feed while it is in this state. See `swifts.ai_moderation`.
     PENDING = 'pending', 'Pending automated review'
-    #: Reported and awaiting review, and still visible. Flagging is not a
-    #: verdict - hiding on the first report hands every user a mute button
-    #: pointed at anybody they dislike, and coordinated flagging is a real
-    #: tactic that works precisely on systems which treat a report as an
-    #: outcome.
+    #: Reported and awaiting review. Shared content gates keep it visible;
+    #: Swifts instead require explicit OK approval before public viewing.
     FLAGGED = 'flagged', 'Flagged'
     #: Held back from publication by the automated filter, or by enough
     #: independent reports to stop waiting for a human. Invisible to everyone
@@ -95,17 +92,8 @@ class Moderation(models.TextChoices):
     REMOVED = 'removed', 'Removed'
 
 
-#: The states that keep content out of public view, and its complement. One
-#: name for each rule, so no queryset has to re-derive it and get it subtly
-#: different. `PENDING` is in the hidden set rather than the visible one and
-#: that is the single line requirement 7 rests on: a Swift whose media has not
-#: been screened yet is invisible *by default*, everywhere, because every read
-#: path in the project already goes through one of these two tuples. Nothing
-#: had to be added to the feed, the detail endpoint, the recommender or the
-#: repost path to make that true - which is exactly why the state was put here
-#: rather than checked at each of them. Both are needed: a filter reads more clearly as `__in=VISIBLE`
-#: when it is ORed with "or you wrote it", and as `~Q(__in=HIDDEN)` when it
-#: stands alone.
+#: Default visibility groups for shared content such as stories and comments.
+#: Swifts use a stricter rule: only Moderation.OK passes their public gate.
 HIDDEN_STATES = (Moderation.PENDING, Moderation.QUARANTINED, Moderation.REMOVED)
 VISIBLE_STATES = (Moderation.OK, Moderation.FLAGGED)
 

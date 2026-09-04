@@ -64,9 +64,9 @@ def review_state_for(swift):
         return REVIEW_PROCESSING
     if swift.moderation == Moderation.PENDING:
         return REVIEW_REVIEWING
-    if swift.moderation == Moderation.QUARANTINED:
-        return REVIEW_NEEDS_REVIEW
-    return REVIEW_PUBLISHED
+    if swift.moderation == Moderation.OK:
+        return REVIEW_PUBLISHED
+    return REVIEW_NEEDS_REVIEW
 
 
 class SwiftSerializer(serializers.ModelSerializer):

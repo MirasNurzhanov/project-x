@@ -28,7 +28,6 @@ from django.core.validators import MaxValueValidator
 from django.db import models
 
 from moderation.reasons import (
-    HIDDEN_STATES,
     Action as SharedAction,
     Moderation as SharedModeration,
 )
@@ -279,7 +278,7 @@ class SwiftVideo(models.Model):
         return (
             self.deleted_at is None
             and self.status == self.Status.READY
-            and self.moderation not in HIDDEN_STATES
+            and self.moderation == self.Moderation.OK
         )
 
     @property
@@ -519,15 +518,9 @@ class SwiftLocationReveal(models.Model):
 class SwiftReport(models.Model):
     """Somebody reported a Swift.
 
-    Reporting **flags**, it does not remove. `SwiftVideo.Moderation.FLAGGED` is
-    deliberately still visible — a report is an accusation, not a verdict, and
-    hiding content on the first one hands every user a mute button pointed at
-    anybody they dislike. Coordinated flagging is a real tactic and it works
-    precisely on systems that treat a report as an outcome.
-
-    What the flag does is put the row in front of a moderator, which is what
-    `swifts/admin.py` filters on. Taking it down is a human setting
-    `Moderation.REMOVED`, and only that.
+    Reporting sets `Moderation.FLAGGED` and puts the Swift in the review queue.
+    Only `Moderation.OK` is public, so a flagged Swift stays hidden until a
+    moderator restores it. Its creator can still see its review status.
 
     Unique per (swift, reporter): one person is one report, however many times
     they press it. Reporting twice is not more true than reporting once, and

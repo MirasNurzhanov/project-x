@@ -862,16 +862,9 @@ class SwiftCommentDetailView(APIView):
 class SwiftReportView(APIView):
     """Report a Swift for moderation.
 
-    Flags, does not remove. `Moderation.FLAGGED` leaves the Swift visible and
-    puts it in the admin queue — see the argument on `SwiftReport`, which is
-    that a report is an accusation rather than a verdict, and that a system
-    which hides content on the first one has handed every user a mute button
-    pointed at anybody they dislike.
-
-    Idempotent, and the response does not distinguish a first report from a
-    repeat. A reporter learning that they had already reported something would
-    learn nothing useful, and a reporter learning that *others* had would be
-    the start of a brigading signal.
+    Sets `Moderation.FLAGGED`, withholding the Swift from public view until a
+    moderator restores it to OK. Repeated requests never duplicate reports;
+    once the Swift is hidden, subsequent requests receive the usual 404.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -902,7 +895,7 @@ class SwiftReportView(APIView):
 
         # Flag for review, but never overwrite a verdict a moderator has
         # already reached: a REMOVED Swift that gets reported again must not
-        # quietly come back to FLAGGED, which is a state that is still visible.
+        # quietly come back to FLAGGED.
         SwiftVideo.objects.filter(
             pk=swift.pk, moderation=SwiftVideo.Moderation.OK,
         ).update(moderation=SwiftVideo.Moderation.FLAGGED)

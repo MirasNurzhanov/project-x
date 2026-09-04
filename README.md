@@ -119,6 +119,25 @@ strands Swifts whenever a dyno restarts at the wrong moment. Both forms are
 safe to run alongside the web process and each other — claiming a job is a
 conditional UPDATE, so two sweepers racing produce one winner and one no-op.
 
+Failed jobs are not retried by a normal sweep. After fixing the configuration,
+retry specific **Swift IDs** with:
+
+```
+python manage.py moderate_swifts --retry-failed 22 23
+```
+
+This runs only those eligible failed jobs and then exits. It resets the attempt
+budget and moves each upload back to `pending`; the video remains hidden until
+moderation returns `ok`. Deleted videos, human-reviewed cases, independent
+reports and content rejected by the classifier are skipped. The command prints
+how many IDs were skipped and each processed job's resulting state.
+
+Public Swift feeds, recommendations and interactions require
+`moderation="ok"`. Pending, quarantined, flagged and unrecognized states are
+hidden. Reporting an approved Swift flags it and withholds it until review.
+Creators can still check their uploads and review status through their own
+detail and collection endpoints.
+
 ### Cloudflare configuration this needs
 
 1. **Workers AI** — an API token with the Workers AI permission, and the

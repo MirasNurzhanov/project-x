@@ -61,7 +61,7 @@ from django.utils import timezone
 from moderation import cloudflare_ai, policy
 from moderation import text as text_filter
 from moderation.models import ModerationAction
-from moderation.reasons import Moderation
+from moderation.reasons import Action, Moderation
 
 from .models import SwiftModerationJob, SwiftReport, SwiftVideo
 
@@ -370,6 +370,11 @@ def settle(job, decision, *, audio_checked=False, model_used=None):
     look at; a queue item pointing at an approved Swift is a moderator's time
     spent on nothing.
     """
+    retrying_failure = (
+        job.outcome == policy.FAILED
+        and job.basis == policy.INSUFFICIENT_FRAMES
+        and job.report_id is not None
+    )
     job.outcome = decision.outcome
     job.basis = decision.basis
     job.categories = ','.join(decision.categories)[:200]
@@ -390,9 +395,20 @@ def settle(job, decision, *, audio_checked=False, model_used=None):
     job.last_error = ''
 
     if decision.approved:
-        _approve(job.swift)
+        approved = _approve(job.swift)
+        if approved and retrying_failure:
+            _unreviewed_ai_report(job).update(
+                state=SwiftReport.State.REVIEWED,
+                reviewed_at=timezone.now(),
+                moderator_note='AI moderation approved on retry.',
+            )
     else:
         job.report = _quarantine(job.swift, decision)
+        if retrying_failure:
+            _unreviewed_ai_report(job).update(
+                reason=decision.reason or SwiftReport.Reason.OTHER,
+                note=_report_note(decision)[:500],
+            )
 
     job.save(update_fields=[
         'outcome', 'basis', 'categories', 'confidence', 'sampled_ms',
@@ -555,6 +571,64 @@ def exhaust(job):
 
 
 # ─── The sweeper ──────────────────────────────────────────────────────────────
+
+def _unreviewed_ai_report(job):
+    return SwiftReport.objects.filter(
+        pk=job.report_id, swift_id=job.swift_id,
+        source=SwiftReport.Source.AI_VIDEO,
+        state=SwiftReport.State.OPEN,
+        reviewed_at__isnull=True, reviewed_by__isnull=True,
+        action_taken=Action.NONE, moderator_note='',
+    )
+
+
+@transaction.atomic
+def retry_failed(swift_ids):
+    """Requeue selected exhausted jobs without publishing or undoing review.
+
+    Both records change in one transaction. Keep the failed outcome and basis
+    until settlement so a successful retry can close its old failure report.
+    Content rejected by the classifier has a DONE job and is never eligible.
+    """
+    requeued = []
+    jobs = SwiftModerationJob.objects.select_for_update().filter(
+        swift_id__in=set(swift_ids),
+        state=SwiftModerationJob.State.FAILED,
+        outcome=policy.FAILED,
+        basis=policy.INSUFFICIENT_FRAMES,
+    ).order_by('pk')
+    for job in jobs:
+        swift = SwiftVideo.objects.select_for_update().filter(
+            pk=job.swift_id, moderation=Moderation.QUARANTINED,
+            deleted_at__isnull=True,
+        ).first()
+        if swift is None or not swift.video:
+            continue
+        report = _unreviewed_ai_report(job).select_for_update().first()
+        if report is None:
+            continue
+        # An independent report or a human decision still needs human review.
+        if SwiftReport.objects.filter(swift_id=swift.pk).exclude(pk=report.pk).exists():
+            continue
+        changed = SwiftVideo.objects.filter(
+            pk=swift.pk, moderation=Moderation.QUARANTINED,
+            deleted_at__isnull=True,
+        ).update(moderation=Moderation.PENDING)
+        if not changed:
+            continue
+        job.state = SwiftModerationJob.State.QUEUED
+        job.attempts = 0
+        job.next_attempt_at = None
+        job.finished_at = None
+        job.last_error = ''
+        job.save(update_fields=[
+            'state', 'attempts', 'next_attempt_at', 'finished_at',
+            'last_error', 'updated_at',
+        ])
+        requeued.append(job.pk)
+    return requeued
+
+
 def due_jobs(limit=50):
     """Jobs that should be running and are not.
 

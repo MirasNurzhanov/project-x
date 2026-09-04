@@ -162,16 +162,13 @@ class ReportTests(SwiftTestCase):
         self.swift.refresh_from_db()
         self.assertEqual(self.swift.moderation, SwiftVideo.Moderation.FLAGGED)
 
-    def test_flagging_does_not_hide_the_swift(self):
-        """The anti-brigading property, asserted.
-
-        If reporting removed content, one account could silence any other on
-        demand — and a handful of coordinated ones could silence anybody.
-        """
+    def test_flagging_hides_the_swift_until_review(self):
         self.client.post(self.url, {'reason': SwiftReport.Reason.SPAM}, format='json')
 
         body = self.client.get(reverse('swift-feed')).json()
-        self.assertIn(self.swift.pk, [r['id'] for r in body['results']])
+        self.assertNotIn(self.swift.pk, [r['id'] for r in body['results']])
+        self.assertEqual(self.client.get(
+            reverse('swift-detail', args=[self.swift.pk])).status_code, 404)
 
     def test_reporting_five_times_leaves_one_row(self):
         for _ in range(5):
@@ -180,14 +177,15 @@ class ReportTests(SwiftTestCase):
 
         self.assertEqual(SwiftReport.objects.count(), 1)
 
-    def test_repeat_reports_are_indistinguishable_from_the_first(self):
+    def test_repeat_reports_respect_the_now_hidden_swift(self):
         first = self.client.post(
             self.url, {'reason': SwiftReport.Reason.SPAM}, format='json')
         second = self.client.post(
             self.url, {'reason': SwiftReport.Reason.SPAM}, format='json')
 
-        self.assertEqual(first.status_code, second.status_code)
-        self.assertEqual(first.json(), second.json())
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(second.status_code, 404)
+        self.assertEqual(SwiftReport.objects.count(), 1)
 
     def test_a_reason_is_required(self):
         self.assertEqual(self.client.post(self.url, {}, format='json').status_code, 400)

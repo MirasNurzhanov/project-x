@@ -125,16 +125,63 @@ class DeletedAndModeratedTests(SwiftTestCase):
         mine = creator_client.get(reverse('swift-mine')).json()
         self.assertEqual(mine['count'], 0)
 
-    def test_flagged_is_still_visible(self):
-        """Flagging is a report, not a verdict.
+    def test_only_explicitly_approved_swifts_are_public(self):
+        from . import visibility
 
-        Hiding on report alone would hand any user a mute button pointed at
-        anybody they disliked.
-        """
-        self.swift.moderation = SwiftVideo.Moderation.FLAGGED
-        self.swift.save(update_fields=['moderation'])
-
+        creator_client = APIClient()
+        creator_client.force_authenticate(self.creator)
         self.assertIn(self.swift.pk, self._feed_ids())
+        states = [state for state in SwiftVideo.Moderation
+                  if state != SwiftVideo.Moderation.OK] + ['', 'failed', 'unknown']
+        for state in states:
+            with self.subTest(moderation=state):
+                self.swift.moderation = state
+                self.swift.save(update_fields=['moderation'])
+                self.assertFalse(self.swift.is_live)
+                self.assertFalse(visibility.can_watch(self.viewer, self.swift))
+                self.assertFalse(visibility.can_watch(self.creator, self.swift))
+                self.assertNotIn(self.swift.pk, self._feed_ids())
+                self.assertNotIn(self.swift.pk, self._feed_ids(creator_client))
+                self.assertEqual(self.client.get(
+                    reverse('swift-detail', args=[self.swift.pk])).status_code, 404)
+                for endpoint in ('swift-like', 'swift-repost', 'swift-view'):
+                    self.assertEqual(self.client.post(
+                        reverse(endpoint, args=[self.swift.pk])).status_code, 404)
+
+    def test_ranked_feed_rechecks_approval_for_cached_ids(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        approved = make_swift(self.creator)
+        page = SimpleNamespace(
+            swift_ids=[self.swift.pk, approved.pk], cursor=None,
+            has_more=False, sources_by_id={},
+        )
+        for state in ('pending', 'quarantined', 'flagged', 'failed', 'unknown'):
+            with self.subTest(moderation=state):
+                self.swift.moderation = state
+                self.swift.save(update_fields=['moderation'])
+                with patch('recs.pipeline.page', return_value=page):
+                    response = self.client.get(reverse('swift-feed'))
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    [row['id'] for row in response.json()['results']], [approved.pk])
+
+    def test_creator_can_check_review_status_without_publishing(self):
+        self.client.force_authenticate(self.creator)
+        for state, review in (
+            ('pending', 'reviewing'), ('quarantined', 'needs_review'),
+            ('flagged', 'needs_review'), ('unknown', 'needs_review'),
+        ):
+            with self.subTest(moderation=state):
+                self.swift.moderation = state
+                self.swift.save(update_fields=['moderation'])
+                detail = self.client.get(reverse('swift-detail', args=[self.swift.pk]))
+                self.assertEqual(detail.status_code, 200)
+                self.assertEqual(detail.json()['review_state'], review)
+                mine = self.client.get(reverse('swift-mine')).json()['results']
+                self.assertEqual(mine[0]['review_state'], review)
+                self.assertNotIn(self.swift.pk, self._feed_ids())
 
     def test_engagement_on_a_deleted_swift_is_refused(self):
         self.swift.deleted_at = self.swift.created_at

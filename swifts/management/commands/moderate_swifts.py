@@ -31,7 +31,7 @@ job produce one winner and one no-op rather than two inference bills.
 """
 import time
 
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from swifts import ai_moderation
 
@@ -53,7 +53,29 @@ class Command(BaseCommand):
             '--status', action='store_true',
             help='Print what is configured and exit. Prints no secrets.')
 
+        parser.add_argument(
+            '--retry-failed', nargs='+', type=int, metavar='SWIFT_ID',
+            help='Retry only failed jobs for these Swift IDs, then exit.')
+
     def handle(self, *args, **options):
+        swift_ids = options['retry_failed']
+        if swift_ids is not None:
+            if options['loop'] or options['status']:
+                raise CommandError('--retry-failed cannot be combined with --loop or --status.')
+            if any(swift_id <= 0 for swift_id in swift_ids):
+                raise CommandError('--retry-failed requires positive Swift IDs.')
+            if not ai_moderation.enabled():
+                raise CommandError('Enable SWIFT_AI_MODERATION_ENABLED before retrying failed jobs.')
+            job_ids = ai_moderation.retry_failed(swift_ids)
+            self.stdout.write(
+                f'Requeued {len(job_ids)} failed job(s); '
+                f'skipped {len(set(swift_ids)) - len(job_ids)} Swift ID(s).')
+            for job_id in job_ids:
+                job = ai_moderation.run(job_id)
+                if job is not None:
+                    self.stdout.write(f'Swift {job.swift_id}: {job.state}')
+            return
+
         if options['status']:
             self._status()
             return
