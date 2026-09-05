@@ -96,7 +96,7 @@ class SwiftVideoAdmin(admin.ModelAdmin):
         )
         if human_approved:
             return format_html(
-                '<span style="color:#146c2e" title="{}">Human approved</span>',
+                '<span class="ax-ok" title="{}">Human approved</span>',
                 'The reviewer restored this Swift. The original AI result '
                 'is preserved in AI moderation history.',
             )
@@ -104,7 +104,7 @@ class SwiftVideoAdmin(admin.ModelAdmin):
                          SwiftModerationJob.State.RUNNING):
             return format_html('<span title="Waiting on the classifier">…</span>')
         if job.outcome == 'approved':
-            return format_html('<span style="color:#146c2e" title="AI: clean">ok</span>')
+            return format_html('<span class="ax-ok" title="AI: clean">ok</span>')
         if job.state == SwiftModerationJob.State.FAILED:
             return 'Failed - needs review'
         detail = job.categories or job.basis or 'flagged'
@@ -114,7 +114,7 @@ class SwiftVideoAdmin(admin.ModelAdmin):
                 detail, f'{job.confidence or 0:.0%}',
             )
         return format_html(
-            '<span style="color:#b3261e;font-weight:700" title="{}">{}</span>',
+            '<span class="ax-flag" title="{}">{}</span>',
             detail, f'{job.confidence or 0:.0%}',
         )
 

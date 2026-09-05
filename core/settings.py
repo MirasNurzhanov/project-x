@@ -69,7 +69,10 @@ ROOT_URLCONF = 'core.urls'
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        # Searched *before* the app template directories, which is what lets
+        # templates/admin/base_site.html override the one django.contrib.admin
+        # ships. See static/admin/css/approx-admin.css for what it loads.
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -561,6 +564,15 @@ SAFETY_CONTACT_EMAIL = config(
     'SAFETY_CONTACT_EMAIL', default='nurdauletaskar551@gmail.com')
 
 STATIC_URL = "static/"
+
+# The Approx admin skin lives here rather than inside an app, because it is not
+# any one app's asset. Found through the staticfiles finders, which is also how
+# core/asgi.py serves it — there is no collectstatic step in this deployment.
+STATICFILES_DIRS = [BASE_DIR / "static"]
+
+# Only consulted by `manage.py collectstatic`; the finder path above does not
+# need it. Named so that running collectstatic is not an error.
+STATIC_ROOT = BASE_DIR / "staticfiles"
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"

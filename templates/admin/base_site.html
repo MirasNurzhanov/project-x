@@ -1,0 +1,41 @@
+{% extends "admin/base.html" %}
+{% load i18n static %}
+
+{% comment %}
+Approx branding for the Django admin. Overrides the stock
+django/contrib/admin/templates/admin/base_site.html, which this project's
+TEMPLATES["DIRS"] is searched ahead of.
+
+Two jobs: the wordmark, and loading `approx-admin.css`.
+
+The stylesheet goes in `extrahead` rather than `extrastyle` on purpose. Both
+blocks are inherited, but `extrastyle` is where Django loads forms.css,
+changelists.css and login.css, so a sheet placed there would be *overridden* by
+them on equal-specificity rules; `extrahead` is the last hook every admin
+template passes through with `{{ block.super }}` intact (verified across
+change_form, change_list, delete_confirmation, login, add_form and
+change_password), so it lands after all of them. Only responsive.css is later
+and that is media-query scoped.
+{% endcomment %}
+
+{% block extrahead %}{{ block.super }}
+<link rel="stylesheet" href="{% static "admin/css/approx-admin.css" %}">
+{# The map's approximate-location ring, inline so it costs no request. #}
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='12' fill='none' stroke='%23E8714A' stroke-width='2.5' opacity='0.45'/><circle cx='16' cy='16' r='6' fill='%23E8714A'/></svg>">
+{% endblock %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_('Approx admin') }}{% endblock %}
+
+{% block branding %}
+<div id="site-name">
+  <a href="{% url 'admin:index' %}">
+    <span class="ax-mark">APPROX</span>
+    <span class="ax-mark-sub">{{ site_header|default:_('Admin') }}</span>
+  </a>
+</div>
+{% if user.is_anonymous %}
+  {% include "admin/color_theme_toggle.html" %}
+{% endif %}
+{% endblock %}
+
+{% block nav-global %}{% endblock %}

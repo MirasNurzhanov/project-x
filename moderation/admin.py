@@ -94,7 +94,7 @@ class ContentReportAdmin(admin.ModelAdmin):
         """
         if obj.reason in URGENT_REASONS:
             return format_html(
-                '<span title="Urgent category" style="color:#b3261e;font-weight:700">▲</span>'
+                '<span title="Urgent category" class="ax-flag">▲</span>'
             )
         return ''
 

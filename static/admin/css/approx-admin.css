@@ -1,0 +1,1012 @@
+/*
+ * Approx skin for the Django admin.
+ *
+ * The admin is the only web surface staff ever look at, and until now it was
+ * Django's stock blue — which shares nothing with the app the data belongs to.
+ * This file makes it read as the same product: the app's warm cream/coral
+ * light mode and its near-black/teal dark mode, the app's radii, and hairlines
+ * instead of heavy chrome.
+ *
+ * The palette is lifted verbatim from `aura-mobile/constants/theme.ts`, so the
+ * two stay in step. Two places deliberately do NOT use the app's raw accent:
+ *
+ *   - Filled buttons and pills use `--ax-accent-strong` (#C75000 light), not
+ *     `--ax-accent` (#E8714A). White on #E8714A is 3.05:1 and fails AA for
+ *     button labels; #C75000 is 4.59:1. This is the same split the app makes
+ *     between `teal` and `navActive`, and for the same reason.
+ *   - Dark mode's filled buttons are teal with near-black text (9.2:1) rather
+ *     than white text on teal, which is unreadable.
+ *
+ * Loaded from `templates/admin/base_site.html` via `{% block extrahead %}`,
+ * which is the last hook Django's admin templates all pass through with
+ * `{{ block.super }}` — so this lands after base.css, dark_mode.css,
+ * nav_sidebar.css and every `extrastyle` sheet (forms, changelists, login),
+ * and its equal-specificity rules win on source order. Only responsive.css
+ * comes later, and that is media-query scoped.
+ *
+ * No webfonts, on the same reasoning as the legal templates: one file, no
+ * external assets, nothing that can half-load.
+ */
+
+/* ── Palette ────────────────────────────────────────────────────────────────
+ *
+ * Structured exactly like Django's own base.css + dark_mode.css so the theme
+ * toggle keeps working: `html[data-theme="light"]` (0,1,1) outranks the
+ * `:root` inside the dark media query (0,1,0) regardless of order, and
+ * `html[data-theme="dark"]` pins dark when the OS says otherwise.
+ */
+
+html[data-theme="light"],
+:root {
+    --ax-page: #faf9f5;
+    --ax-surface: #ffffff;
+    --ax-surface-2: #fcf9f4;
+    --ax-tint: #fceee8;
+    --ax-border: #e8e4da;
+    --ax-hairline: #efece3;
+    --ax-t1: #2d2a22;
+    --ax-t2: #6b6455;
+    --ax-t3: #8c8475;
+    --ax-accent: #e8714a;
+    --ax-accent-strong: #c75000;
+    --ax-accent-hover: #a94200;
+    --ax-on-accent: #ffffff;
+    --ax-accent-line: #f0c4ae;
+    --ax-ok: #2c7a4b;
+    --ax-ok-bg: #e9f5ee;
+    --ax-bad: #b3261e;
+    --ax-bad-hover: #8f1c16;
+    --ax-bad-bg: #fdeceb;
+    --ax-warn-bg: #fdf1ec;
+    --ax-shadow: 0 1px 2px rgba(45, 42, 34, .05), 0 8px 24px rgba(45, 42, 34, .04);
+
+    /* Django's own variables, remapped. */
+    --primary: var(--ax-accent-strong);
+    --secondary: var(--ax-accent-strong);
+    --accent: var(--ax-accent);
+    --primary-fg: var(--ax-on-accent);
+
+    --body-fg: var(--ax-t1);
+    /* Cards, the sidebar and inputs all read --body-bg; the page ground is set
+     * on `body` further down. Splitting them is what gives the admin the app's
+     * white-card-on-cream look instead of one flat sheet. */
+    --body-bg: var(--ax-surface);
+    --body-quiet-color: var(--ax-t3);
+    --body-medium-color: var(--ax-t2);
+    --body-loud-color: #1a1813;
+
+    --header-color: var(--ax-t3);
+    --header-branding-color: var(--ax-accent);
+    --header-bg: var(--ax-surface);
+    --header-link-color: var(--ax-t1);
+
+    --breadcrumbs-fg: var(--ax-t3);
+    --breadcrumbs-link-fg: var(--ax-t2);
+    --breadcrumbs-bg: var(--ax-page);
+
+    --link-fg: var(--ax-accent-strong);
+    --link-hover-color: var(--ax-accent);
+    --link-selected-fg: var(--ax-accent-strong);
+
+    --hairline-color: var(--ax-hairline);
+    --border-color: var(--ax-border);
+
+    --error-fg: var(--ax-bad);
+
+    --message-success-bg: var(--ax-ok-bg);
+    --message-warning-bg: var(--ax-warn-bg);
+    --message-error-bg: var(--ax-bad-bg);
+
+    --darkened-bg: var(--ax-page);
+    --selected-bg: var(--ax-tint);
+    --selected-row: var(--ax-tint);
+
+    --button-fg: var(--ax-on-accent);
+    --button-bg: var(--ax-accent-strong);
+    --button-hover-bg: var(--ax-accent-hover);
+    --default-button-bg: var(--ax-accent-strong);
+    --default-button-hover-bg: var(--ax-accent-hover);
+    --close-button-bg: var(--ax-t2);
+    --close-button-hover-bg: var(--ax-t1);
+    --delete-button-bg: var(--ax-bad);
+    --delete-button-hover-bg: var(--ax-bad-hover);
+
+    --object-tools-fg: var(--ax-on-accent);
+    --object-tools-bg: var(--ax-accent-strong);
+    --object-tools-hover-bg: var(--ax-accent-hover);
+
+    color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --ax-page: #0a0a0b;
+        --ax-surface: #141417;
+        --ax-surface-2: #1c1c21;
+        --ax-tint: #0e2421;
+        --ax-border: #28282e;
+        --ax-hairline: #23232a;
+        --ax-t1: #f4f4f6;
+        --ax-t2: #9c9ca6;
+        --ax-t3: #7d7d88;
+        --ax-accent: #1fc7b6;
+        --ax-accent-strong: #1fc7b6;
+        --ax-accent-hover: #3ad9c9;
+        --ax-on-accent: #06201d;
+        --ax-accent-line: #17564f;
+        --ax-ok: #30d158;
+        --ax-ok-bg: #0e2417;
+        --ax-bad: #ff6b6e;
+        --ax-bad-hover: #ff8b8d;
+        --ax-bad-bg: #2a1113;
+        --ax-warn-bg: #2a2114;
+        --ax-shadow: 0 1px 2px rgba(0, 0, 0, .4);
+
+        --primary: var(--ax-accent);
+        --secondary: var(--ax-accent);
+        --primary-fg: var(--ax-on-accent);
+
+        --body-fg: var(--ax-t1);
+        --body-bg: var(--ax-surface);
+        --body-quiet-color: var(--ax-t3);
+        --body-medium-color: var(--ax-t2);
+        --body-loud-color: #ffffff;
+
+        --header-color: var(--ax-t3);
+        --header-bg: var(--ax-surface);
+        --header-link-color: var(--ax-t1);
+
+        --breadcrumbs-fg: var(--ax-t3);
+        --breadcrumbs-link-fg: var(--ax-t2);
+        --breadcrumbs-bg: var(--ax-page);
+
+        --link-fg: var(--ax-accent);
+        --link-hover-color: var(--ax-accent-hover);
+        --link-selected-fg: var(--ax-accent);
+
+        --hairline-color: var(--ax-hairline);
+        --border-color: var(--ax-border);
+
+        --error-fg: var(--ax-bad);
+        --message-success-bg: var(--ax-ok-bg);
+        --message-warning-bg: var(--ax-warn-bg);
+        --message-error-bg: var(--ax-bad-bg);
+
+        --darkened-bg: var(--ax-page);
+        --selected-bg: var(--ax-tint);
+        --selected-row: var(--ax-tint);
+
+        --button-fg: var(--ax-on-accent);
+        --button-bg: var(--ax-accent);
+        --button-hover-bg: var(--ax-accent-hover);
+        --default-button-bg: var(--ax-accent);
+        --default-button-hover-bg: var(--ax-accent-hover);
+        --close-button-bg: var(--ax-surface-2);
+        --close-button-hover-bg: var(--ax-border);
+        --delete-button-bg: #7a1f22;
+        --delete-button-hover-bg: #96282b;
+
+        --object-tools-fg: var(--ax-on-accent);
+        --object-tools-bg: var(--ax-accent);
+        --object-tools-hover-bg: var(--ax-accent-hover);
+
+        color-scheme: dark;
+    }
+}
+
+html[data-theme="dark"] {
+    --ax-page: #0a0a0b;
+    --ax-surface: #141417;
+    --ax-surface-2: #1c1c21;
+    --ax-tint: #0e2421;
+    --ax-border: #28282e;
+    --ax-hairline: #23232a;
+    --ax-t1: #f4f4f6;
+    --ax-t2: #9c9ca6;
+    --ax-t3: #7d7d88;
+    --ax-accent: #1fc7b6;
+    --ax-accent-strong: #1fc7b6;
+    --ax-accent-hover: #3ad9c9;
+    --ax-on-accent: #06201d;
+    --ax-accent-line: #17564f;
+    --ax-ok: #30d158;
+    --ax-ok-bg: #0e2417;
+    --ax-bad: #ff6b6e;
+    --ax-bad-hover: #ff8b8d;
+    --ax-bad-bg: #2a1113;
+    --ax-warn-bg: #2a2114;
+    --ax-shadow: 0 1px 2px rgba(0, 0, 0, .4);
+
+    --primary: var(--ax-accent);
+    --secondary: var(--ax-accent);
+    --primary-fg: var(--ax-on-accent);
+
+    --body-fg: var(--ax-t1);
+    --body-bg: var(--ax-surface);
+    --body-quiet-color: var(--ax-t3);
+    --body-medium-color: var(--ax-t2);
+    --body-loud-color: #ffffff;
+
+    --header-color: var(--ax-t3);
+    --header-bg: var(--ax-surface);
+    --header-link-color: var(--ax-t1);
+
+    --breadcrumbs-fg: var(--ax-t3);
+    --breadcrumbs-link-fg: var(--ax-t2);
+    --breadcrumbs-bg: var(--ax-page);
+
+    --link-fg: var(--ax-accent);
+    --link-hover-color: var(--ax-accent-hover);
+    --link-selected-fg: var(--ax-accent);
+
+    --hairline-color: var(--ax-hairline);
+    --border-color: var(--ax-border);
+
+    --error-fg: var(--ax-bad);
+    --message-success-bg: var(--ax-ok-bg);
+    --message-warning-bg: var(--ax-warn-bg);
+    --message-error-bg: var(--ax-bad-bg);
+
+    --darkened-bg: var(--ax-page);
+    --selected-bg: var(--ax-tint);
+    --selected-row: var(--ax-tint);
+
+    --button-fg: var(--ax-on-accent);
+    --button-bg: var(--ax-accent);
+    --button-hover-bg: var(--ax-accent-hover);
+    --default-button-bg: var(--ax-accent);
+    --default-button-hover-bg: var(--ax-accent-hover);
+    --close-button-bg: var(--ax-surface-2);
+    --close-button-hover-bg: var(--ax-border);
+    --delete-button-bg: #7a1f22;
+    --delete-button-hover-bg: #96282b;
+
+    --object-tools-fg: var(--ax-on-accent);
+    --object-tools-bg: var(--ax-accent);
+    --object-tools-hover-bg: var(--ax-accent-hover);
+
+    color-scheme: dark;
+}
+
+/* ── Ground ─────────────────────────────────────────────────────────────── */
+
+body {
+    background: var(--ax-page);
+    font-size: 0.875rem;
+    -webkit-font-smoothing: antialiased;
+    /* Checkboxes and radios are the one control on the page that would
+     * otherwise stay the browser's default blue. */
+    accent-color: var(--ax-accent-strong);
+}
+
+/* One focus treatment everywhere, in the accent, instead of the browser
+ * default that changes shape per control. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+    outline: 2px solid var(--ax-accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+}
+
+a:focus {
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+::selection {
+    background: var(--ax-tint);
+    color: var(--ax-t1);
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────────
+ *
+ * Django's is a solid dark-blue bar. Approx has no such chrome anywhere — the
+ * app's one persistent frame is a white bar under a hairline — so this is a
+ * surface with a hairline under it and the wordmark as the only colour.
+ */
+
+#header {
+    padding: 16px 32px;
+    background: var(--ax-surface);
+    color: var(--ax-t3);
+    border-bottom: 1px solid var(--ax-border);
+}
+
+#header a:link,
+#header a:visited,
+#logout-form button {
+    color: var(--ax-t2);
+}
+
+#header a:focus,
+#header a:hover {
+    color: var(--ax-t1);
+    text-decoration: none;
+}
+
+#branding {
+    align-items: baseline;
+    gap: 12px;
+}
+
+#site-name {
+    margin: 0;
+    padding: 0;
+    font-size: 0.8125rem;
+}
+
+#site-name a:link,
+#site-name a:visited {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 10px;
+}
+
+/* The wordmark, matching the legal pages: letterspaced caps in the accent.
+ * It is the only thing in the header carrying colour. */
+.ax-mark {
+    font-size: 0.8125rem;
+    font-weight: 700;
+    letter-spacing: .34em;
+    color: var(--ax-accent);
+}
+
+.ax-mark-sub {
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: .04em;
+    color: var(--ax-t3);
+}
+
+.ax-mark-sub::before {
+    content: "";
+    display: inline-block;
+    width: 1px;
+    height: 0.75rem;
+    margin-inline-end: 10px;
+    background: var(--ax-border);
+    vertical-align: -1px;
+}
+
+#user-tools {
+    font-size: 0.6875rem;
+    letter-spacing: .06em;
+    color: var(--ax-t3);
+}
+
+/* Django underlines these with a hardcoded white 25% border, which is
+ * invisible on a light bar and wrong on a dark one. */
+#user-tools a,
+#logout-form button {
+    border-bottom: 1px solid var(--ax-border);
+}
+
+#user-tools a:focus,
+#user-tools a:hover,
+#logout-form button:active,
+#logout-form button:hover {
+    border-bottom-color: var(--ax-accent);
+}
+
+.theme-toggle svg {
+    fill: var(--ax-t2);
+}
+
+/* ── Breadcrumbs ────────────────────────────────────────────────────────── */
+
+div.breadcrumbs {
+    padding: 14px 32px;
+    background: var(--ax-page);
+    color: var(--ax-t3);
+    font-size: 0.75rem;
+    border-bottom: 1px solid var(--ax-hairline);
+}
+
+div.breadcrumbs a {
+    color: var(--ax-t2);
+}
+
+div.breadcrumbs a:focus,
+div.breadcrumbs a:hover {
+    color: var(--ax-accent-strong);
+    text-decoration: none;
+}
+
+/* ── Cards ──────────────────────────────────────────────────────────────────
+ *
+ * `radius.l` (20) from the app's theme for the outer card, `radius.m` (12) for
+ * controls inside it. Every panel in the admin is one of `.module`,
+ * `.inline-group` or `fieldset`, so they are styled together.
+ */
+
+.module,
+.inline-group,
+#changelist-filter {
+    background: var(--ax-surface);
+    border: 1px solid var(--ax-border);
+    border-radius: 20px;
+    box-shadow: var(--ax-shadow);
+    overflow: hidden;
+    margin-bottom: 24px;
+}
+
+/* Nested fieldsets are panes of the card they sit in, not cards of their
+ * own — otherwise a change form becomes a stack of boxes inside boxes. And
+ * `#changelist` carries `class="module"` while being the flex row that holds
+ * the results *and* the filter sidebar, so carding it draws a box around two
+ * boxes. */
+.inline-related .module,
+.module .module,
+#changelist.module,
+#content-related .module {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: visible;
+    margin-bottom: 0;
+}
+
+.module h2,
+.module caption,
+.inline-group h2,
+fieldset .fieldset-heading,
+fieldset .inline-heading,
+:not(.inline-related) .collapse summary {
+    padding: 14px 20px;
+    background: var(--ax-surface-2);
+    color: var(--ax-t1);
+    border: 0;
+    border-bottom: 1px solid var(--ax-hairline);
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+}
+
+.module h3 {
+    padding: 0 20px;
+    color: var(--ax-t2);
+}
+
+.module p,
+.module ul,
+.module dl,
+.module pre {
+    padding-left: 20px;
+    padding-right: 20px;
+}
+
+/* ── Tables ─────────────────────────────────────────────────────────────────
+ *
+ * Hairline rows and a quiet head, so the data is the only thing with weight.
+ */
+
+thead th,
+thead th a:link,
+thead th a:visited {
+    background: transparent;
+    color: var(--ax-t3);
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+}
+
+thead th {
+    border-bottom: 1px solid var(--ax-border);
+}
+
+tbody tr > * {
+    border-bottom: 1px solid var(--ax-hairline);
+}
+
+tbody tr:last-child > * {
+    border-bottom: 0;
+}
+
+/* Django alternates row backgrounds with .row1/.row2; a hairline already
+ * separates them, and the zebra fights the card. */
+tbody tr.row1 > *,
+tbody tr.row2 > * {
+    background: transparent;
+}
+
+#result_list tbody tr:hover > * {
+    background: var(--ax-surface-2);
+}
+
+#result_list tbody tr.selected > * {
+    background: var(--ax-tint);
+}
+
+td, th {
+    padding: 11px 14px;
+}
+
+/* ── Changelist ─────────────────────────────────────────────────────────── */
+
+#changelist .changelist-form-container {
+    min-width: 0;
+}
+
+#changelist-form .results {
+    border-radius: 20px;
+    border: 1px solid var(--ax-border);
+    background: var(--ax-surface);
+    box-shadow: var(--ax-shadow);
+}
+
+#changelist .paginator,
+#changelist .toplinks {
+    background: transparent;
+    border: 0;
+    padding: 16px 4px;
+    color: var(--ax-t3);
+    font-size: 0.8125rem;
+}
+
+.paginator a:link,
+.paginator a:visited {
+    display: inline-block;
+    padding: 5px 12px;
+    border: 1px solid var(--ax-border);
+    border-radius: 999px;
+    background: var(--ax-surface);
+    color: var(--ax-t2);
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.paginator a:focus,
+.paginator a:hover {
+    border-color: var(--ax-accent);
+    color: var(--ax-accent-strong);
+    background: var(--ax-surface);
+    text-decoration: none;
+}
+
+.paginator .this-page {
+    padding: 5px 12px;
+    color: var(--ax-t1);
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+
+/* Search bar: a pill, like the app's search fields. */
+#toolbar {
+    padding: 0;
+    margin-bottom: 18px;
+    border: 0;
+    background: transparent;
+}
+
+#toolbar form input {
+    border-radius: 999px;
+    padding: 9px 16px;
+    font-size: 0.8125rem;
+    background: var(--ax-surface);
+    border: 1px solid var(--ax-border);
+}
+
+#toolbar #searchbar {
+    height: auto;
+    min-width: 260px;
+    margin: 0 8px 0 0;
+}
+
+#toolbar #searchbar:focus {
+    border-color: var(--ax-accent);
+}
+
+#changelist-search .quiet {
+    color: var(--ax-t3);
+}
+
+#changelist-filter {
+    padding-bottom: 8px;
+}
+
+#changelist-filter h2 {
+    margin: 0;
+}
+
+#changelist-filter h3 {
+    padding: 14px 20px 4px;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ax-t3);
+}
+
+#changelist-filter li.selected {
+    border-left: 3px solid var(--ax-accent);
+    padding-left: 17px;
+}
+
+#changelist-filter li.selected a {
+    color: var(--ax-accent-strong);
+    font-weight: 600;
+}
+
+/* Bulk-action bar. It sits on the page ground rather than inside the results
+ * card, so it needs an edge of its own to read as a control strip. */
+#changelist .actions {
+    background: var(--ax-surface);
+    border: 1px solid var(--ax-border);
+    border-radius: 14px;
+    padding: 12px 16px;
+    margin-bottom: 14px;
+    color: var(--ax-t2);
+}
+
+#changelist .actions select {
+    border-radius: 999px;
+    padding: 6px 12px;
+    height: auto;
+}
+
+/* ── Forms ──────────────────────────────────────────────────────────────── */
+
+.form-row {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--ax-hairline);
+    font-size: 0.8125rem;
+}
+
+fieldset .form-row:last-child {
+    border-bottom: 0;
+}
+
+.aligned label {
+    color: var(--ax-t2);
+    font-weight: 600;
+}
+
+div.help,
+p.help,
+.help-tooltip {
+    color: var(--ax-t3);
+}
+
+input:not([type]),
+input[type=text],
+input[type=password],
+input[type=email],
+input[type=url],
+input[type=number],
+input[type=tel],
+input[type=date],
+input[type=time],
+textarea,
+select,
+.vTextField {
+    border: 1px solid var(--ax-border);
+    border-radius: 12px;
+    padding: 9px 12px;
+    background-color: var(--ax-surface);
+    color: var(--ax-t1);
+}
+
+select:not([multiple]) {
+    height: auto;
+}
+
+/* A list box, not a one-line control: the pill padding and the auto height
+ * above would collapse it to a scrolling sliver. */
+select[multiple] {
+    padding: 6px;
+    min-height: 150px;
+}
+
+input:not([type]):focus,
+input[type=text]:focus,
+input[type=password]:focus,
+input[type=email]:focus,
+input[type=url]:focus,
+input[type=number]:focus,
+input[type=tel]:focus,
+textarea:focus,
+select:focus,
+.vTextField:focus {
+    border-color: var(--ax-accent);
+}
+
+.form-row.errors {
+    background: var(--ax-bad-bg);
+    border-bottom: 1px solid var(--ax-hairline);
+}
+
+ul.errorlist {
+    color: var(--ax-bad);
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────────
+ *
+ * Pills, as everywhere in the app. `.button` is also used for small inline
+ * links (the raw-id lookups, "Show all"), which is why the padding is set on
+ * the shared rule and then relaxed for `a.button`.
+ */
+
+.button,
+input[type=submit],
+input[type=button],
+.submit-row input,
+a.button {
+    border-radius: 999px;
+    padding: 10px 20px;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    letter-spacing: .01em;
+}
+
+a.button {
+    padding: 6px 14px;
+}
+
+.button.default,
+input[type=submit].default,
+.submit-row input.default {
+    font-weight: 700;
+}
+
+.submit-row {
+    background: var(--ax-surface);
+    border: 1px solid var(--ax-border);
+    border-radius: 20px;
+    box-shadow: var(--ax-shadow);
+    padding: 16px 20px;
+    margin: 24px 0;
+    gap: 10px;
+}
+
+.submit-row a.deletelink {
+    border-radius: 999px;
+    padding: 10px 20px;
+    font-weight: 600;
+}
+
+.submit-row a.closelink {
+    border-radius: 999px;
+    padding: 10px 20px;
+    height: auto;
+    line-height: normal;
+}
+
+/* Add / History / View-on-site, top right of a change page. */
+.object-tools a:link,
+.object-tools a:visited {
+    padding: 7px 16px;
+    border-radius: 999px;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: .06em;
+}
+
+.object-tools a {
+    border-radius: 999px;
+}
+
+/* These two carry their glyph as a background-image pinned to the right edge,
+ * so the pill padding above has to leave room for it or the icon lands on the
+ * label. */
+.object-tools a.addlink,
+.object-tools a.viewsitelink {
+    padding-inline-end: 32px;
+    background-position: right 12px center;
+}
+
+/* ── Messages ───────────────────────────────────────────────────────────── */
+
+ul.messagelist li {
+    border-radius: 12px;
+    margin: 0 0 10px;
+    padding: 12px 16px 12px 42px;
+    border: 1px solid var(--ax-border);
+    color: var(--ax-t1);
+    font-size: 0.8125rem;
+}
+
+ul.messagelist li.success {
+    border-left: 3px solid var(--ax-ok);
+}
+
+ul.messagelist li.warning {
+    border-left: 3px solid var(--ax-accent);
+}
+
+ul.messagelist li.error {
+    border-left: 3px solid var(--ax-bad);
+}
+
+/* ── Sidebar ────────────────────────────────────────────────────────────── */
+
+#nav-sidebar {
+    background: var(--ax-page);
+    border-right: 1px solid var(--ax-border);
+}
+
+.toggle-nav-sidebar {
+    background: var(--ax-page);
+    border-right: 1px solid var(--ax-border);
+    color: var(--ax-t3);
+}
+
+#nav-sidebar .module th,
+#nav-sidebar .module td {
+    padding: 9px 16px;
+}
+
+#nav-sidebar .module {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+    margin-bottom: 4px;
+}
+
+#nav-sidebar .current-app .section:link,
+#nav-sidebar .current-app .section:visited {
+    color: var(--ax-accent-strong);
+    font-weight: 700;
+}
+
+#nav-sidebar tr.current-model,
+#nav-sidebar tr.model-current {
+    background: var(--ax-tint);
+}
+
+#nav-filter {
+    border-radius: 999px;
+    border: 1px solid var(--ax-border);
+    background: var(--ax-surface);
+    padding: 8px 14px;
+    margin: 12px;
+    width: calc(100% - 24px);
+}
+
+#nav-filter:focus {
+    border-color: var(--ax-accent);
+}
+
+/* ── Dashboard ──────────────────────────────────────────────────────────────
+ *
+ * Note what is deliberately *not* here: `.dashboard .module table th`. Django
+ * gives it `width: 100%` and that is what makes each app card fill its box;
+ * overriding it collapses every caption to the width of one link.
+ */
+
+#content-related {
+    background: var(--ax-surface);
+    border: 1px solid var(--ax-border);
+    border-radius: 20px;
+    box-shadow: var(--ax-shadow);
+    overflow: hidden;
+}
+
+/* Recent actions. base.css gives this h2 an 18px unstyled treatment of its
+ * own at (1,1,1), so matching the rest of the card headings needs at least
+ * that much specificity. */
+#content-related .module h2 {
+    padding: 14px 20px;
+    margin: 0 0 8px;
+    background: var(--ax-surface-2);
+    color: var(--ax-t1);
+    border-bottom: 1px solid var(--ax-hairline);
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+}
+
+.module ul.actionlist {
+    margin-left: 20px;
+}
+
+ul.actionlist li {
+    color: var(--ax-t3);
+    font-size: 0.8125rem;
+}
+
+/* ── Login ──────────────────────────────────────────────────────────────────
+ *
+ * A single centred card on the app's cream ground, with the wordmark above it
+ * rather than inside a coloured bar.
+ */
+
+.login {
+    background: var(--ax-page);
+}
+
+.login #header {
+    position: relative;
+    background: transparent;
+    border: 0;
+    padding: 48px 16px 8px;
+}
+
+/* login.css centres #header, which would otherwise park the toggle against
+ * the wordmark. */
+.login #header .theme-toggle {
+    position: absolute;
+    top: 16px;
+    inset-inline-end: 16px;
+}
+
+.login #container {
+    background: var(--ax-surface);
+    border: 1px solid var(--ax-border);
+    border-radius: 20px;
+    box-shadow: var(--ax-shadow);
+    margin: 24px auto 100px;
+    width: 26em;
+    padding: 8px 12px 20px;
+    overflow: visible;
+}
+
+.login #content {
+    padding: 20px 20px 8px;
+}
+
+.login .form-row {
+    padding: 8px 0;
+    border: 0;
+}
+
+.login .form-row label {
+    color: var(--ax-t2);
+    font-weight: 600;
+    font-size: 0.75rem;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+}
+
+.login .form-row #id_username,
+.login .form-row #id_password {
+    padding: 11px 14px;
+    border-radius: 12px;
+}
+
+.login .submit-row {
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    padding: 8px 0 0;
+    margin: 0;
+}
+
+.login .submit-row input[type=submit] {
+    width: 100%;
+}
+
+.login .password-reset-link a {
+    font-size: 0.8125rem;
+}
+
+/* ── Status glyphs in list columns ──────────────────────────────────────────
+ *
+ * Used by `swifts/admin.py` and `moderation/admin.py`. They are classes rather
+ * than inline `style="color:#…"` because a hex chosen against a white table
+ * cell (#146c2e green, #b3261e red) drops to ~2.8:1 on the dark theme's
+ * near-black surface, and an inline style cannot be themed.
+ */
+
+.ax-ok {
+    color: var(--ax-ok);
+    font-weight: 600;
+}
+
+.ax-flag {
+    color: var(--ax-bad);
+    font-weight: 700;
+}

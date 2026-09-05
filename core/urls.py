@@ -20,6 +20,13 @@ from django.contrib import admin
 from django.urls import path, include
 from proximity.urls import map_urlpatterns
 
+# Admin branding. The wordmark itself is drawn by
+# templates/admin/base_site.html; these are the strings Django puts in the
+# <title>, in the dashboard heading, and next to the mark.
+admin.site.site_header = "Admin"
+admin.site.site_title = "Approx admin"
+admin.site.index_title = "Overview"
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     # HTML, not API: the Terms, Community Guidelines and Privacy pages the
