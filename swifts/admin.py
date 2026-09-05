@@ -80,8 +80,8 @@ class SwiftVideoAdmin(admin.ModelAdmin):
             return format_html('<span style="color:#146c2e" title="AI: clean">ok</span>')
         detail = job.categories or job.basis or 'flagged'
         return format_html(
-            '<span style="color:#b3261e;font-weight:700" title="{}">{:.0%}</span>',
-            detail, job.confidence or 0,
+            '<span style="color:#b3261e;font-weight:700" title="{}">{}</span>',
+            detail, f'{job.confidence or 0:.0%}',
         )
 
 

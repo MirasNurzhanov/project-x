@@ -614,6 +614,11 @@ class SwiftReport(models.Model):
             models.Index(fields=['swift', '-created_at'], name='swift_report_swift_idx'),
         ]
 
+    @property
+    def target_user(self):
+        """The content author, for the shared report-resolution audit."""
+        return self.swift.author
+
     def __str__(self):
         return f'report on swift {self.swift_id} by {self.reporter_id}'
 

@@ -339,3 +339,85 @@ class EngagementAlertTests(SwiftTestCase):
         # The alert row is still written — the switch silences the buzz, not
         # the record. Same split every other category here makes.
         self.assertEqual(self.alerts(Notification.Type.SWIFT_LIKE).count(), 1)
+
+
+class ReportAdminReviewTests(SwiftTestCase):
+    def setUp(self):
+        super().setUp()
+        self.creator = make_user('review_creator')
+        self.moderator = make_user('review_moderator', is_staff=True, is_superuser=True)
+        self.viewer = make_user('review_viewer')
+        self.swift = make_swift(
+            self.creator, moderation=SwiftVideo.Moderation.QUARANTINED)
+        self.report = SwiftReport.objects.create(
+            swift=self.swift, reporter=self.creator,
+            source=SwiftReport.Source.AI_VIDEO, reason=SwiftReport.Reason.NUDITY,
+        )
+        from .models import SwiftModerationJob
+
+        SwiftModerationJob.objects.create(
+            swift=self.swift, state=SwiftModerationJob.State.DONE,
+            outcome='quarantined', basis='unsafe_confident',
+            categories='other_objectionable,sexual_content',
+            confidence=0.8, report=self.report,
+        )
+        self.client.force_login(self.moderator)
+        self.viewer_client = APIClient()
+        self.viewer_client.force_authenticate(self.viewer)
+        self.detail_url = reverse('swift-detail', args=[self.swift.pk])
+
+    def review(self, action):
+        return self.client.post(reverse('admin:swifts_swiftreport_changelist'), {
+            'action': action,
+            '_selected_action': [str(self.report.pk)],
+            'index': '0',
+        })
+
+    def assert_reviewed(self, expected_action):
+        from moderation.models import ModerationAction
+
+        self.report.refresh_from_db()
+        self.assertEqual(self.report.state, SwiftReport.State.REVIEWED)
+        self.assertEqual(self.report.action_taken, expected_action)
+        self.assertEqual(self.report.reviewed_by, self.moderator)
+        self.assertIsNotNone(self.report.reviewed_at)
+        audit = ModerationAction.objects.get(
+            kind=ModerationAction.Kind.REPORT_DISMISSED,
+            detail=f'Report #{self.report.pk} dismissed',
+        )
+        self.assertEqual(audit.subject, self.creator)
+        self.assertEqual(audit.moderator, self.moderator)
+
+    def test_admin_can_list_quarantined_swifts_with_confidence(self):
+        response = self.client.get(reverse('admin:swifts_swiftvideo_changelist'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '80%')
+        self.assertContains(response, 'other_objectionable,sexual_content')
+
+    def test_admin_restore_publishes_and_records_the_review(self):
+        from moderation.models import ModerationAction
+        from moderation.reasons import Action
+
+        self.assertEqual(self.viewer_client.get(self.detail_url).status_code, 404)
+        response = self.review('action_restore_swift')
+        self.assertEqual(response.status_code, 302)
+        self.swift.refresh_from_db()
+        self.assertEqual(self.swift.moderation, SwiftVideo.Moderation.OK)
+        self.assertEqual(self.viewer_client.get(self.detail_url).status_code, 200)
+        self.assert_reviewed(Action.CONTENT_RESTORED)
+        restored = ModerationAction.objects.get(
+            kind=ModerationAction.Kind.CONTENT_RESTORED,
+            detail=f'Swift #{self.swift.pk} via report #{self.report.pk}',
+        )
+        self.assertEqual(restored.subject, self.creator)
+        self.assertEqual(restored.moderator, self.moderator)
+
+    def test_admin_dismiss_records_review_without_restoring_the_swift(self):
+        from moderation.reasons import Action
+
+        response = self.review('action_dismiss')
+        self.assertEqual(response.status_code, 302)
+        self.assert_reviewed(Action.NONE)
+        self.swift.refresh_from_db()
+        self.assertEqual(self.swift.moderation, SwiftVideo.Moderation.QUARANTINED)
+        self.assertEqual(self.viewer_client.get(self.detail_url).status_code, 404)
