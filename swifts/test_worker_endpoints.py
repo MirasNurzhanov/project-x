@@ -34,9 +34,9 @@ class LeaseEndpointTests(AIModerationTestCase):
         self.worker = APIClient()
         self.worker.credentials(HTTP_AUTHORIZATION=f'Bearer {TOKEN}')
 
-    def pending_job(self):
+    def pending_job(self, **extra):
         swift = make_swift(
-            self.creator, moderation=Moderation.PENDING, video=fake_video())
+            self.creator, moderation=Moderation.PENDING, video=fake_video(), **extra)
         return SwiftModerationJob.objects.create(swift=swift), swift
 
     def lease(self, limit=4):
@@ -84,6 +84,20 @@ class LeaseEndpointTests(AIModerationTestCase):
         job.refresh_from_db()
         self.assertEqual(job.state, SwiftModerationJob.State.RUNNING)
         self.assertEqual(job.attempts, 1)
+
+    def test_trimmed_leases_sample_the_visible_source_range(self):
+        for metadata in (
+            {'duration_ms': 30_000, 'trim_end_ms': 18_000},
+            {'duration_ms': 18_000},
+        ):
+            with self.subTest(metadata=metadata):
+                job, swift = self.pending_job(trim_start_ms=10_000, **metadata)
+                lease = self.lease().json()['leases'][0]
+                self.assertEqual(lease['job_id'], job.pk)
+                self.assertEqual(lease['source_url'], swift.video.url)
+                self.assertEqual(lease['duration_ms'], 8_000)
+                self.assertEqual(
+                    lease['timestamps_ms'], [10_400, 12_200, 14_000, 15_800, 17_600])
 
     def test_a_job_is_leased_to_exactly_one_caller(self):
         self.pending_job()

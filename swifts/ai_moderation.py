@@ -237,12 +237,7 @@ def _classify(swift):
 
     source = _source_url(swift)
     duration = _effective_duration_ms(swift)
-    count = policy.frame_count_for(
-        duration,
-        configured=_setting('SWIFT_AI_FRAME_COUNT', 0),
-        maximum=int(_setting('SWIFT_AI_FRAME_MAX', 12)),
-    )
-    timestamps = policy.sample_timestamps(duration, count)
+    timestamps = _frame_timestamps(swift, duration)
 
     results = []
     failures = []
@@ -338,6 +333,19 @@ def _source_url(swift):
             retryable=False,
         )
     return url
+
+
+def _frame_timestamps(swift, duration_ms):
+    """Source timestamps covering the trim the viewer actually watches."""
+    count = policy.frame_count_for(
+        duration_ms,
+        configured=_setting('SWIFT_AI_FRAME_COUNT', 0),
+        maximum=int(_setting('SWIFT_AI_FRAME_MAX', 12)),
+    )
+    # Playback seeks within the original file; Cloudflare receives that same
+    # untrimmed file, so a position within the clip needs the source offset.
+    start = swift.trim_start_ms or 0
+    return tuple(start + at_ms for at_ms in policy.sample_timestamps(duration_ms, count))
 
 
 def _effective_duration_ms(swift):

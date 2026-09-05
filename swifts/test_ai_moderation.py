@@ -224,6 +224,30 @@ class PipelineOutcomeTests(AIModerationTestCase):
         self.assertEqual(job.basis, policy.UNSAFE_CONFIDENT)
         self.assertNotIn(swift.pk, self.feed_ids())
 
+    def test_trimmed_uploads_sample_and_record_the_visible_source_range(self):
+        expected = [10_400, 12_200, 14_000, 15_800, 17_600]
+        for metadata in (
+            {'duration_ms': 30_000, 'trim_end_ms': 18_000},
+            {'duration_ms': 18_000},
+        ):
+            with self.subTest(metadata=metadata):
+                fetched = []
+
+                def record_frame(source_url, at_ms, **kwargs):
+                    fetched.append(at_ms)
+                    return b'\xff\xd8fake-jpeg'
+
+                with patched_cloudflare(frame=record_frame):
+                    response = self.post_swift(trim_start_ms=10_000, **metadata)
+
+                self.assertEqual(response.status_code, 201, response.data)
+                swift = SwiftVideo.objects.get(pk=response.json()['id'])
+                job = SwiftModerationJob.objects.get(swift=swift)
+                self.assertEqual(fetched, expected)
+                self.assertEqual(job.sampled_timestamps, expected)
+                self.assertEqual(job.frames_requested, 5)
+                self.assertEqual(swift.moderation, Moderation.OK)
+
     def test_an_uncertain_result_also_quarantines(self):
         """A single weak frame hides the Swift and asks a human. It does not
         remove anything and it does not touch the account."""

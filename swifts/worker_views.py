@@ -119,11 +119,6 @@ class ModerationLeaseView(APIView):
             return None
 
         duration = ai_moderation._effective_duration_ms(swift)
-        count = policy.frame_count_for(
-            duration,
-            configured=getattr(settings, 'SWIFT_AI_FRAME_COUNT', 0),
-            maximum=int(getattr(settings, 'SWIFT_AI_FRAME_MAX', 12)),
-        )
         return {
             'job_id': job.pk,
             'swift_id': swift.pk,
@@ -131,7 +126,7 @@ class ModerationLeaseView(APIView):
             # The sampling plan is computed here, not there: "which frames
             # represent this video" is a policy question and it is already
             # tested in `moderation/test_policy.py`.
-            'timestamps_ms': list(policy.sample_timestamps(duration, count)),
+            'timestamps_ms': list(ai_moderation._frame_timestamps(swift, duration)),
             'duration_ms': duration,
             'want_audio': bool(getattr(settings, 'SWIFT_AI_AUDIO_MODERATION_ENABLED', False)),
             'frame_width': int(getattr(settings, 'SWIFT_AI_FRAME_WIDTH', 640)),

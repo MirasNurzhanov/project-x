@@ -412,6 +412,18 @@ class ReportAdminReviewTests(SwiftTestCase):
         self.assertEqual(restored.subject, self.creator)
         self.assertEqual(restored.moderator, self.moderator)
 
+        # A human approval must not look like an unresolved AI objection or
+        # overwrite the original evidence.
+        response = self.client.get(reverse('admin:swifts_swiftvideo_changelist'))
+        self.assertContains(response, 'Human approved')
+        job = self.swift.moderation_job
+        self.assertEqual(job.outcome, 'quarantined')
+        self.assertEqual(job.confidence, 0.8)
+        response = self.client.get(reverse(
+            'admin:swifts_swiftvideo_change', args=[self.swift.pk]))
+        self.assertContains(response, 'AI moderation history')
+        self.assertContains(response, 'Human review does not change')
+
     def test_admin_dismiss_records_review_without_restoring_the_swift(self):
         from moderation.reasons import Action
 
@@ -421,3 +433,21 @@ class ReportAdminReviewTests(SwiftTestCase):
         self.swift.refresh_from_db()
         self.assertEqual(self.swift.moderation, SwiftVideo.Moderation.QUARANTINED)
         self.assertEqual(self.viewer_client.get(self.detail_url).status_code, 404)
+        response = self.client.get(reverse('admin:swifts_swiftvideo_changelist'))
+        self.assertNotContains(response, 'Human approved')
+        self.assertContains(response, '80%')
+
+    def test_direct_approval_does_not_invent_a_recorded_human_review(self):
+        self.swift.moderation = SwiftVideo.Moderation.OK
+        self.swift.save(update_fields=['moderation'])
+        response = self.client.get(reverse('admin:swifts_swiftvideo_changelist'))
+        self.assertContains(response, 'Approved; earlier AI flag (80%)')
+        self.assertNotContains(response, 'Human approved')
+
+    def test_a_restored_report_does_not_mask_a_current_quarantine(self):
+        self.review('action_restore_swift')
+        self.swift.moderation = SwiftVideo.Moderation.QUARANTINED
+        self.swift.save(update_fields=['moderation'])
+        response = self.client.get(reverse('admin:swifts_swiftvideo_changelist'))
+        self.assertNotContains(response, 'Human approved')
+        self.assertContains(response, '80%')
