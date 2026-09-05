@@ -573,6 +573,52 @@ class RetryTests(AIModerationTestCase):
         self.assertEqual(untouched.state, SwiftModerationJob.State.FAILED)
         self.assertEqual(ai_moderation.retry_failed([swift.pk]), [])
 
+    def test_retry_handles_structured_results_through_the_real_client(self):
+        from moderation.test_cloudflare_ai import ai_ok
+
+        for unsafe in (False, True):
+            with self.subTest(unsafe=unsafe):
+                swift, job = self.exhausted_job()
+                ai_moderation.retry_failed([swift.pk])
+                response = ai_ok({
+                    'unsafe': unsafe,
+                    'categories': ['nudity'] if unsafe else [],
+                    'confidence': 0.99,
+                })
+                with patch.object(cloudflare_ai, 'fetch_frame', return_value=b'jpeg'), \
+                        patch.object(cloudflare_ai.requests, 'post', return_value=response):
+                    ai_moderation.run(job.pk)
+                swift.refresh_from_db()
+                job.refresh_from_db()
+                self.assertEqual(job.state, SwiftModerationJob.State.DONE)
+                self.assertGreater(job.frames_requested, 0)
+                self.assertEqual(job.frames_classified, job.frames_requested)
+                self.assertEqual(
+                    swift.moderation, Moderation.QUARANTINED if unsafe else Moderation.OK)
+                self.assertEqual(swift.pk in self.feed_ids(), not unsafe)
+                self.assertEqual(
+                    job.report.state,
+                    SwiftReport.State.OPEN if unsafe else SwiftReport.State.REVIEWED,
+                )
+
+    def test_invalid_structured_results_keep_retried_uploads_hidden(self):
+        from moderation.test_cloudflare_ai import ai_ok
+
+        swift, job = self.exhausted_job()
+        ai_moderation.retry_failed([swift.pk])
+        response = ai_ok({'unsafe': 'unknown', 'confidence': 0.99})
+        with patch.object(cloudflare_ai, 'fetch_frame', return_value=b'jpeg'), \
+                patch.object(cloudflare_ai.requests, 'post', return_value=response):
+            ai_moderation.run(job.pk)
+        swift.refresh_from_db()
+        job.refresh_from_db()
+        self.assertEqual(swift.moderation, Moderation.PENDING)
+        self.assertNotIn(swift.pk, self.feed_ids())
+        self.assertEqual(job.state, SwiftModerationJob.State.QUEUED)
+        self.assertIsNotNone(job.next_attempt_at)
+        self.assertNotIn('TypeError', job.last_error)
+        self.assertEqual(job.report.state, SwiftReport.State.OPEN)
+
     def test_retry_approval_publishes_and_closes_failure_report(self):
         swift, job = self.exhausted_job()
         report_id = job.report_id

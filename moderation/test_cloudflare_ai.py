@@ -160,6 +160,58 @@ class ParseVisionTests(SimpleTestCase):
         self.assertEqual(result.reasons, (Reason.NUDITY,))
         self.assertEqual(result.at_ms, 1200)
 
+    def test_decoded_objects_use_the_same_validation_as_json_text(self):
+        for unsafe in (True, False):
+            with self.subTest(unsafe=unsafe):
+                payload = {
+                    'unsafe': unsafe, 'categories': ['nudity'], 'confidence': 0.94,
+                }
+                expected = cf.parse_vision_response(json.dumps(payload), at_ms=200)
+                self.assertEqual(
+                    cf.parse_vision_response(payload, at_ms=200), expected)
+                self.assertEqual(payload['unsafe'], unsafe)
+
+    def test_unrecognized_response_types_raise_retryable_errors(self):
+        for payload in (None, [], True, 123, b'{}', [{'unsafe': False}]):
+            with self.subTest(payload=payload):
+                with self.assertRaises(cf.CloudflareError) as ctx:
+                    cf.parse_vision_response(payload)
+                self.assertTrue(ctx.exception.retryable)
+
+    def test_json_non_objects_are_not_treated_as_safe_verdicts(self):
+        for payload in (
+            'null', 'true', '42', '[]',
+            '[{"unsafe": false, "confidence": 0.99}]',
+        ):
+            with self.subTest(payload=payload):
+                with self.assertRaises(cf.CloudflareError) as ctx:
+                    cf.parse_vision_response(payload)
+                self.assertTrue(ctx.exception.retryable)
+
+    def test_missing_or_invalid_verdicts_fail_in_both_response_formats(self):
+        payloads = [{}, {'confidence': 0.99}] + [
+            {'unsafe': value, 'confidence': 0.99}
+            for value in (None, 0, 1, [], {}, '', 'maybe', 'unknown')
+        ]
+        for payload in payloads:
+            for response in (payload, json.dumps(payload)):
+                with self.subTest(response=response):
+                    with self.assertRaises(cf.CloudflareError) as ctx:
+                        cf.parse_vision_response(response)
+                    self.assertTrue(ctx.exception.retryable)
+
+    def test_recognized_boolean_strings_work_in_both_response_formats(self):
+        for verdict, expected_safe in (
+            ('true', False), ('yes', False), ('1', False), ('unsafe', False),
+            ('false', True), ('no', True), ('0', True), ('safe', True),
+            (' FALSE ', True),
+        ):
+            payload = {'unsafe': verdict, 'confidence': 0.99}
+            for response in (payload, json.dumps(payload)):
+                with self.subTest(response=response):
+                    self.assertEqual(
+                        cf.parse_vision_response(response).safe, expected_safe)
+
     def test_json_wrapped_in_prose_is_still_read(self):
         """Models ignore "no other text" routinely, and refusing those answers
         would fail closed on a model that actually classified correctly."""
@@ -239,6 +291,23 @@ class WorkersAiTests(SimpleTestCase):
         self.assertEqual(seen['headers']['Authorization'], f'Bearer {FAKE_TOKEN}')
         self.assertEqual(seen['body']['image'], [255, 216])
         self.assertIsNotNone(seen['timeout'])
+
+    def test_classify_image_accepts_decoded_response_objects(self):
+        with patch.object(requests, 'post', return_value=ai_ok({
+            'unsafe': True, 'categories': ['nudity'], 'confidence': 0.94,
+        })):
+            result = cf.classify_image(b'jpeg', at_ms=200)
+        self.assertFalse(result.safe)
+        self.assertEqual(result.reasons, (Reason.NUDITY,))
+        self.assertEqual(result.at_ms, 200)
+
+    def test_invalid_response_objects_raise_cloudflare_errors(self):
+        for response in ({}, {'unsafe': 'unknown'}, ['unexpected'], None):
+            with self.subTest(response=response):
+                with patch.object(requests, 'post', return_value=ai_ok(response)):
+                    with self.assertRaises(cf.CloudflareError) as ctx:
+                        cf.classify_image(b'jpeg')
+                self.assertTrue(ctx.exception.retryable)
 
     def test_every_call_carries_a_timeout(self):
         """A hung inference request holding a worker thread open is how a

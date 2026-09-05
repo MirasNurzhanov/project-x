@@ -485,21 +485,37 @@ def parse_vision_response(text, *, at_ms=None):
     having a bad day silently approves everything, and the failure would be
     invisible precisely because nothing would look broken.
     """
-    match = _JSON_BLOB.search(text or '')
-    if not match:
-        raise CloudflareError('Vision model returned no JSON object.', retryable=True)
-    try:
-        data = json.loads(match.group(0))
-    except ValueError as exc:
-        raise CloudflareError('Vision model returned unparseable JSON.',
-                              retryable=True) from exc
+    # Workers AI can return response as either JSON text or a decoded object.
+    # Both formats must pass the same verdict validation below.
+    if isinstance(text, dict):
+        data = text
+    elif isinstance(text, str):
+        try:
+            data = json.loads(text)
+        except ValueError:
+            # Keep accepting the model's JSON wrapped in prose or a code fence.
+            match = _JSON_BLOB.search(text)
+            if not match:
+                raise CloudflareError(
+                    'Vision model returned no JSON object.', retryable=True)
+            try:
+                data = json.loads(match.group(0))
+            except ValueError as exc:
+                raise CloudflareError('Vision model returned unparseable JSON.',
+                                      retryable=True) from exc
+    else:
+        raise CloudflareError(
+            'Vision model returned neither text nor a JSON object.', retryable=True)
     if not isinstance(data, dict):
         raise CloudflareError('Vision model returned JSON that is not an object.',
                               retryable=True)
 
     unsafe = data.get('unsafe')
     if isinstance(unsafe, str):
-        unsafe = unsafe.strip().lower() in ('true', 'yes', '1', 'unsafe')
+        unsafe = {
+            'true': True, 'yes': True, '1': True, 'unsafe': True,
+            'false': False, 'no': False, '0': False, 'safe': False,
+        }.get(unsafe.strip().lower())
     if not isinstance(unsafe, bool):
         raise CloudflareError('Vision model gave no usable "unsafe" verdict.',
                               retryable=True)
