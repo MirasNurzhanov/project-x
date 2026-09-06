@@ -32,7 +32,8 @@ class LeaseEndpointTests(AIModerationTestCase):
     def setUp(self):
         super().setUp()
         self.worker = APIClient()
-        self.worker.credentials(HTTP_AUTHORIZATION=f'Bearer {TOKEN}')
+        self.worker.credentials(HTTP_AUTHORIZATION=f'Bearer {TOKEN}',
+                                HTTP_X_MODERATION_VISION_FORMATS='image,messages')
 
     def pending_job(self, **extra):
         swift = make_swift(
@@ -72,7 +73,7 @@ class LeaseEndpointTests(AIModerationTestCase):
         for field in ('job_id', 'swift_id', 'source_url', 'timestamps_ms',
                       'duration_ms', 'want_audio', 'frame_width', 'prompt',
                       'vision_model', 'transcribe_model', 'vision_response_format',
-                      'vision_max_tokens'):
+                      'vision_max_tokens', 'vision_input_format'):
             self.assertIn(field, lease, f'lease is missing {field}')
         self.assertEqual(lease['job_id'], job.pk)
         self.assertGreaterEqual(len(lease['timestamps_ms']), 2)
@@ -80,6 +81,18 @@ class LeaseEndpointTests(AIModerationTestCase):
 
         self.assertEqual(lease['vision_response_format'], cloudflare_ai.VISION_RESPONSE_FORMAT)
         self.assertEqual(lease['vision_max_tokens'], cloudflare_ai.VISION_MAX_TOKENS)
+        self.assertEqual(lease['vision_input_format'], cloudflare_ai.vision_input_format())
+
+    def test_a_scout_lease_requests_image_messages_and_legacy_uses_byte_arrays(self):
+        for model, input_format in (
+            ('@cf/meta/llama-4-scout-17b-16e-instruct', 'messages'),
+            ('@cf/meta/llama-3.2-11b-vision-instruct', 'image'),
+        ):
+            with self.subTest(model=model), override_settings(CLOUDFLARE_AI_VISION_MODEL=model):
+                self.pending_job()
+                lease = self.lease().json()['leases'][0]
+                self.assertEqual(lease['vision_model'], model)
+                self.assertEqual(lease['vision_input_format'], input_format)
 
     def test_leasing_claims_the_job(self):
         """A leased job is RUNNING, so nothing else picks it up — the same
@@ -89,6 +102,21 @@ class LeaseEndpointTests(AIModerationTestCase):
         job.refresh_from_db()
         self.assertEqual(job.state, SwiftModerationJob.State.RUNNING)
         self.assertEqual(job.attempts, 1)
+
+    def test_old_workers_cannot_claim_scout_jobs_but_can_still_lease_legacy_jobs(self):
+        old_worker = APIClient()
+        old_worker.credentials(HTTP_AUTHORIZATION=f'Bearer {TOKEN}')
+        job, _ = self.pending_job()
+        with override_settings(CLOUDFLARE_AI_VISION_MODEL='@cf/meta/llama-4-scout-17b-16e-instruct'):
+            response = old_worker.get(reverse('worker-lease'))
+        self.assertEqual(response.status_code, 409)
+        job.refresh_from_db()
+        self.assertEqual(job.state, SwiftModerationJob.State.QUEUED)
+        self.assertEqual(job.attempts, 0)
+        with override_settings(CLOUDFLARE_AI_VISION_MODEL='@cf/meta/llama-3.2-11b-vision-instruct'):
+            response = old_worker.get(reverse('worker-lease'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['leases'][0]['job_id'], job.pk)
 
     def test_trimmed_leases_sample_the_visible_source_range(self):
         for metadata in (
@@ -138,7 +166,8 @@ class SettleEndpointTests(AIModerationTestCase):
     def setUp(self):
         super().setUp()
         self.worker = APIClient()
-        self.worker.credentials(HTTP_AUTHORIZATION=f'Bearer {TOKEN}')
+        self.worker.credentials(HTTP_AUTHORIZATION=f'Bearer {TOKEN}',
+                                HTTP_X_MODERATION_VISION_FORMATS='image,messages')
         self.swift = make_swift(
             self.creator, moderation=Moderation.PENDING, video=fake_video())
         self.job = SwiftModerationJob.objects.create(swift=self.swift)
@@ -298,7 +327,8 @@ class CoexistenceTests(AIModerationTestCase):
     def setUp(self):
         super().setUp()
         self.worker = APIClient()
-        self.worker.credentials(HTTP_AUTHORIZATION=f'Bearer {TOKEN}')
+        self.worker.credentials(HTTP_AUTHORIZATION=f'Bearer {TOKEN}',
+                                HTTP_X_MODERATION_VISION_FORMATS='image,messages')
 
     def test_a_job_the_python_sweeper_took_is_not_leased_to_go(self):
         from swifts import ai_moderation
@@ -324,7 +354,8 @@ class MixedSettleResponseTests(AIModerationTestCase):
     def setUp(self):
         super().setUp()
         self.worker = APIClient()
-        self.worker.credentials(HTTP_AUTHORIZATION=f'Bearer {TOKEN}')
+        self.worker.credentials(HTTP_AUTHORIZATION=f'Bearer {TOKEN}',
+                                HTTP_X_MODERATION_VISION_FORMATS='image,messages')
 
     def settle_responses(self, responses):
         swift = make_swift(

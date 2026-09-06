@@ -140,8 +140,10 @@ detail and collection endpoints.
 
 ### Investigating a possible false positive
 
+The default vision model is `@cf/meta/llama-4-scout-17b-16e-instruct`. Scout receives
+the policy as a system message and the exact JPEG as an inline image message.
 The vision prompt defines categories against the published Community Guidelines.
-Requests use Cloudflare JSON Mode with a required description, verdict, categories,
+Requests ask for Cloudflare JSON Mode with a required description, verdict, categories,
 confidence and visible evidence. Missing or contradictory answers block automatic
 approval even when other frames are safe; frame-fetch failures still follow the
 existing coverage rule. The model's strongest objection is
@@ -152,20 +154,35 @@ After deploying, inspect fresh results without changing saved reviews:
 
 ```bash
 python manage.py diagnose_swifts 22 23
+python manage.py diagnose_swifts 22 --show-raw
 python manage.py diagnose_swifts 22 23 --all-frames --output-dir /tmp/swift-diagnostics
 ```
 
 The default checks the middle planned sample only. Each inspected frame uses
 two AI requests: the live classifier and a separate inspection of the same JPEG.
 The optional output directory holds the exact input frames for human review.
+`--show-raw` also prints bounded, redacted response previews and token counts from
+those same two requests, including invalid model replies. It makes no extra AI calls.
 Both answers remain model claims; compare them with the images. The command does
 not publish videos, requeue jobs or replace previous decisions.
 
 Deploy the updated Django backend and, if used, the Go moderation worker together.
-New worker leases carry the JSON schema and response token budget. Older workers
-can return answers without the required evidence; the updated settle endpoint
-will retry those answers instead of approving them. A custom vision model must
-support Cloudflare JSON Mode. No database migration is needed for this change.
+Set the following environment variable explicitly if a deployment previously
+selected Llama 3.2, then restart the backend and moderation workers:
+
+```dotenv
+CLOUDFLARE_AI_VISION_MODEL=@cf/meta/llama-4-scout-17b-16e-instruct
+```
+
+Changing this variable alone on old code is insufficient: Scout requires the new
+image-message transport. New worker leases carry the input format, JSON schema
+and response token budget. The Go client advertises supported image formats;
+Django returns HTTP 409 before claiming Scout jobs for an incompatible worker.
+Legacy image-array transport remains available for older explicitly configured
+models. Llama 3.2 returned unstructured prose in live checks despite JSON Mode,
+so its presence in a provider capability list is not proof of usable output.
+Other models require compatible request and response formats before use.
+No database migration is needed for this change.
 
 ### Cloudflare configuration this needs
 

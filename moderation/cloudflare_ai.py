@@ -41,6 +41,7 @@ than style:
     an error, and an error fails closed at the caller rather than passing as a
     safe verdict.
 """
+import base64
 import json
 import logging
 import re
@@ -399,9 +400,16 @@ def _run(model, payload):
 
 
 # ─── Vision ───────────────────────────────────────────────────────────────────
+SCOUT_VISION_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct'
+
+
 def vision_model():
-    return _setting(
-        'CLOUDFLARE_AI_VISION_MODEL', '@cf/meta/llama-3.2-11b-vision-instruct')
+    return _setting('CLOUDFLARE_AI_VISION_MODEL', SCOUT_VISION_MODEL)
+
+
+def vision_input_format(model=None):
+    """Scout takes image messages; older vision models take a byte array."""
+    return 'messages' if (model or vision_model()) == SCOUT_VISION_MODEL else 'image'
 
 
 def transcribe_model():
@@ -448,7 +456,7 @@ VISION_PROMPT = (
 # Cloudflare JSON Mode takes the schema directly in json_schema, without an
 # OpenAI-style name/schema wrapper. Keep this in Django; worker leases carry
 # the same schema and output budget to the Go client.
-VISION_MAX_TOKENS = 384
+VISION_MAX_TOKENS = 512
 VISION_RESPONSE_FORMAT = {
     'type': 'json_schema',
     'json_schema': {
@@ -627,24 +635,51 @@ def _validate_vision_evidence(data):
     return _redact(description.strip(), 240), _redact(evidence.strip(), 320)
 
 
-def classify_image(image_bytes, *, at_ms=None, prompt=None):
-    """Classify one still frame. Returns a `ModerationResult`.
-
-    The image goes as an array of byte values, which is the shape the Workers
-    AI image-to-text schema takes over REST.
-    """
+def vision_request_payload(image_bytes, *, model=None, prompt=None,
+                           response_format=None, max_tokens=None):
+    """Build the image request shared by production and diagnostics."""
     if not image_bytes:
         raise CloudflareError('No image bytes to classify.', retryable=False)
-    result = _run(vision_model(), {
-        'image': list(image_bytes),
-        'prompt': prompt or VISION_PROMPT,
-        'response_format': VISION_RESPONSE_FORMAT,
+    payload = {
+        'response_format': response_format or VISION_RESPONSE_FORMAT,
         # Room for the bounded scene description and violation evidence.
-        'max_tokens': VISION_MAX_TOKENS,
+        'max_tokens': max_tokens or VISION_MAX_TOKENS,
         # Classification, not creative writing. The lowest useful setting so
         # the same frame does not get two different verdicts on two runs.
         'temperature': 0.1,
-    })
+        'stream': False,
+    }
+    instructions = prompt or VISION_PROMPT
+    if vision_input_format(model) == 'messages':
+        # Scout's prompt branch has no image field. Its multimodal input is a
+        # user message containing an inline JPEG, never a model-fetched URL.
+        payload['messages'] = [
+            {'role': 'system', 'content': instructions},
+            {'role': 'user', 'content': [
+                {'type': 'text', 'text': 'Classify only the supplied frame. Return the required JSON object.'},
+                {'type': 'image_url', 'image_url': {
+                    'url': 'data:image/jpeg;base64,' + base64.b64encode(image_bytes).decode('ascii'),
+                }},
+            ]},
+        ]
+    else:
+        payload.update(image=list(image_bytes), prompt=instructions)
+    return payload
+
+
+def classify_image_response(image_bytes, *, prompt=None):
+    """Return the provider result for the exact production vision request.
+
+    Diagnostics can inspect this same answer without making another paid call.
+    It is unvalidated model output; only classify_image forms a frame verdict.
+    """
+    model = vision_model()
+    return _run(model, vision_request_payload(image_bytes, model=model, prompt=prompt))
+
+
+def classify_image(image_bytes, *, at_ms=None, prompt=None):
+    """Classify one still frame with strict validation of the provider answer."""
+    result = classify_image_response(image_bytes, prompt=prompt)
     return parse_vision_response(result.get('response', ''), at_ms=at_ms, require_evidence=True)
 
 

@@ -72,12 +72,14 @@ type Lease struct {
 	TranscribeModel      string          `json:"transcribe_model"`
 	VisionResponseFormat json.RawMessage `json:"vision_response_format,omitempty"`
 	VisionMaxTokens      int             `json:"vision_max_tokens,omitempty"`
+	VisionInputFormat    string          `json:"vision_input_format,omitempty"`
 }
 
-// Django owns the schema and token budget; Go forwards them unchanged.
+// Django owns the schema, token budget and image transport format.
 type VisionOptions struct {
 	ResponseFormat json.RawMessage
 	MaxTokens      int
+	InputFormat    string
 }
 
 // Validate rejects a lease this service cannot act on.
@@ -95,6 +97,11 @@ func (l Lease) Validate() error {
 	}
 	if len(l.TimestampsMS) == 0 {
 		return errors.New("lease has no timestamps to sample")
+	}
+	switch l.VisionInputFormat {
+	case "", "image", "messages":
+	default:
+		return errors.New("lease has an unsupported vision input format")
 	}
 	return nil
 }

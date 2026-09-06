@@ -229,7 +229,10 @@ const canaryLeasePayload = `{"leases":[{
 	"want_audio": true,
 	"frame_width": 640,
 	"prompt": "classify this frame",
-	"vision_model": "@cf/meta/llama-3.2-11b-vision-instruct",
+	"vision_model": "@cf/meta/llama-4-scout-17b-16e-instruct",
+	"vision_input_format": "messages",
+	"vision_response_format": {"type":"json_schema","json_schema":{"type":"object"}},
+	"vision_max_tokens": 512,
 	"transcribe_model": "@cf/openai/whisper"
 }]}`
 
@@ -259,7 +262,10 @@ func TestTheCurrentContractDecodesStrictly(t *testing.T) {
 		{"want_audio", got.WantAudio},
 		{"frame_width", got.FrameWidth == 640},
 		{"prompt", got.Prompt == "classify this frame"},
-		{"vision_model", got.VisionModel == "@cf/meta/llama-3.2-11b-vision-instruct"},
+		{"vision_model", got.VisionModel == "@cf/meta/llama-4-scout-17b-16e-instruct"},
+		{"vision_input_format", got.VisionInputFormat == "messages"},
+		{"vision_response_format", len(got.VisionResponseFormat) > 0},
+		{"vision_max_tokens", got.VisionMaxTokens == 512},
 		{"transcribe_model", got.TranscribeModel == "@cf/openai/whisper"},
 	} {
 		if !c.ok {

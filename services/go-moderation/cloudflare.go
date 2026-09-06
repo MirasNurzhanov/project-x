@@ -11,6 +11,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -185,32 +186,49 @@ func (c *Cloudflare) getBytes(ctx context.Context, u, what string) ([]byte, erro
 // ClassifyFrame sends one frame to a vision model and returns its answer
 // verbatim. Parsing is Django's job.
 func (c *Cloudflare) ClassifyFrame(ctx context.Context, model, prompt string, image []byte, options ...VisionOptions) (string, error) {
-	// Workers AI's image-to-text schema takes the image as an array of byte
-	// values. `[]byte` would marshal to base64 under encoding/json's default
-	// rules, which is not what the API expects — so the bytes are widened to
-	// ints first. This is a real gotcha and the reason for the explicit loop.
-	pixels := make([]int, len(image))
-	for i, b := range image {
-		pixels[i] = int(b)
+	var opts VisionOptions
+	if len(options) > 0 {
+		opts = options[0]
 	}
-
 	payload := map[string]any{
-		"image":  pixels,
-		"prompt": prompt,
 		// Legacy leases omit the budget. Current leases override this with
 		// room for the scene description and evidence required by Django.
 		"max_tokens": 128,
 		// Classification, not creative writing — the lowest useful setting, so
 		// the same frame does not get two verdicts on two runs.
 		"temperature": 0.1,
+		"stream":      false,
 	}
-	if len(options) > 0 {
-		if options[0].MaxTokens > 0 {
-			payload["max_tokens"] = options[0].MaxTokens
+	switch opts.InputFormat {
+	case "", "image":
+		// Older leases use byte arrays. []byte would marshal as base64, so
+		// widen the values to ints to preserve the legacy API contract.
+		pixels := make([]int, len(image))
+		for i, b := range image {
+			pixels[i] = int(b)
 		}
-		if len(options[0].ResponseFormat) > 0 && string(options[0].ResponseFormat) != "null" {
-			payload["response_format"] = options[0].ResponseFormat
+		payload["image"] = pixels
+		payload["prompt"] = prompt
+	case "messages":
+		// Scout accepts its image inside a message as an inline data URI.
+		// The bytes remain the exact JPEG fetched from Media Transformations.
+		payload["messages"] = []map[string]any{
+			{"role": "system", "content": prompt},
+			{"role": "user", "content": []map[string]any{
+				{"type": "text", "text": "Classify only the supplied frame. Return the required JSON object."},
+				{"type": "image_url", "image_url": map[string]string{
+					"url": "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(image),
+				}},
+			}},
 		}
+	default:
+		return "", errors.New("unsupported vision input format")
+	}
+	if opts.MaxTokens > 0 {
+		payload["max_tokens"] = opts.MaxTokens
+	}
+	if len(opts.ResponseFormat) > 0 && string(opts.ResponseFormat) != "null" {
+		payload["response_format"] = opts.ResponseFormat
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

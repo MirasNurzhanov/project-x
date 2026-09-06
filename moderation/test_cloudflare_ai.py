@@ -6,6 +6,7 @@ assertion this whole suite exists to protect is `TokenSecrecyTests` at the
 bottom, which checks that a real one could not escape into a response body, an
 exception message or a log line even when everything else goes wrong.
 """
+import base64
 import json
 import logging
 from unittest.mock import patch
@@ -357,6 +358,7 @@ class StructuredVisionTests(SimpleTestCase):
 
 @override_settings(**CREDS)
 class WorkersAiTests(SimpleTestCase):
+    @override_settings(CLOUDFLARE_AI_VISION_MODEL='@cf/meta/llama-3.2-11b-vision-instruct')
     def test_the_endpoint_and_auth_header_are_right(self):
         seen = {}
 
@@ -464,6 +466,44 @@ class WorkersAiTests(SimpleTestCase):
 
 
 # ─── The one that protects the credential ─────────────────────────────────────
+@override_settings(**dict(CREDS, CLOUDFLARE_AI_VISION_MODEL=cf.SCOUT_VISION_MODEL))
+class ScoutVisionTests(SimpleTestCase):
+    def test_scout_receives_the_exact_jpeg_in_messages_and_returns_validated_evidence(self):
+        frame = b'\xff\xd8\x00\xff'
+        for unsafe in (False, True):
+            payload = vision_payload(unsafe, confidence=0 if not unsafe else 0.94)
+            with self.subTest(unsafe=unsafe), patch.object(
+                    requests, 'post', return_value=ai_ok(payload)) as post:
+                verdict = cf.classify_image(frame, at_ms=1500)
+            self.assertEqual(verdict.safe, not unsafe)
+            self.assertEqual(verdict.confidence, payload['confidence'])
+            self.assertEqual(verdict.evidence, payload['evidence'])
+            self.assertEqual(verdict.at_ms, 1500)
+            self.assertTrue(post.call_args.args[0].endswith(cf.SCOUT_VISION_MODEL))
+            request = post.call_args.kwargs['json']
+            self.assertNotIn('image', request)
+            self.assertNotIn('prompt', request)
+            self.assertFalse(request['stream'])
+            self.assertEqual(request['max_tokens'], 512)
+            self.assertEqual(request['response_format'], cf.VISION_RESPONSE_FORMAT)
+            messages = request['messages']
+            self.assertEqual(messages[0], {'role': 'system', 'content': cf.VISION_PROMPT})
+            self.assertEqual(messages[1]['role'], 'user')
+            content = messages[1]['content']
+            self.assertEqual(content[0]['text'],
+                             'Classify only the supplied frame. Return the required JSON object.')
+            image_url = content[1]['image_url']['url']
+            self.assertTrue(image_url.startswith('data:image/jpeg;base64,'))
+            self.assertEqual(base64.b64decode(image_url.split(',', 1)[1]), frame)
+
+    def test_prose_is_still_invalid_after_switching_models(self):
+        with patch.object(requests, 'post', return_value=ai_ok(
+                'The person may be using a phone to access explicit content.')) as post:
+            with self.assertRaises(cf.InvalidVisionResponse):
+                cf.classify_image(b'jpeg')
+        post.assert_called_once()
+
+
 @override_settings(**CREDS)
 class TokenSecrecyTests(SimpleTestCase):
     """The token must not reach a log, an exception or a diagnostic.

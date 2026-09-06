@@ -246,6 +246,7 @@ func (w *Worker) classifyOne(ctx context.Context, lease Lease, atMS int) FrameRe
 	raw, err := w.cf.ClassifyFrame(ctx, lease.VisionModel, lease.Prompt, image, VisionOptions{
 		ResponseFormat: lease.VisionResponseFormat,
 		MaxTokens:      lease.VisionMaxTokens,
+		InputFormat:    lease.VisionInputFormat,
 	})
 	if err != nil {
 		return FrameResult{AtMS: atMS, Error: redact(err.Error())}

@@ -122,6 +122,9 @@ func (c *DjangoClient) Lease(ctx context.Context, n int) ([]Lease, error) {
 	if err != nil {
 		return nil, fmt.Errorf("building lease request: %w", err)
 	}
+	// Django refuses message-only models before claiming work for old builds
+	// that would otherwise ignore the new input-format field.
+	req.Header.Set("X-Moderation-Vision-Formats", "image,messages")
 	c.authorise(req)
 
 	resp, err := c.http.Do(req)

@@ -80,6 +80,17 @@ class ModerationLeaseView(APIView):
     permission_classes = [WorkerAuthenticated]
 
     def get(self, request):
+        supported_formats = {
+            value.strip() for value in
+            request.headers.get('X-Moderation-Vision-Formats', 'image').split(',')
+        }
+        if cloudflare_ai.vision_input_format() not in supported_formats:
+            # Old workers ignore unknown lease fields. Do not give them Scout
+            # jobs they could classify without actually supplying the image.
+            return Response(
+                {'detail': 'Upgrade the moderation worker: the configured vision model requires image messages.'},
+                status=status.HTTP_409_CONFLICT,
+            )
         try:
             limit = min(max(int(request.query_params.get('limit', 4)), 1), 20)
         except (TypeError, ValueError):
@@ -137,6 +148,7 @@ class ModerationLeaseView(APIView):
             'vision_response_format': cloudflare_ai.VISION_RESPONSE_FORMAT,
             'vision_max_tokens': cloudflare_ai.VISION_MAX_TOKENS,
             'vision_model': cloudflare_ai.vision_model(),
+            'vision_input_format': cloudflare_ai.vision_input_format(),
             'transcribe_model': cloudflare_ai.transcribe_model(),
         }
 

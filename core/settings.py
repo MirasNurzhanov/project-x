@@ -430,12 +430,12 @@ CLOUDFLARE_ACCOUNT_ID = config('CLOUDFLARE_ACCOUNT_ID', default='')
 SWIFT_AI_MODERATION_ENABLED = config(
     'SWIFT_AI_MODERATION_ENABLED', default=False, cast=bool)
 
-# Which Workers AI model classifies a frame. Configurable because the catalogue
-# moves faster than this codebase does; the default is Meta's vision-instruct
-# model, which takes an image plus a prompt and returns text.
+# Scout supports image messages and structured output. Older configured models
+# retain their image-array transport; changing a model also requires a supported
+# input format in moderation.cloudflare_ai.
 CLOUDFLARE_AI_VISION_MODEL = config(
     'CLOUDFLARE_AI_VISION_MODEL',
-    default='@cf/meta/llama-3.2-11b-vision-instruct')
+    default='@cf/meta/llama-4-scout-17b-16e-instruct')
 CLOUDFLARE_AI_TRANSCRIBE_MODEL = config(
     'CLOUDFLARE_AI_TRANSCRIBE_MODEL', default='@cf/openai/whisper')
 

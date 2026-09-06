@@ -75,6 +75,39 @@ def _parse_inspection(response):
     return parsed
 
 
+RAW_PREVIEW_LIMIT = 1200
+
+
+def _raw_summary(result):
+    """Bound and escape the existing reply without making another model call."""
+    response = result.get('response')
+    text = response if isinstance(response, str) else json.dumps(response, ensure_ascii=False)
+    redacted = cloudflare_ai.redact(text, len(text))
+    # Bound the rendered JSON string, including escaped newlines and Unicode.
+    low, high = 0, min(len(redacted), RAW_PREVIEW_LIMIT)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(json.dumps(redacted[:middle], ensure_ascii=True)) <= RAW_PREVIEW_LIMIT:
+            low = middle
+        else:
+            high = middle - 1
+    usage = result.get('usage')
+    usage = usage if isinstance(usage, dict) else {}
+    token_counts = {}
+    for name in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
+        value = usage.get(name)
+        token_counts[name] = (
+            value if isinstance(value, int) and not isinstance(value, bool)
+            and 0 <= value <= 1_000_000_000 else None)
+    return {
+        'response_type': type(response).__name__,
+        'response_chars': len(text),
+        'preview': redacted[:low],
+        'truncated': low < len(redacted),
+        'usage': token_counts,
+    }
+
+
 class Command(BaseCommand):
     help = 'Diagnose Swift AI flags without changing videos, jobs or reports.'
 
@@ -83,6 +116,9 @@ class Command(BaseCommand):
         parser.add_argument(
             '--all-frames', action='store_true',
             help='Inspect every planned sample instead of only the middle one.')
+        parser.add_argument(
+            '--show-raw', action='store_true',
+            help='Print bounded, redacted replies and token usage from the existing AI calls.')
         parser.add_argument(
             '--output-dir', type=Path,
             help='Optionally save the exact JPEG inputs to this local directory.')
@@ -115,9 +151,9 @@ class Command(BaseCommand):
                 timestamps = timestamps[len(timestamps) // 2:len(timestamps) // 2 + 1]
             self.stdout.write(f'Inspecting {len(timestamps)} sampled frame(s), not a new video decision.')
             for at_ms in timestamps:
-                self._inspect(swift, at_ms, model, output_dir)
+                self._inspect(swift, at_ms, model, output_dir, options['show_raw'])
 
-    def _inspect(self, swift, at_ms, model, output_dir):
+    def _inspect(self, swift, at_ms, model, output_dir, show_raw=False):
         self.stdout.write(f'Frame: source time {at_ms}ms')
         try:
             frame = cloudflare_ai.fetch_frame(ai_moderation._source_url(swift), at_ms)
@@ -139,7 +175,12 @@ class Command(BaseCommand):
         # A malformed current verdict is itself useful evidence. Still inspect
         # these exact bytes independently so the diagnostic can explain it.
         try:
-            verdict = cloudflare_ai.classify_image(frame, at_ms=at_ms)
+            result = cloudflare_ai.classify_image_response(frame)
+            if show_raw:
+                self.stdout.write('Current classifier raw: ' + json.dumps(
+                    _raw_summary(result), ensure_ascii=True))
+            verdict = cloudflare_ai.parse_vision_response(
+                result.get('response'), at_ms=at_ms, require_evidence=True)
             self.stdout.write('Current classifier: ' + cloudflare_ai.redact(json.dumps({
                 'description': verdict.description,
                 'unsafe': not verdict.safe,
@@ -151,16 +192,18 @@ class Command(BaseCommand):
             self.stderr.write(f'Current classifier failed: {cloudflare_ai.redact(exc)}')
 
         try:
-            result = cloudflare_ai._run(model, {
-                'image': list(frame),
-                'prompt': INSPECTION_PROMPT,
-                'response_format': {
+            payload = cloudflare_ai.vision_request_payload(
+                frame, model=model, prompt=INSPECTION_PROMPT,
+                response_format={
                     'type': 'json_schema',
                     'json_schema': INSPECTION_SCHEMA,
                 },
-                'max_tokens': 512,
-                'temperature': 0.1,
-            })
+                max_tokens=512,
+            )
+            result = cloudflare_ai._run(model, payload)
+            if show_raw:
+                self.stdout.write('Independent inspection raw: ' + json.dumps(
+                    _raw_summary(result), ensure_ascii=True))
             response = _parse_inspection(result.get('response'))
             self.stdout.write('Independent inspection: ' + cloudflare_ai.redact(
                 json.dumps(response, ensure_ascii=False), 2400))
