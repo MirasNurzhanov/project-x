@@ -20,6 +20,7 @@ package main
 // frames and classifying them, concurrently, under a shared rate limit.
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -67,8 +68,16 @@ type Lease struct {
 	// (`CLOUDFLARE_AI_VISION_MODEL`, `CLOUDFLARE_AI_TRANSCRIBE_MODEL`), so
 	// swapping a model stays a Django environment change and does not need
 	// this service redeployed.
-	VisionModel     string `json:"vision_model"`
-	TranscribeModel string `json:"transcribe_model"`
+	VisionModel          string          `json:"vision_model"`
+	TranscribeModel      string          `json:"transcribe_model"`
+	VisionResponseFormat json.RawMessage `json:"vision_response_format,omitempty"`
+	VisionMaxTokens      int             `json:"vision_max_tokens,omitempty"`
+}
+
+// Django owns the schema and token budget; Go forwards them unchanged.
+type VisionOptions struct {
+	ResponseFormat json.RawMessage
+	MaxTokens      int
 }
 
 // Validate rejects a lease this service cannot act on.
@@ -92,16 +101,10 @@ func (l Lease) Validate() error {
 
 // FrameResult is one frame's outcome: the model's answer, verbatim.
 //
-// `Raw` is the untouched text the vision model produced. This service does not
-// parse it, and that is the last piece of the boundary argument.
-//
-// Parsing it looks harmless — pull out `unsafe`, `confidence`, `categories` —
-// but `moderation.cloudflare_ai.parse_vision_response` is forty lines of
-// hard-won leniency: models wrap the JSON in prose, answer `"high"` where a
-// float was asked for, report confidence on a 0-100 scale, and invent category
-// names. Every one of those behaviours has a test in
-// `moderation/test_cloudflare_ai.py`. A second parser in Go would be a second
-// set of those bugs, discovered separately.
+// `Raw` carries the model's text or JSON response. Django alone validates its
+// fields and evidence through `moderation.cloudflare_ai.parse_vision_response`.
+// Invalid answers must reach that parser so they block approval; dropping one
+// would let the remaining safe frames outvote an unvalidated objection.
 //
 // So Go carries bytes and Django reads them. The one rule this service does
 // apply is the one it cannot avoid: an empty `Raw` with an `Error` set means
@@ -185,7 +188,7 @@ type Stats struct {
 type workersAIResponse struct {
 	Success bool `json:"success"`
 	Result  struct {
-		Response string `json:"response"`
+		Response json.RawMessage `json:"response"`
 		// Whisper returns text here instead.
 		Text string `json:"text"`
 	} `json:"result"`

@@ -76,6 +76,20 @@ class SamplingTests(SimpleTestCase):
 
 # ─── Combining frame results ──────────────────────────────────────────────────
 class CombineTests(SimpleTestCase):
+    def test_safe_frames_cannot_outvote_an_invalid_verdict(self):
+        decision = policy.combine_frames(
+            [safe(0), safe(1000), safe(2000), safe(3000)],
+            requested=5, invalid_responses=1)
+        self.assertEqual(decision.outcome, policy.FAILED)
+        self.assertEqual(decision.basis, policy.INVALID_RESPONSE)
+        self.assertEqual(decision.frames_classified, 4)
+        self.assertEqual(decision.sampled_ms, (0, 1000, 2000, 3000))
+
+    def test_a_valid_unsafe_frame_still_quarantines_amid_invalid_answers(self):
+        decision = policy.combine_frames(
+            [unsafe(['nudity'], 0.9, at_ms=1000)], requested=5, invalid_responses=4)
+        self.assertEqual(decision.outcome, policy.QUARANTINED)
+
     def test_all_frames_safe_is_an_approval(self):
         decision = policy.combine_frames(
             [safe(0), safe(1000), safe(2000), safe(3000)], requested=4)
@@ -100,6 +114,30 @@ class CombineTests(SimpleTestCase):
             [safe(0), unsafe(['graphic_violence'], 0.35, at_ms=1000)], requested=2)
         self.assertEqual(decision.outcome, policy.QUARANTINED)
         self.assertEqual(decision.basis, policy.UNSAFE_UNCERTAIN)
+
+    def test_model_evidence_and_timestamp_come_from_the_strongest_unsafe_frame(self):
+        decision = policy.combine_frames([
+            ModerationResult(
+                safe=False, confidence=0.35, categories=('weapons_threat',),
+                at_ms=1000, evidence='A distant person may hold a weapon.'),
+            ModerationResult(
+                safe=False, confidence=0.92, categories=('graphic_violence',),
+                at_ms=2000, evidence='A visible wound is bleeding.'),
+            ModerationResult(
+                safe=True, confidence=0.99, at_ms=3000,
+                description='A closed door.'),
+        ], requested=3)
+        self.assertEqual(decision.evidence, 'A visible wound is bleeding.')
+        self.assertEqual(decision.evidence_at_ms, 2000)
+        self.assertEqual(decision.confidence, 0.92)
+        self.assertEqual(decision.outcome, policy.QUARANTINED)
+
+    def test_older_frame_results_without_evidence_still_quarantine(self):
+        decision = policy.combine_frames(
+            [unsafe(['nudity'], 0.9, at_ms=2000)], requested=1)
+        self.assertEqual(decision.evidence, '')
+        self.assertIsNone(decision.evidence_at_ms)
+        self.assertEqual(decision.outcome, policy.QUARANTINED)
 
     def test_two_weak_frames_agreeing_is_corroboration(self):
         decision = policy.combine_frames(

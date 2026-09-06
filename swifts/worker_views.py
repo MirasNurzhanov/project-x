@@ -134,6 +134,8 @@ class ModerationLeaseView(APIView):
             # is a specification for getting past the filter; it should have
             # one home.
             'prompt': cloudflare_ai.VISION_PROMPT,
+            'vision_response_format': cloudflare_ai.VISION_RESPONSE_FORMAT,
+            'vision_max_tokens': cloudflare_ai.VISION_MAX_TOKENS,
             'vision_model': cloudflare_ai.vision_model(),
             'transcribe_model': cloudflare_ai.transcribe_model(),
         }
@@ -179,10 +181,9 @@ class ModerationSettleView(APIView):
             )
             return Response({'applied': True, 'outcome': 'failed'})
 
-        # Parse the raw answers with the parser that already has tests for
-        # every way a model gets this wrong — prose around the JSON, a
-        # confidence of "high", a 0-100 scale, invented categories.
-        results, requested = [], 0
+        # Django validates verdicts. An invalid answer blocks approval even
+        # when enough other frames are safe; a fetch failure uses coverage.
+        results, requested, invalid_responses = [], 0, 0
         for frame in data.get('frames') or []:
             requested += 1
             raw = frame.get('raw') or ''
@@ -190,16 +191,16 @@ class ModerationSettleView(APIView):
                 continue  # fetch or model failure; counted, not classified
             try:
                 results.append(cloudflare_ai.parse_vision_response(
-                    raw, at_ms=frame.get('at_ms')))
+                    raw, at_ms=frame.get('at_ms'), require_evidence=True))
             except cloudflare_ai.CloudflareError:
-                # Unreadable output is a frame that was not classified, which
-                # is what stops a broken model silently approving everything.
+                invalid_responses += 1
                 continue
 
         decision = policy.combine_frames(
             results,
             requested=requested,
             threshold=float(getattr(settings, 'SWIFT_AI_UNSAFE_CONFIDENCE', 0.75)),
+            invalid_responses=invalid_responses,
         )
 
         transcript = (data.get('transcript') or '').strip()

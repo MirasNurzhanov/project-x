@@ -45,6 +45,7 @@ UNSAFE_CORROBORATED = 'unsafe_corroborated'
 CAPTION = 'caption'
 TRANSCRIPT = 'transcript'
 INSUFFICIENT_FRAMES = 'insufficient_frames'
+INVALID_RESPONSE = 'invalid_response'
 
 #: Above this, one frame is enough on its own. Below it, one frame is a
 #: suspicion that needs either a second frame agreeing or a human.
@@ -88,6 +89,10 @@ class Decision:
     #: Set when the pipeline could not complete. Never shown to the author and
     #: never returned by the API — it is provider detail.
     error: str = ''
+    #: The strongest unsafe frame's model claim, for staff review. This is
+    #: evidence of what the model said, not proof of a policy violation.
+    evidence: str = ''
+    evidence_at_ms: int = None
 
     @property
     def approved(self):
@@ -163,7 +168,8 @@ def _worst_reason(reasons):
     return Reason.OTHER
 
 
-def combine_frames(results, *, requested, threshold=DEFAULT_UNSAFE_CONFIDENCE):
+def combine_frames(results, *, requested, threshold=DEFAULT_UNSAFE_CONFIDENCE,
+                   invalid_responses=0):
     """One `Decision` from the frame results that came back.
 
     `requested` is how many frames were *asked for*, not how many arrived, and
@@ -208,6 +214,21 @@ def combine_frames(results, *, requested, threshold=DEFAULT_UNSAFE_CONFIDENCE):
             sampled_ms=sampled,
             frames_requested=requested,
             frames_classified=len(classified),
+            evidence=strongest.evidence,
+            evidence_at_ms=strongest.at_ms if strongest.evidence else None,
+        )
+
+    # An invalid verdict can contain an objection we could not validate. Do
+    # not discard it and approve from the remaining safe frames. Fetch failures
+    # still use the coverage rule; a valid unsafe result above still quarantines.
+    if invalid_responses:
+        return Decision(
+            outcome=FAILED,
+            basis=INVALID_RESPONSE,
+            sampled_ms=sampled,
+            frames_requested=requested,
+            frames_classified=len(classified),
+            error=f'{invalid_responses} frame verdict(s) failed validation',
         )
 
     # Nothing came back at all. Guarded before the proportional rule below,

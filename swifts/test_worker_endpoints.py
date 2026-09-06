@@ -71,10 +71,15 @@ class LeaseEndpointTests(AIModerationTestCase):
         lease = body['leases'][0]
         for field in ('job_id', 'swift_id', 'source_url', 'timestamps_ms',
                       'duration_ms', 'want_audio', 'frame_width', 'prompt',
-                      'vision_model', 'transcribe_model'):
+                      'vision_model', 'transcribe_model', 'vision_response_format',
+                      'vision_max_tokens'):
             self.assertIn(field, lease, f'lease is missing {field}')
         self.assertEqual(lease['job_id'], job.pk)
         self.assertGreaterEqual(len(lease['timestamps_ms']), 2)
+        from moderation import cloudflare_ai
+
+        self.assertEqual(lease['vision_response_format'], cloudflare_ai.VISION_RESPONSE_FORMAT)
+        self.assertEqual(lease['vision_max_tokens'], cloudflare_ai.VISION_MAX_TOKENS)
 
     def test_leasing_claims_the_job(self):
         """A leased job is RUNNING, so nothing else picks it up — the same
@@ -151,8 +156,14 @@ class SettleEndpointTests(AIModerationTestCase):
             stamps = stamps[:count]
         return [{'at_ms': ms, 'raw': raw} for ms in stamps]
 
-    SAFE = '{"unsafe": false, "categories": [], "confidence": 0.97}'
-    UNSAFE = '{"unsafe": true, "categories": ["nudity"], "confidence": 0.95}'
+    SAFE = json.dumps({
+        'description': 'A desk and laptop.', 'evidence': '',
+        'unsafe': False, 'categories': [], 'confidence': 0.97,
+    })
+    UNSAFE = json.dumps({
+        'description': 'Explicit imagery.', 'evidence': 'Nudity: intimate body parts are exposed.',
+        'unsafe': True, 'categories': ['nudity'], 'confidence': 0.95,
+    })
 
     # ── The happy paths ──────────────────────────────────────────────────────
     def test_all_safe_frames_publish_the_swift(self):
@@ -212,6 +223,23 @@ class SettleEndpointTests(AIModerationTestCase):
         self.swift.refresh_from_db()
         self.assertEqual(self.swift.moderation, Moderation.PENDING)
         self.job.refresh_from_db()
+        self.assertEqual(self.job.state, SwiftModerationJob.State.QUEUED)
+
+    def test_a_legacy_safe_answer_without_evidence_fields_is_not_published(self):
+        self.settle(frames=self.frames('{"unsafe": false, "categories": [], "confidence": 0.97}'))
+        self.swift.refresh_from_db()
+        self.job.refresh_from_db()
+        self.assertEqual(self.swift.moderation, Moderation.PENDING)
+        self.assertEqual(self.job.state, SwiftModerationJob.State.QUEUED)
+
+    def test_an_unsafe_answer_with_no_visible_violation_is_retried(self):
+        payload = json.loads(self.UNSAFE)
+        payload['categories'] = ['other_objectionable']
+        payload['evidence'] = 'No visible violation'
+        self.settle(frames=self.frames(json.dumps(payload)))
+        self.swift.refresh_from_db()
+        self.job.refresh_from_db()
+        self.assertEqual(self.swift.moderation, Moderation.PENDING)
         self.assertEqual(self.job.state, SwiftModerationJob.State.QUEUED)
 
     def test_a_prohibited_transcript_quarantines_a_visually_clean_swift(self):
@@ -285,3 +313,89 @@ class CoexistenceTests(AIModerationTestCase):
         self.assertEqual(
             self.worker.get(reverse('worker-lease')).json()['leases'], [],
             'the Go worker was handed a job Python had already finished')
+
+
+@override_settings(**dict(WORKER, SWIFT_AI_FRAME_COUNT=5))
+class MixedSettleResponseTests(AIModerationTestCase):
+    """The Go settle path applies the same rule to incomplete verdicts."""
+
+    FETCH_ERROR = object()
+
+    def setUp(self):
+        super().setUp()
+        self.worker = APIClient()
+        self.worker.credentials(HTTP_AUTHORIZATION=f'Bearer {TOKEN}')
+
+    def settle_responses(self, responses):
+        swift = make_swift(
+            self.creator, moderation=Moderation.PENDING,
+            video=fake_video(), duration_ms=8_000)
+        job = SwiftModerationJob.objects.create(swift=swift)
+        lease = self.worker.get(reverse('worker-lease')).json()['leases'][0]
+        self.assertEqual(lease['job_id'], job.pk)
+        self.assertEqual(len(lease['timestamps_ms']), 5)
+        self.assertEqual(len(responses), 5)
+        frames = [
+            {'at_ms': at_ms, 'raw': json.dumps(answer)} if answer is not self.FETCH_ERROR
+            else {'at_ms': at_ms, 'error': 'Seek time exceeds media duration.'}
+            for at_ms, answer in zip(lease['timestamps_ms'], responses)
+        ]
+        response = self.worker.post(
+            reverse('worker-settle'),
+            json.dumps({'job_id': job.pk, 'frames': frames, 'model_used': '@cf/test/model'}),
+            content_type='application/json')
+        self.assertEqual(response.status_code, 200, response.data)
+        swift.refresh_from_db()
+        job.refresh_from_db()
+        return swift, job, response.json()
+
+    def test_four_safe_frames_do_not_override_one_invalid_object_answer(self):
+        from moderation.test_cloudflare_ai import vision_payload
+
+        invalid_answers = (
+            vision_payload(True, evidence=''),
+            vision_payload(False, categories=['nudity']),
+            {'unsafe': False, 'categories': [], 'confidence': 0.97},
+            None,
+            [],
+            True,
+            1,
+            '',
+            '   ',
+        )
+        for invalid in invalid_answers:
+            with self.subTest(invalid=invalid):
+                swift, job, response = self.settle_responses(
+                    [vision_payload()] * 4 + [invalid])
+                self.assertEqual(response['outcome'], 'failed')
+                self.assertEqual(swift.moderation, Moderation.PENDING)
+                self.assertEqual(job.state, SwiftModerationJob.State.QUEUED)
+                self.assertIsNotNone(job.next_attempt_at)
+                self.assertEqual(job.attempts, 1)
+                self.assertNotIn(swift.pk, self.feed_ids())
+                self.assertFalse(SwiftReport.objects.filter(swift=swift).exists())
+
+    def test_valid_unsafe_frame_still_quarantines_beside_an_invalid_answer(self):
+        from moderation.test_cloudflare_ai import vision_payload
+
+        swift, job, response = self.settle_responses(
+            [vision_payload()] * 3
+            + [vision_payload(True, evidence=''), vision_payload(True)])
+        self.assertEqual(response['outcome'], 'quarantined')
+        self.assertEqual(swift.moderation, Moderation.QUARANTINED)
+        self.assertEqual(job.state, SwiftModerationJob.State.DONE)
+        self.assertEqual(job.frames_requested, 5)
+        self.assertEqual(job.frames_classified, 4)
+        self.assertEqual(job.report.reason, SwiftReport.Reason.NUDITY)
+        self.assertNotIn(swift.pk, self.feed_ids())
+
+    def test_one_frame_fetch_failure_does_not_block_four_valid_safe_frames(self):
+        from moderation.test_cloudflare_ai import vision_payload
+
+        swift, job, response = self.settle_responses([vision_payload()] * 4 + [self.FETCH_ERROR])
+        self.assertEqual(response['outcome'], 'approved')
+        self.assertEqual(swift.moderation, Moderation.OK)
+        self.assertEqual(job.state, SwiftModerationJob.State.DONE)
+        self.assertEqual(job.frames_requested, 5)
+        self.assertEqual(job.frames_classified, 4)
+        self.assertIn(swift.pk, self.feed_ids())

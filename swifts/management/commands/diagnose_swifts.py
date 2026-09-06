@@ -33,6 +33,46 @@ INSPECTION_PROMPT = (
     '"visible_violation" (the specific rule, or "none"), and "evidence" '
     '(the visible detail supporting that violation, or "none").'
 )
+INSPECTION_SCHEMA = {
+    'type': 'object',
+    'properties': {
+        'description': {'type': 'string', 'minLength': 1, 'maxLength': 800},
+        'visible_violation': {'type': 'string', 'minLength': 1, 'maxLength': 300},
+        'evidence': {'type': 'string', 'minLength': 1, 'maxLength': 800},
+    },
+    'required': ['description', 'visible_violation', 'evidence'],
+    'additionalProperties': False,
+}
+
+
+def _parse_inspection(response):
+    """Accept only the structured diagnostic answer, never free-form prose."""
+    if isinstance(response, str):
+        try:
+            response = json.loads(response)
+        except ValueError as exc:
+            raise cloudflare_ai.CloudflareError(
+                'Inspection returned invalid JSON; expected description, '
+                'visible_violation and evidence.', retryable=True) from exc
+    if not isinstance(response, dict):
+        raise cloudflare_ai.CloudflareError(
+            'Inspection returned no JSON object.', retryable=True)
+
+    fields = INSPECTION_SCHEMA['properties']
+    if set(response) - set(fields):
+        raise cloudflare_ai.CloudflareError(
+            'Inspection returned unexpected fields; expected only description, '
+            'visible_violation and evidence.', retryable=True)
+    parsed = {}
+    for name, rules in fields.items():
+        value = response.get(name)
+        if (not isinstance(value, str) or not value.strip()
+                or len(value) > rules['maxLength']):
+            raise cloudflare_ai.CloudflareError(
+                f'Inspection returned an invalid {name}; expected a non-empty '
+                f'string of at most {rules["maxLength"]} characters.', retryable=True)
+        parsed[name] = value.strip()
+    return parsed
 
 
 class Command(BaseCommand):
@@ -92,24 +132,37 @@ class Command(BaseCommand):
                 path = output_dir / f'swift-{swift.pk}-frame-{at_ms}ms.jpg'
                 path.write_bytes(frame)
                 self.stdout.write(f'Saved frame: {path}')
+        except (cloudflare_ai.CloudflareError, UnidentifiedImageError, OSError, ValueError) as exc:
+            self.stderr.write(f'Frame inspection failed: {cloudflare_ai.redact(exc)}')
+            return
 
+        # A malformed current verdict is itself useful evidence. Still inspect
+        # these exact bytes independently so the diagnostic can explain it.
+        try:
             verdict = cloudflare_ai.classify_image(frame, at_ms=at_ms)
-            self.stdout.write('Current classifier: ' + json.dumps({
+            self.stdout.write('Current classifier: ' + cloudflare_ai.redact(json.dumps({
+                'description': verdict.description,
                 'unsafe': not verdict.safe,
                 'categories': verdict.categories,
                 'confidence': verdict.confidence,
-            }))
+                'evidence': verdict.evidence,
+            }, ensure_ascii=False), 2400))
+        except (cloudflare_ai.CloudflareError, TypeError, ValueError) as exc:
+            self.stderr.write(f'Current classifier failed: {cloudflare_ai.redact(exc)}')
+
+        try:
             result = cloudflare_ai._run(model, {
                 'image': list(frame),
                 'prompt': INSPECTION_PROMPT,
-                'max_tokens': 384,
+                'response_format': {
+                    'type': 'json_schema',
+                    'json_schema': INSPECTION_SCHEMA,
+                },
+                'max_tokens': 512,
                 'temperature': 0.1,
             })
-            response = result.get('response')
-            if isinstance(response, dict):
-                response = json.dumps(response, ensure_ascii=False)
-            if not isinstance(response, str) or not response.strip():
-                raise cloudflare_ai.CloudflareError('Inspection returned no description.')
-            self.stdout.write('Independent inspection: ' + cloudflare_ai.redact(response, 2400))
-        except (cloudflare_ai.CloudflareError, UnidentifiedImageError, OSError, ValueError) as exc:
-            self.stderr.write(f'Frame inspection failed: {cloudflare_ai.redact(exc)}')
+            response = _parse_inspection(result.get('response'))
+            self.stdout.write('Independent inspection: ' + cloudflare_ai.redact(
+                json.dumps(response, ensure_ascii=False), 2400))
+        except (cloudflare_ai.CloudflareError, TypeError, ValueError) as exc:
+            self.stderr.write(f'Independent inspection failed: {cloudflare_ai.redact(exc)}')

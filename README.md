@@ -138,6 +138,35 @@ hidden. Reporting an approved Swift flags it and withholds it until review.
 Creators can still check their uploads and review status through their own
 detail and collection endpoints.
 
+### Investigating a possible false positive
+
+The vision prompt defines categories against the published Community Guidelines.
+Requests use Cloudflare JSON Mode with a required description, verdict, categories,
+confidence and visible evidence. Missing or contradictory answers block automatic
+approval even when other frames are safe; frame-fetch failures still follow the
+existing coverage rule. The model's strongest objection is
+saved as a bounded **Model claim** in the existing report note, with its frame
+timestamp. A model's confidence is not a calibrated probability of a violation.
+
+After deploying, inspect fresh results without changing saved reviews:
+
+```bash
+python manage.py diagnose_swifts 22 23
+python manage.py diagnose_swifts 22 23 --all-frames --output-dir /tmp/swift-diagnostics
+```
+
+The default checks the middle planned sample only. Each inspected frame uses
+two AI requests: the live classifier and a separate inspection of the same JPEG.
+The optional output directory holds the exact input frames for human review.
+Both answers remain model claims; compare them with the images. The command does
+not publish videos, requeue jobs or replace previous decisions.
+
+Deploy the updated Django backend and, if used, the Go moderation worker together.
+New worker leases carry the JSON schema and response token budget. Older workers
+can return answers without the required evidence; the updated settle endpoint
+will retry those answers instead of approving them. A custom vision model must
+support Cloudflare JSON Mode. No database migration is needed for this change.
+
 ### Cloudflare configuration this needs
 
 1. **Workers AI** — an API token with the Workers AI permission, and the

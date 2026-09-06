@@ -470,6 +470,55 @@ class ModerationQueueTests(AIModerationTestCase):
         self.assertNotIn('classifier', note.lower())
         self.assertNotIn(FAKE_TOKEN, note)
 
+    def test_the_report_records_the_strongest_model_claim_for_staff_only(self):
+        timestamps = policy.sample_timestamps(15_000, policy.frame_count_for(15_000))
+        strongest_at = timestamps[1]
+        claim = 'A visible wound is bleeding.'
+
+        def classify(image_bytes, at_ms=None, prompt=None):
+            if at_ms == strongest_at:
+                return ModerationResult(
+                    safe=False, confidence=0.93, categories=('graphic_violence',),
+                    at_ms=at_ms, evidence=claim)
+            return ModerationResult(
+                safe=False, confidence=0.3, categories=('weapons_threat',),
+                at_ms=at_ms, evidence='A distant person may hold a weapon.')
+
+        with patched_cloudflare(classify=classify):
+            response = self.post_swift()
+        swift = SwiftVideo.objects.get(pk=response.json()['id'])
+        note = SwiftReport.objects.get(swift=swift).note
+        self.assertIn(f'Model claim at {strongest_at}ms: {claim}', note)
+        self.assertNotIn('A distant person', note)
+        self.assertIn('confidence 0.93', note)
+        self.assertIn('8/8 frames at', note)
+        self.assertEqual(swift.moderation, Moderation.QUARANTINED)
+        self.assertNotIn(claim, str(response.data))
+        detail = self.client.get(reverse('swift-detail', args=[swift.pk]))
+        self.assertEqual(detail.status_code, 200)
+        self.assertNotIn(claim, str(detail.data))
+
+    def test_model_claim_in_report_is_redacted_and_bounded(self):
+        def classify(image_bytes, at_ms=None, prompt=None):
+            return ModerationResult(
+                safe=False, confidence=0.92, categories=('sexual_content',),
+                at_ms=at_ms,
+                evidence=(f'Bearer other-secret-token {FAKE_TOKEN}\n'
+                          + 'claimed observation ' * 40))
+
+        with patched_cloudflare(classify=classify):
+            response = self.post_swift()
+        note = SwiftReport.objects.get(swift_id=response.json()['id']).note
+        self.assertIn('Model claim at ', note)
+        self.assertIn('Bearer [redacted] [redacted]', note)
+        self.assertIn('claimed observation', note)
+        self.assertNotIn('other-secret-token', note)
+        self.assertNotIn(FAKE_TOKEN, note)
+        self.assertNotIn('\n', note)
+        self.assertLessEqual(len(note), 500)
+        self.assertIn('sexual_content', note)
+        self.assertIn('8/8 frames at', note)
+
     def test_the_job_row_holds_the_full_evidence(self):
         swift = self.quarantine()
         job = SwiftModerationJob.objects.get(swift=swift)
@@ -598,17 +647,13 @@ class RetryTests(AIModerationTestCase):
         self.assertEqual(ai_moderation.retry_failed([swift.pk]), [])
 
     def test_retry_handles_structured_results_through_the_real_client(self):
-        from moderation.test_cloudflare_ai import ai_ok
+        from moderation.test_cloudflare_ai import ai_ok, vision_payload
 
         for unsafe in (False, True):
             with self.subTest(unsafe=unsafe):
                 swift, job = self.exhausted_job()
                 ai_moderation.retry_failed([swift.pk])
-                response = ai_ok({
-                    'unsafe': unsafe,
-                    'categories': ['nudity'] if unsafe else [],
-                    'confidence': 0.99,
-                })
+                response = ai_ok(vision_payload(unsafe, confidence=0.99))
                 with patch.object(cloudflare_ai, 'fetch_frame', return_value=b'jpeg'), \
                         patch.object(cloudflare_ai.requests, 'post', return_value=response):
                     ai_moderation.run(job.pk)
@@ -624,6 +669,25 @@ class RetryTests(AIModerationTestCase):
                     job.report.state,
                     SwiftReport.State.OPEN if unsafe else SwiftReport.State.REVIEWED,
                 )
+
+    def test_unexplained_or_contradictory_flags_keep_retried_uploads_hidden(self):
+        from moderation.test_cloudflare_ai import ai_ok, vision_payload
+
+        for response in (
+            {'unsafe': True, 'categories': ['other_objectionable'], 'confidence': 0.8},
+            vision_payload(True, categories=['other_objectionable'], evidence='No visible violation'),
+        ):
+            with self.subTest(response=response):
+                swift, job = self.exhausted_job()
+                ai_moderation.retry_failed([swift.pk])
+                with patch.object(cloudflare_ai, 'fetch_frame', return_value=b'jpeg'), \
+                        patch.object(cloudflare_ai.requests, 'post', return_value=ai_ok(response)):
+                    ai_moderation.run(job.pk)
+                swift.refresh_from_db()
+                job.refresh_from_db()
+                self.assertEqual(swift.moderation, Moderation.PENDING)
+                self.assertEqual(job.state, SwiftModerationJob.State.QUEUED)
+                self.assertNotIn(swift.pk, self.feed_ids())
 
     def test_invalid_structured_results_keep_retried_uploads_hidden(self):
         from moderation.test_cloudflare_ai import ai_ok
@@ -953,3 +1017,78 @@ class NoLeakTests(AIModerationTestCase):
             with patched_cloudflare(frame=boom):
                 self.post_swift()
         self.assertNotIn(FAKE_TOKEN, '\n'.join(logs.output))
+
+
+@override_settings(**dict(AI_ON, SWIFT_AI_FRAME_COUNT=5,
+                          SWIFT_AI_AUDIO_MODERATION_ENABLED=False))
+class MixedVisionResponseTests(AIModerationTestCase):
+    """A malformed verdict cannot disappear among otherwise safe samples."""
+
+    def run_responses(self, responses, *, frame_results=None):
+        from moderation.test_cloudflare_ai import ai_ok
+
+        swift = make_swift(
+            self.creator, moderation=Moderation.PENDING,
+            video=fake_video(), duration_ms=8_000)
+        job = SwiftModerationJob.objects.create(swift=swift)
+        with patch.object(cloudflare_ai, 'fetch_frame',
+                          side_effect=frame_results or [b'jpeg'] * 5) as fetch, \
+                patch.object(cloudflare_ai.requests, 'post',
+                             side_effect=[ai_ok(answer) for answer in responses]) as post:
+            ai_moderation.run(job.pk)
+        self.assertEqual(fetch.call_count, 5)
+        self.assertEqual(post.call_count, len(responses))
+        swift.refresh_from_db()
+        job.refresh_from_db()
+        return swift, job
+
+    def test_four_safe_frames_do_not_override_one_invalid_object_answer(self):
+        from moderation.test_cloudflare_ai import vision_payload
+
+        invalid_answers = (
+            vision_payload(True, evidence=''),
+            vision_payload(False, categories=['nudity']),
+            {'unsafe': False, 'categories': [], 'confidence': 0.97},
+            None,
+            [],
+            True,
+            1,
+            '',
+            '   ',
+        )
+        for invalid in invalid_answers:
+            with self.subTest(invalid=invalid):
+                swift, job = self.run_responses([vision_payload()] * 4 + [invalid])
+                self.assertEqual(swift.moderation, Moderation.PENDING)
+                self.assertEqual(job.state, SwiftModerationJob.State.QUEUED)
+                self.assertIsNotNone(job.next_attempt_at)
+                self.assertEqual(job.attempts, 1)
+                self.assertNotIn(swift.pk, self.feed_ids())
+                self.assertFalse(SwiftReport.objects.filter(swift=swift).exists())
+
+    def test_valid_unsafe_frame_still_quarantines_beside_an_invalid_answer(self):
+        from moderation.test_cloudflare_ai import vision_payload
+
+        swift, job = self.run_responses(
+            [vision_payload()] * 3
+            + [vision_payload(True, evidence=''), vision_payload(True)])
+        self.assertEqual(swift.moderation, Moderation.QUARANTINED)
+        self.assertEqual(job.state, SwiftModerationJob.State.DONE)
+        self.assertEqual(job.outcome, policy.QUARANTINED)
+        self.assertEqual(job.frames_requested, 5)
+        self.assertEqual(job.frames_classified, 4)
+        self.assertEqual(job.report.reason, SwiftReport.Reason.NUDITY)
+        self.assertNotIn(swift.pk, self.feed_ids())
+
+    def test_one_frame_fetch_failure_does_not_block_four_valid_safe_frames(self):
+        from moderation.test_cloudflare_ai import vision_payload
+
+        swift, job = self.run_responses(
+            [vision_payload()] * 4,
+            frame_results=[b'jpeg'] * 4
+            + [CloudflareError('Seek time exceeds media duration.', retryable=False)])
+        self.assertEqual(swift.moderation, Moderation.OK)
+        self.assertEqual(job.state, SwiftModerationJob.State.DONE)
+        self.assertEqual(job.frames_requested, 5)
+        self.assertEqual(job.frames_classified, 4)
+        self.assertIn(swift.pk, self.feed_ids())

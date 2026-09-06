@@ -277,6 +277,8 @@ def _classify(swift):
         results,
         requested=len(timestamps),
         threshold=float(_setting('SWIFT_AI_UNSAFE_CONFIDENCE', 0.75)),
+        invalid_responses=sum(
+            isinstance(exc, cloudflare_ai.InvalidVisionResponse) for exc in failures),
     )
 
     audio_checked = False
@@ -492,9 +494,9 @@ def record_ai_report(swift, decision):
         defaults={
             'reason': decision.reason or SwiftReport.Reason.OTHER,
             'source': SwiftReport.Source.AI_VIDEO,
-            # Category names and a rounded confidence — never the prompt, never
-            # the model's prose, never a frame. A note is read in a list view
-            # by a person deciding what to open first.
+            # Bounded audit metadata and the model's claimed visual evidence.
+            # Staff need to distinguish the claim from their own review; no
+            # prompt, credentials or frame bytes belong in this note.
             'note': _report_note(decision)[:500],
         },
     )
@@ -511,7 +513,13 @@ def _report_note(decision):
             f'{decision.frames_classified}/{decision.frames_requested} frames at '
             + ', '.join(f'{ms}ms' for ms in decision.sampled_ms[:8])
         )
-    return '; '.join(parts)
+    if decision.evidence:
+        evidence = cloudflare_ai.redact(
+            ' '.join(str(decision.evidence).split()), limit=320)
+        when = (f' at {decision.evidence_at_ms}ms'
+                if decision.evidence_at_ms is not None else '')
+        parts.append(f'Model claim{when}: {evidence}')
+    return '; '.join(parts)[:500]
 
 
 # ─── Failing ──────────────────────────────────────────────────────────────────

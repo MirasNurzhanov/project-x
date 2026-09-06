@@ -243,7 +243,10 @@ func (w *Worker) classifyOne(ctx context.Context, lease Lease, atMS int) FrameRe
 	if err != nil {
 		return FrameResult{AtMS: atMS, Error: redact(err.Error())}
 	}
-	raw, err := w.cf.ClassifyFrame(ctx, lease.VisionModel, lease.Prompt, image)
+	raw, err := w.cf.ClassifyFrame(ctx, lease.VisionModel, lease.Prompt, image, VisionOptions{
+		ResponseFormat: lease.VisionResponseFormat,
+		MaxTokens:      lease.VisionMaxTokens,
+	})
 	if err != nil {
 		return FrameResult{AtMS: atMS, Error: redact(err.Error())}
 	}

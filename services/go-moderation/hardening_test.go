@@ -95,8 +95,16 @@ func TestTheTokenNeverLeaksOnAnyErrorPath(t *testing.T) {
 			cf := NewCloudflare("acct-id", theToken, srv.URL, timeout, limiter).
 				WithAPIRoot(srv.URL)
 
-			_, err := cf.ClassifyFrame(
+			raw, err := cf.ClassifyFrame(
 				context.Background(), "@cf/test/vision", "prompt", []byte{1, 2, 3})
+			if mode == "empty-response" {
+				// Preserve the invalid answer for Django's validation gate.
+				if err != nil || raw != `""` {
+					t.Fatalf("empty response was not preserved: raw=%q err=%v", raw, err)
+				}
+				assertNoToken(t, raw)
+				return
+			}
 			if err == nil {
 				t.Fatalf("mode %q produced no error; nothing to check", mode)
 			}

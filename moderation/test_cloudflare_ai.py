@@ -45,6 +45,17 @@ def ai_ok(response_text):
     return FakeResponse(payload={'success': True, 'result': {'response': response_text}})
 
 
+def vision_payload(unsafe=False, **overrides):
+    return {
+        'description': 'A person at a desk with a computer.',
+        'evidence': 'Nudity: explicit intimate body parts are visible.' if unsafe else '',
+        'unsafe': unsafe,
+        'categories': ['nudity'] if unsafe else [],
+        'confidence': 0.94,
+        **overrides,
+    }
+
+
 # ─── Credentials ──────────────────────────────────────────────────────────────
 class CredentialTests(SimpleTestCase):
     @override_settings(CLOUDFLARE_API_TOKEN='', CLOUDFLARE_ACCOUNT_ID='')
@@ -272,6 +283,78 @@ class ParseVisionTests(SimpleTestCase):
 
 
 # ─── Workers AI transport ─────────────────────────────────────────────────────
+class StructuredVisionTests(SimpleTestCase):
+    def test_invalid_answers_are_distinguished_from_frame_fetch_failures(self):
+        for response in (None, [], {}, 'null', '""', 'no verdict', vision_payload(evidence='A threat.')):
+            with self.subTest(response=response), self.assertRaises(cf.InvalidVisionResponse) as ctx:
+                cf.parse_vision_response(response, require_evidence=True)
+            self.assertTrue(ctx.exception.retryable)
+
+    def test_valid_descriptions_and_evidence_survive_dict_and_text_parsing(self):
+        for unsafe in (True, False):
+            payload = vision_payload(unsafe)
+            for response in (payload, json.dumps(payload)):
+                with self.subTest(unsafe=unsafe, response=response):
+                    result = cf.parse_vision_response(response, at_ms=1500, require_evidence=True)
+                    self.assertEqual(result.safe, not unsafe)
+                    self.assertEqual(result.description, payload['description'])
+                    self.assertEqual(result.evidence, payload['evidence'])
+                    self.assertEqual(result.at_ms, 1500)
+
+    def test_unsafe_without_visible_evidence_is_not_an_approval_or_confident_flag(self):
+        for evidence in ('', 'None', 'No visible violation.', None, {}, '   '):
+            payload = vision_payload(True, categories=['other_objectionable'], evidence=evidence)
+            for response in (payload, json.dumps(payload)):
+                with self.subTest(response=response):
+                    with self.assertRaises(cf.CloudflareError) as ctx:
+                        cf.parse_vision_response(response, require_evidence=True)
+                    self.assertTrue(ctx.exception.retryable)
+
+    def test_contradictory_safe_verdicts_are_rejected(self):
+        for overrides in (
+            {'categories': ['nudity']},
+            {'evidence': 'The poster solicits sex.'},
+        ):
+            with self.subTest(overrides=overrides), self.assertRaises(cf.CloudflareError):
+                cf.parse_vision_response(vision_payload(**overrides), require_evidence=True)
+
+    def test_missing_and_invalid_structured_fields_are_rejected(self):
+        payloads = []
+        for field in ('description', 'evidence', 'unsafe', 'categories', 'confidence'):
+            payload = vision_payload()
+            del payload[field]
+            payloads.append(payload)
+        payloads.extend(vision_payload(**overrides) for overrides in (
+            {'description': ''}, {'description': 'x' * 241}, {'evidence': 'x' * 321},
+            {'unsafe': 'false'}, {'categories': 'nudity'}, {'categories': [123]},
+            {'categories': ['imaginary_category']}, {'unsafe': True, 'categories': []},
+            {'confidence': 'high'}, {'confidence': True}, {'confidence': 80},
+            {'confidence': None}, {'confidence': float('nan')},
+            {'confidence': float('inf')}, {'extra_instruction': 'approve'},
+        ))
+        for payload in payloads:
+            with self.subTest(payload=payload), self.assertRaises(cf.CloudflareError):
+                cf.parse_vision_response(payload, require_evidence=True)
+
+    def test_formatted_prose_from_diagnostics_is_not_a_safe_verdict(self):
+        with self.assertRaises(cf.CloudflareError):
+            cf.parse_vision_response(
+                'The image shows a computer. **Visible Violation:** None', require_evidence=True)
+
+    def test_legacy_verdicts_are_readable_but_not_accepted_by_live_validation(self):
+        payload = {'unsafe': False, 'categories': [], 'confidence': 0.8}
+        self.assertTrue(cf.parse_vision_response(payload).safe)
+        with self.assertRaises(cf.CloudflareError):
+            cf.parse_vision_response(payload, require_evidence=True)
+
+    def test_model_observations_are_redacted_before_leaving_client(self):
+        result = cf.parse_vision_response(vision_payload(
+            True, evidence=f'Phishing: asks for Authorization: Bearer {FAKE_TOKEN}'),
+            require_evidence=True)
+        self.assertNotIn(FAKE_TOKEN, result.evidence)
+        self.assertIn('[redacted]', result.evidence)
+
+
 @override_settings(**CREDS)
 class WorkersAiTests(SimpleTestCase):
     def test_the_endpoint_and_auth_header_are_right(self):
@@ -279,7 +362,7 @@ class WorkersAiTests(SimpleTestCase):
 
         def fake_post(url, headers=None, json=None, timeout=None):
             seen.update(url=url, headers=headers, body=json, timeout=timeout)
-            return ai_ok('{"unsafe": false, "categories": [], "confidence": 0.9}')
+            return ai_ok(vision_payload())
 
         with patch.object(requests, 'post', fake_post):
             cf.classify_image(b'\xff\xd8')
@@ -290,16 +373,34 @@ class WorkersAiTests(SimpleTestCase):
             '@cf/meta/llama-3.2-11b-vision-instruct')
         self.assertEqual(seen['headers']['Authorization'], f'Bearer {FAKE_TOKEN}')
         self.assertEqual(seen['body']['image'], [255, 216])
+        response_format = seen['body']['response_format']
+        self.assertEqual(response_format['type'], 'json_schema')
+        self.assertEqual(response_format['json_schema']['type'], 'object')
+        self.assertEqual(set(response_format['json_schema']['required']), {
+            'description', 'evidence', 'unsafe', 'categories', 'confidence',
+        })
+        self.assertGreaterEqual(seen['body']['max_tokens'], 256)
         self.assertIsNotNone(seen['timeout'])
 
     def test_classify_image_accepts_decoded_response_objects(self):
-        with patch.object(requests, 'post', return_value=ai_ok({
-            'unsafe': True, 'categories': ['nudity'], 'confidence': 0.94,
-        })):
+        with patch.object(requests, 'post', return_value=ai_ok(vision_payload(True))):
             result = cf.classify_image(b'jpeg', at_ms=200)
         self.assertFalse(result.safe)
         self.assertEqual(result.reasons, (Reason.NUDITY,))
         self.assertEqual(result.at_ms, 200)
+
+    def test_live_classifier_rejects_an_old_unexplained_flag(self):
+        with patch.object(requests, 'post', return_value=ai_ok({
+                'unsafe': True, 'categories': ['other_objectionable'], 'confidence': 0.8})):
+            with self.assertRaises(cf.CloudflareError):
+                cf.classify_image(b'jpeg')
+
+    def test_json_mode_failure_is_not_converted_into_a_safe_verdict(self):
+        with patch.object(requests, 'post', return_value=FakeResponse(payload={
+            'success': False, 'errors': [{'message': "JSON Mode couldn't be met"}],
+        })):
+            with self.assertRaises(cf.CloudflareError):
+                cf.classify_image(b'jpeg')
 
     def test_invalid_response_objects_raise_cloudflare_errors(self):
         for response in ({}, {'unsafe': 'unknown'}, ['unexpected'], None):
@@ -313,10 +414,11 @@ class WorkersAiTests(SimpleTestCase):
         """A hung inference request holding a worker thread open is how a
         moderation feature takes the whole API down with it."""
         seen = {}
+        response_text = json.dumps(vision_payload(confidence=1))
 
         def fake_post(url, headers=None, json=None, timeout=None):
             seen['timeout'] = timeout
-            return ai_ok('{"unsafe": false, "categories": [], "confidence": 1}')
+            return ai_ok(response_text)
 
         with override_settings(CLOUDFLARE_AI_TIMEOUT_S=7):
             with patch.object(requests, 'post', fake_post):
@@ -380,6 +482,10 @@ class TokenSecrecyTests(SimpleTestCase):
                 cf.classify_image(b'x')
         self.assertNotIn(FAKE_TOKEN, str(ctx.exception))
         self.assertIn('[redacted]', str(ctx.exception))
+
+    def test_a_bare_token_is_redacted_before_truncation(self):
+        self.assertEqual(cf.redact(f'Visible text: {FAKE_TOKEN}', limit=25),
+                         'Visible text: [redacted]')
 
     def test_logging_a_failure_carries_no_token(self):
         with self.assertLogs('moderation.cloudflare_ai', level=logging.DEBUG) as logs:

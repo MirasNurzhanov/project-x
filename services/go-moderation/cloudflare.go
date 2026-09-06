@@ -184,7 +184,7 @@ func (c *Cloudflare) getBytes(ctx context.Context, u, what string) ([]byte, erro
 
 // ClassifyFrame sends one frame to a vision model and returns its answer
 // verbatim. Parsing is Django's job.
-func (c *Cloudflare) ClassifyFrame(ctx context.Context, model, prompt string, image []byte) (string, error) {
+func (c *Cloudflare) ClassifyFrame(ctx context.Context, model, prompt string, image []byte, options ...VisionOptions) (string, error) {
 	// Workers AI's image-to-text schema takes the image as an array of byte
 	// values. `[]byte` would marshal to base64 under encoding/json's default
 	// rules, which is not what the API expects — so the bytes are widened to
@@ -194,17 +194,25 @@ func (c *Cloudflare) ClassifyFrame(ctx context.Context, model, prompt string, im
 		pixels[i] = int(b)
 	}
 
-	body, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"image":  pixels,
 		"prompt": prompt,
-		// Enough for the one line of JSON the prompt asks for, and no more. A
-		// token cap is also a cost cap: an unbounded reply to a model that
-		// decided to answer in prose is billed by the token.
+		// Legacy leases omit the budget. Current leases override this with
+		// room for the scene description and evidence required by Django.
 		"max_tokens": 128,
 		// Classification, not creative writing — the lowest useful setting, so
 		// the same frame does not get two verdicts on two runs.
 		"temperature": 0.1,
-	})
+	}
+	if len(options) > 0 {
+		if options[0].MaxTokens > 0 {
+			payload["max_tokens"] = options[0].MaxTokens
+		}
+		if len(options[0].ResponseFormat) > 0 && string(options[0].ResponseFormat) != "null" {
+			payload["response_format"] = options[0].ResponseFormat
+		}
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("encoding vision request: %w", err)
 	}
@@ -213,10 +221,24 @@ func (c *Cloudflare) ClassifyFrame(ctx context.Context, model, prompt string, im
 	if err != nil {
 		return "", err
 	}
-	if result.Result.Response == "" {
-		return "", fmt.Errorf("%w: vision model returned no text", errRetryable)
+	raw := bytes.TrimSpace(result.Result.Response)
+	if len(raw) == 0 {
+		// Missing answers must reach Django as invalid verdicts, not fetch
+		// failures which may be tolerated by the frame coverage rule.
+		return "null", nil
 	}
-	return result.Result.Response, nil
+	if raw[0] == '"' {
+		var answer string
+		if err := json.Unmarshal(raw, &answer); err != nil {
+			return "", fmt.Errorf("%w: invalid vision response encoding", errRetryable)
+		}
+		if strings.TrimSpace(answer) != "" {
+			return answer, nil
+		}
+	}
+	// JSON Mode may return an object. Preserve other types and empty strings
+	// too: Django must reject them without approving from the remaining frames.
+	return string(raw), nil
 }
 
 // Transcribe sends the audio track to a speech-to-text model.
