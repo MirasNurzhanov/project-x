@@ -103,12 +103,9 @@ def _base(viewer, base=None):
     should ever propose them: a feed that recommends you your own video is
     broken in a way no downstream stage should have to correct for.
 
-    `base` lets the caller build this **once** and hand the same queryset to
-    every source. That matters more than it looks: `watchable()` calls
-    `blocked_ids_for`, which is a query, so seven sources each calling this
-    independently cost seven identical block lookups per feed request. The
-    queryset is lazy and every source only ever `.filter()`s a clone of it, so
-    sharing costs nothing and saves six round trips.
+    `base` lets the caller build the common filters once and hand the same
+    queryset to every source. Each source filters a lazy clone; relationship
+    checks remain SQL predicates evaluated when that clone fetches its rows.
     """
     if base is not None:
         return base

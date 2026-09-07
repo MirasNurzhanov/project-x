@@ -27,7 +27,7 @@ cannot see is indistinguishable from a Swift that does not exist. Same 404,
 same body, no exceptions — including for the reveal endpoint, where a 403 would
 confirm that a Swift exists and has a location worth hiding.
 """
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 
 from users import visibility
 
@@ -60,6 +60,15 @@ def live_q():
     )
 
 
+def _blocked_author_q(viewer):
+    from friends.models import BlockedUser
+
+    return Q(Exists(BlockedUser.objects.filter(
+        Q(blocker_id=viewer.pk, blocked_id=OuterRef('author_id'))
+        | Q(blocked_id=viewer.pk, blocker_id=OuterRef('author_id'))
+    )))
+
+
 def audience_q(viewer):
     """Q selecting rows whose creator meant them for `viewer`.
 
@@ -76,18 +85,32 @@ def audience_q(viewer):
     The author's own rows always pass. Their own Swift on their own profile is
     not a publication to anybody.
     """
+    from friends.models import FriendRequest, HiRequest
     from .models import SwiftVideo
 
-    friend_ids, approved_ids = visibility.approved_ids_for(viewer)
+    # Keep the relationship checks in the Swift query. Building Python ID sets
+    # first costs four extra round trips each time a feed reapplies this gate,
+    # and that materialized graph can go stale before the rows are fetched.
+    pair = (
+        Q(sender_id=viewer.pk, receiver_id=OuterRef('author_id'))
+        | Q(receiver_id=viewer.pk, sender_id=OuterRef('author_id'))
+    )
+    friend = Q(Exists(FriendRequest.objects.filter(
+        pair, status=FriendRequest.Status.ACCEPTED,
+    )))
+    connected = Q(Exists(HiRequest.objects.filter(
+        pair, status=HiRequest.Status.ACCEPTED,
+    )))
+    unblocked = ~_blocked_author_q(viewer)
 
     own = Q(author_id=viewer.pk)
 
     public = Q(visibility=SwiftVideo.Visibility.PUBLIC) & (
-        Q(author__is_private=False) | Q(author_id__in=approved_ids)
+        Q(author__is_private=False) | ((friend | connected) & unblocked)
     )
     # Friends are always approved viewers, so the private-account gate is
     # already satisfied and needs no clause of its own here.
-    friends = Q(visibility=SwiftVideo.Visibility.FRIENDS, author_id__in=friend_ids)
+    friends = Q(visibility=SwiftVideo.Visibility.FRIENDS) & friend & unblocked
 
     return own | public | friends
 
@@ -101,11 +124,7 @@ def watchable_q(viewer):
     endpoint to use it inherits a leak. Same argument, and same placement, as
     `users.visibility.visible_field_q`.
     """
-    q = live_q() & audience_q(viewer)
-    blocked = visibility.blocked_ids_for(viewer)
-    if blocked:
-        q &= ~Q(author_id__in=blocked)
-    return q
+    return live_q() & audience_q(viewer) & ~_blocked_author_q(viewer)
 
 
 def watchable(viewer, queryset=None):
@@ -119,9 +138,8 @@ def watchable(viewer, queryset=None):
 def can_watch(viewer, swift):
     """Python counterpart of `watchable_q`, for a row already in hand.
 
-    Costs one relationship lookup rather than the two set-builds
-    `approved_ids_for` does, which matters for the single-object endpoints that
-    call this after fetching one row.
+    Resolves this author only, rather than fetching a viewer's whole graph.
+    Used by single-object endpoints that already have the Swift in hand.
     """
     from .models import SwiftVideo
 

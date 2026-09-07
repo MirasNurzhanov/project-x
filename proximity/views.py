@@ -1,11 +1,9 @@
 import math
-from concurrent.futures import ThreadPoolExecutor
 
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.db import close_old_connections
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 from regions import places
 from users import visibility, zones
@@ -227,8 +225,10 @@ def _trigger_nearby_notifications(user):
     if user_interest_ids:
         # Interest matching only reaches people who are findable that way.
         candidates = candidates.filter(
-            interests__in=user_interest_ids, discoverable_by_interest=True,
-        ).distinct()
+            Exists(User.interests.through.objects.filter(
+                user_id=OuterRef('pk'), interest_id__in=user_interest_ids,
+            )), discoverable_by_interest=True,
+        )
 
     # Collected first, then written once. The per-candidate version issued about
     # ten queries each on the endpoint every phone reports to every thirty
@@ -501,8 +501,10 @@ def nearby_users(user, lat, lon, request):
         # Strangers are surfaced through shared interests, so opting out of
         # interest discovery keeps you off strangers' maps.
         stranger_candidates = stranger_candidates.filter(
-            interests__in=user_interest_ids, discoverable_by_interest=True,
-        ).distinct()
+            Exists(User.interests.through.objects.filter(
+                user_id=OuterRef('pk'), interest_id__in=user_interest_ids,
+            )), discoverable_by_interest=True,
+        )
 
     distances = {}
     nearby = []
@@ -668,48 +670,21 @@ class NearbyQueryView(APIView):
         ))
 
 
-# Shared across requests on purpose: eight threads is the ceiling on how much
-# of the map fan-out can be in flight at once, so the endpoint cannot open
-# work faster than the database can absorb it.
-#
-# It used to also be the thing keeping connections alive between polls, via
-# CONN_MAX_AGE on the reused threads. That job now belongs to the psycopg pool
-# in core.settings, which holds connections against the *process* rather than
-# against whichever thread happened to survive — and DB_POOL_MAX_SIZE, not this
-# number, is what bounds connections to the server.
-_MAP_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix='map-nearby')
-
-
-def _run(fn, *args):
-    # These threads never see Django's request_started/finished signals, so
-    # stale-connection cleanup has to happen by hand on both sides of the call.
-    close_old_connections()
-    try:
-        return fn(*args)
-    finally:
-        close_old_connections()
-
-
 def _map_payload(user, lat, lon, request):
-    """The whole map from one anchor: people, stories, and club meetups.
+    """Read each map section using the request's database connection.
 
-    No shared transaction (ATOMIC_REQUESTS is off), so the three reads are
-    independent and overlap instead of paying their latencies back to back.
-
-    Meetups take no anchor at all — they are scoped by club membership, not by
-    distance — so the coordinate never reaches that query.
+    Parallel child threads used three extra connections while authentication
+    retained the parent's connection. Under bursts this starved the pool and
+    queued more work. Sequential reads keep request-level concurrency bounded
+    by the normal server and database limits, with unchanged visibility rules.
     """
     from clubs.views import ClubEventNearbyView
     from stories.views import nearby_stories
 
-    users_f = _MAP_POOL.submit(_run, nearby_users, user, lat, lon, request)
-    stories_f = _MAP_POOL.submit(_run, nearby_stories, user, lat, lon, request)
-    meetups_f = _MAP_POOL.submit(_run, _meetups, ClubEventNearbyView(), request)
-
     return {
-        'users': users_f.result(),
-        'stories': stories_f.result(),
-        'meetups': meetups_f.result(),
+        'users': nearby_users(user, lat, lon, request),
+        'stories': nearby_stories(user, lat, lon, request),
+        'meetups': _meetups(ClubEventNearbyView(), request),
     }
 
 

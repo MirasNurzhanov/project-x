@@ -6,6 +6,15 @@ from django.shortcuts import get_object_or_404
 from users.visibility import blocked_ids_for, proximity_visible_ids
 from .models import Notification
 from .serializers import NotificationSerializer
+from .badges import navigation_badges
+
+
+class NavigationBadgesView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        # Never let a shared intermediary cache an account's unread counts.
+        return Response(navigation_badges(request.user), headers={'Cache-Control': 'no-store'})
 
 
 class NotificationListView(generics.ListAPIView):

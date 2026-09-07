@@ -56,32 +56,6 @@ def befriend(a, b):
     )
 
 
-class _InlineFuture:
-    def __init__(self, value):
-        self._value = value
-
-    def result(self):
-        return self._value
-
-
-class _InlinePool:
-    def submit(self, fn, *args):
-        return _InlineFuture(fn(*args))
-
-
-def inline_map_pool():
-    """Run the composite map endpoint's fan-out on the calling thread.
-
-    In tests the database is one in-memory SQLite connection and a TestCase
-    holds an open transaction for the whole method, so the eight-thread fan-out
-    in proximity.views reads rows the test itself has just written and gets
-    "database table is locked". Production runs Postgres with a connection per
-    thread and does not. What is under test here is the payload, not the
-    executor that assembles it.
-    """
-    return mock.patch('proximity.views._MAP_POOL', _InlinePool())
-
-
 class ApiStateMatrixTests(TestCase):
     """One test per row of the table above, plus the codes they carry."""
 
@@ -698,8 +672,7 @@ class StoryLocationTests(TestCase):
         story_id = self.post_story().json()['id']
 
         self.assertNotIn(story_id, self.map_story_ids())
-        with inline_map_pool():
-            composite = self.viewer_client.get('/api/map/nearby/')
+        composite = self.viewer_client.get('/api/map/nearby/')
         self.assertEqual(composite.status_code, 200)
         drawn = {s['id'] for s in composite.json()['stories']}
         self.assertIn(control_id, drawn)

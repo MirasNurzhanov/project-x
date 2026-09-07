@@ -94,6 +94,11 @@ class Notification(models.Model):
     class Meta:
         ordering = ['-created_at']
         indexes = [
+            # Badge polls need unread rows only, regardless of read history.
+            models.Index(
+                fields=['recipient'], condition=models.Q(is_read=False),
+                name='notification_unread_idx',
+            ),
             # The alerts list: this user's notifications, newest first. The FK
             # index alone finds the rows but leaves the sort to be done in
             # memory, which is the expensive half for a busy account.

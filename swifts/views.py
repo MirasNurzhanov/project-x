@@ -273,9 +273,9 @@ class SwiftFeedView(APIView):
             # to private, taken down by moderation, or its author can block
             # this viewer — and a bare `filter(id__in=...)` would serve it
             # anyway, for half an hour, off a permission decision made before
-            # any of that happened. Re-applying `watchable` costs one query for
-            # the block set and keeps the session a hint about *order* rather
-            # than a standing grant.
+            # any of that happened. Re-applying `watchable` checks current
+            # relationships in the row query and keeps the session a hint
+            # about *order* rather than a standing grant.
             for row in swift_visibility.watchable(request.user)
             .filter(id__in=page_result.swift_ids)
             .select_related('author')

@@ -1,148 +1,169 @@
-"""Load profile for Approx's API, shaped like the app actually behaves.
+"""Bounded foreground polling scenario; see docs/scaling-railway.md before use.
 
-Not a synthetic hammer on one URL. The weights below come from the client's own
-polling: the map ticks every 10s, the chat tab every 15s (and fetches *two* club
-lists per tick), the alert badge every 10s, and background location reports
-every 30s whether the app is open or not. Getting those ratios right is the
-difference between a load test and a number.
-
-    pip install locust
-    locust -f loadtest/locustfile.py --host https://your-api.example.com
-
-Headless, for a repeatable run in CI or before a deploy:
-
-    locust -f loadtest/locustfile.py --host https://your-api.example.com \
-           --headless --users 200 --spawn-rate 20 --run-time 5m \
-           --csv=loadtest/results/baseline
-
-Credentials come from the environment so no password is ever written down here:
-
-    APPROX_LOAD_EMAIL=you@example.com APPROX_LOAD_PASSWORD=... locust -f ...
-
-Point this at a staging database. It writes: locations move, encounters and
-nearby alerts get logged, and clubs get joined.
+Run from project-x with ``python -m locust -f loadtest/locustfile.py``.
+Every concurrent user leases a different synthetic staging account.
 """
+import logging
 import os
 import random
+import time
+from collections import Counter
 
-from locust import HttpUser, between, task
+import gevent
+from locust import HttpUser, events, task
+from locust.exception import StopUser
+from locust.runners import MasterRunner, WorkerRunner
 
-#: Dubai, near the centre — the region this backend is being tuned for.
-BASE_LAT, BASE_LON = 25.2048, 55.2708
-#: About 1.5km of jitter, so users land in and out of each other's 500m radius
-#: instead of all sitting on one point (which would make every proximity query
-#: trivially empty or trivially full).
-JITTER = 0.015
+from loadtest.scenario import AccountPool, PollClock, load_accounts, refresh_delay, validate_target
+
+
+LOG = logging.getLogger(__name__)
+_accounts = None
+_skipped_polls = Counter()
+
+
+def _check_target(host):
+    validate_target(host, os.environ.get('APPROX_LOAD_STAGING_ORIGIN', ''),
+                    os.environ.get('APPROX_LOAD_ALLOW_WRITES', ''))
+
+
+@events.init.add_listener
+def configure_scenario(environment, **kwargs):
+    """Fail before spawning users, including with the Locust web UI."""
+    global _accounts
+    try:
+        _check_target(environment.host)
+        if getattr(environment.parsed_options, 'processes', None):
+            raise ValueError('Automatic --processes is unsupported: use explicit worker shards.')
+        if isinstance(environment.runner, MasterRunner):
+            return
+        is_worker = isinstance(environment.runner, WorkerRunner)
+        if is_worker and not all(key in os.environ for key in (
+            'APPROX_LOAD_SHARD_INDEX', 'APPROX_LOAD_SHARD_COUNT',
+        )):
+            raise ValueError('Every distributed worker needs an explicit account shard.')
+        accounts = load_accounts(
+            os.environ.get('APPROX_LOAD_ACCOUNTS', ''),
+            shard_index=int(os.environ.get('APPROX_LOAD_SHARD_INDEX', '0')),
+            shard_count=int(os.environ.get('APPROX_LOAD_SHARD_COUNT', '1')),
+        )
+        requested = getattr(environment.parsed_options, 'num_users', None)
+        if not is_worker and requested and requested > len(accounts):
+            raise ValueError('Requested user count exceeds the available account shard.')
+        _accounts = AccountPool(accounts)
+    except (OSError, ValueError) as exc:
+        LOG.error('Load scenario configuration rejected: %s', exc)
+        raise SystemExit(2) from exc
+
+
+@events.test_stop.add_listener
+def report_skipped_polls(environment, **kwargs):
+    LOG.info('Skipped polling slots on this generator: %s', dict(_skipped_polls))
+    _skipped_polls.clear()
 
 
 class ApproxUser(HttpUser):
-    # The app is a poller, not a thinker. Short waits, because the intervals in
-    # the tasks below are what actually shape the load.
-    wait_time = between(1, 3)
+    # The task sleeps until a clock is due; random weights do not set RPS.
+    wait_time = lambda self: 0
 
     def on_start(self):
-        email = os.environ.get('APPROX_LOAD_EMAIL')
-        password = os.environ.get('APPROX_LOAD_PASSWORD')
-        if not email or not password:
-            raise RuntimeError(
-                'Set APPROX_LOAD_EMAIL and APPROX_LOAD_PASSWORD before running.'
-            )
-        response = self.client.post(
-            '/api/users/login/',
-            json={'email': email, 'password': password},
-            name='POST /api/users/login/',
-        )
-        response.raise_for_status()
-        self.client.headers.update({
-            'Authorization': f"Bearer {response.json()['access']}",
-            # Marks the traffic as foregrounded, which is what the presence
-            # middleware keys on — without it this load test would not exercise
-            # the `last_seen` write path at all.
-            'X-Approx-Presence': 'foreground',
-            'Accept-Encoding': 'gzip',
-        })
-        self.club_ids = []
+        self.account = None
+        try:
+            # The web UI can change the host after the init event.
+            _check_target(self.host)
+            if _accounts is None:
+                raise ValueError('Account pool was not configured.')
+            self.account = _accounts.acquire()
+            self.client.headers.update({
+                'X-Approx-Presence': 'foreground', 'Accept-Encoding': 'gzip',
+            })
+            if not self._authenticate('/api/users/login/', {
+                'email': self.account.email, 'password': self.account.password,
+            }):
+                raise StopUser()
+            now = time.monotonic()
+            # useMapData reports location on each 10s foreground map tick.
+            # The separate background location task's 30s cadence is not this cohort.
+            periods = {'map': 10, 'badges': 30, 'location': 10}
+            if os.environ.get('APPROX_LOAD_CHAT', '0') == '1':
+                periods['chat'] = 15
+            self.clocks = {name: PollClock(period, now + random.uniform(0, period))
+                           for name, period in periods.items()}
+        except ValueError as exc:
+            self.environment.process_exit_code = 2
+            LOG.error('Stopping load run: %s', exc)
+            gevent.spawn(self.environment.runner.quit)
+            raise StopUser() from exc
+
+    def on_stop(self):
+        if self.account is not None:
+            _accounts.release(self.account)
+            self.account = None
+
+    def _authenticate(self, path, payload):
+        with self.client.post(path, json=payload, name=f'POST {path}',
+                              catch_response=True, allow_redirects=False, timeout=15) as response:
+            if response.status_code != 200:
+                response.failure(f'Expected authentication HTTP 200; got {response.status_code}')
+                return False
+            try:
+                data = response.json()
+                access = data['access']
+                delay = refresh_delay(access, time.time())
+                self.refresh_token = data.get('refresh', getattr(self, 'refresh_token', None))
+                if not isinstance(self.refresh_token, str) or not self.refresh_token:
+                    raise ValueError('No refresh token')
+            except (KeyError, TypeError, ValueError):
+                response.failure('Invalid authentication token response')
+                return False
+            self.client.headers['Authorization'] = f'Bearer {access}'
+            self.refresh_at = time.monotonic() + delay
+            return True
+
+    def _poll(self, method, path, **kwargs):
+        with self.client.request(method, path, name=f'{method} {path}',
+                                 catch_response=True, allow_redirects=False,
+                                 timeout=15, **kwargs) as response:
+            if response.status_code != 200:
+                response.failure(f'Expected HTTP 200; got {response.status_code}')
+                if response.status_code == 401:
+                    raise StopUser()  # A revoked session is not a hidden login loop.
+                return
+            try:
+                data = response.json()
+                if path == '/api/notifications/badges/':
+                    if not isinstance(data, dict) or not all(
+                        type(data.get(key)) is int and data[key] >= 0 for key in ('chat', 'alerts')
+                    ):
+                        raise ValueError('Invalid badge response')
+            except ValueError:
+                response.failure('Expected valid API JSON response')
 
     def _position(self):
+        # Small movement around each fixture position, not one global hot point.
         return {
-            'latitude': f'{BASE_LAT + random.uniform(-JITTER, JITTER):.8f}',
-            'longitude': f'{BASE_LON + random.uniform(-JITTER, JITTER):.8f}',
-            'accuracy': random.uniform(5, 40),
-            'speed': random.choice([-1, 0.5, 1.4, 3.0, 9.0]),
+            'latitude': f'{self.account.latitude + random.uniform(-0.0001, 0.0001):.8f}',
+            'longitude': f'{self.account.longitude + random.uniform(-0.0001, 0.0001):.8f}',
+            'accuracy': 10, 'speed': 0.5,
         }
 
-    # ── The map, every 10s per client ─────────────────────────────────────────
-    @task(30)
-    def map_nearby(self):
-        self.client.get('/api/map/nearby/', name='GET /api/map/nearby/')
-
-    # ── Location reports, every 30s per client, app open or not ───────────────
-    @task(20)
-    def report_location(self):
-        self.client.patch(
-            '/api/proximity/location/', json=self._position(),
-            name='PATCH /api/proximity/location/',
-        )
-
-    # ── The chat tab: two club lists plus the place, every 15s ────────────────
-    @task(12)
-    def club_lists(self):
-        response = self.client.get('/api/clubs/', name='GET /api/clubs/ (discover)')
-        if response.ok:
-            self.club_ids = [club['id'] for club in response.json()][:20]
-        self.client.get('/api/clubs/?joined=true', name='GET /api/clubs/ (joined)')
-        self.client.get('/api/clubs/my-location/', name='GET /api/clubs/my-location/')
-
-    # ── The badge polls that run on every authenticated screen ────────────────
-    @task(12)
-    def badges(self):
-        self.client.get(
-            '/api/friends/messages/unread/', name='GET /api/friends/messages/unread/',
-        )
-        self.client.get('/api/notifications/', name='GET /api/notifications/')
-
-    @task(8)
-    def friends_list(self):
-        self.client.get('/api/friends/list/', name='GET /api/friends/list/')
-
-    # ── Opening things ────────────────────────────────────────────────────────
-    @task(5)
-    def club_detail(self):
-        if not self.club_ids:
+    @task
+    def next_poll(self):
+        name, clock = min(self.clocks.items(), key=lambda item: item[1].next_due)
+        gevent.sleep(max(0, min(clock.next_due, self.refresh_at) - time.monotonic()))
+        if time.monotonic() >= self.refresh_at:
+            if not self._authenticate('/api/users/token/refresh/', {'refresh': self.refresh_token}):
+                raise StopUser()
             return
-        club_id = random.choice(self.club_ids)
-        self.client.get(f'/api/clubs/{club_id}/', name='GET /api/clubs/[id]/')
-        self.client.get(
-            f'/api/clubs/{club_id}/members/', name='GET /api/clubs/[id]/members/',
-        )
-
-    @task(3)
-    def stories(self):
-        self.client.get('/api/stories/nearby/', name='GET /api/stories/nearby/')
-
-    # ── Writes, rare by comparison ────────────────────────────────────────────
-    @task(1)
-    def join_a_club(self):
-        if not self.club_ids:
-            return
-        club_id = random.choice(self.club_ids)
-        # 400 "already a member" is an expected outcome here, not a failure.
-        with self.client.post(
-            f'/api/clubs/{club_id}/join/', name='POST /api/clubs/[id]/join/',
-            catch_response=True,
-        ) as response:
-            if response.status_code in (201, 400, 404):
-                response.success()
-
-    @task(1)
-    def create_a_story(self):
-        position = self._position()
-        self.client.post(
-            '/api/stories/',
-            json={
-                'content': 'load test story',
-                'latitude': position['latitude'],
-                'longitude': position['longitude'],
-            },
-            name='POST /api/stories/',
-        )
+        if name == 'map':
+            self._poll('GET', '/api/map/nearby/')
+        elif name == 'badges':
+            self._poll('GET', '/api/notifications/badges/')
+        elif name == 'location':
+            self._poll('PATCH', '/api/proximity/location/', json=self._position())
+        elif name == 'chat':
+            # Intentional stress profile: map polling also stays active.
+            self._poll('GET', '/api/clubs/')
+            self._poll('GET', '/api/clubs/?joined=true')
+            self._poll('GET', '/api/clubs/my-location/')
+        _skipped_polls[name] += clock.complete(time.monotonic())
