@@ -72,7 +72,8 @@ def _blocked_author_q(viewer):
 def audience_q(viewer):
     """Q selecting rows whose creator meant them for `viewer`.
 
-    Three audiences and an account-level cap over the top of them:
+    Three audiences and account-level caps over the top of them. Ghost Mode
+    hides every audience from other people, including approved friends:
 
       PRIVATE   the author, and nobody else. Not friends, not connections.
       FRIENDS   accepted friendships only. A Hi is a hello, not an audience —
@@ -112,7 +113,9 @@ def audience_q(viewer):
     # already satisfied and needs no clause of its own here.
     friends = Q(visibility=SwiftVideo.Visibility.FRIENDS) & friend & unblocked
 
-    return own | public | friends
+    # Anonymous creators retract all their Swifts from other people,
+    # including existing friends. Their own collection remains available.
+    return own | (Q(author__ghost_mode=False) & (public | friends))
 
 
 def watchable_q(viewer):
@@ -147,6 +150,8 @@ def can_watch(viewer, swift):
         return False
     if swift.author_id == viewer.pk:
         return True
+    if swift.author.ghost_mode:
+        return False
 
     rel = visibility.relationship(viewer, swift.author_id)
     if rel == visibility.BLOCKED:
@@ -199,6 +204,9 @@ def reveal_denial(viewer, swift):
     if swift.author_id == viewer.pk:
         return ALLOW
 
+    if viewer.ghost_mode:
+        return DENY_NOT_SHARED
+
     if not swift.location_shared:
         return DENY_NOT_SHARED
 
@@ -232,4 +240,6 @@ def location_available_for(viewer, swift):
         return False
     if swift.author_id == viewer.pk:
         return True
+    if viewer.ghost_mode:
+        return False
     return can_watch(viewer, swift)

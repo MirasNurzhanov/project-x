@@ -176,6 +176,7 @@ class PublicProfileSerializer(serializers.Serializer):
             'profile_picture': obj.profile_picture.url if obj.profile_picture else None,
             'is_private': obj.is_private,
             'relationship': _pending_relationship(me, obj) or rel,
+            'can_view_swifts': visibility.can_view_profile_details(me, obj, rel),
         }
 
         presence = visibility.presence_for(me, obj, rel)
@@ -269,15 +270,18 @@ def _live_story_summaries(obj, viewer=None):
     Nor is the place name, once its author is off the map: "Blue Bottle, 8th
     Ave" says where somebody is as plainly as a pair of decimals does, and this
     is the third surface it could have escaped through after the map feed and
-    the saved list. The stories themselves stay - pausing takes you off the
-    map, it does not withdraw you from your friends.
+    the saved list. Anonymous authors' stories are withheld by the profile
+    gate. A ghosted viewer may read a visible friend's story without receiving
+    its location label.
     """
     from django.utils import timezone
     from stories.models import Story
 
     # `is_sharing`, matching stories.visibility.is_placed_for — a place name on
     # a story says where that story was posted, not where its author is now.
-    placed = obj.pk == getattr(viewer, 'pk', None) or obj.is_sharing()
+    placed = obj.pk == getattr(viewer, 'pk', None) or (
+        obj.is_sharing() and not getattr(viewer, 'ghost_mode', False)
+    )
     return [
         {
             'id': s.id,

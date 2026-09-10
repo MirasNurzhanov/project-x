@@ -116,7 +116,7 @@ class NearbyUserSerializer(serializers.Serializer):
         # exactly the mistake that would put someone back on the map without
         # their say-so. Raising would take the whole map down for one bad row,
         # so the row is dropped instead — see `_NearbyUserListSerializer`.
-        if not obj.is_on_map():
+        if me.ghost_mode or not obj.is_on_map():
             raise NotOnMap(obj.pk)
 
         # Precision is the viewer's relationship to this row, not a setting on

@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
-from users.visibility import proximity_visible_ids
+from users.visibility import not_found, proximity_visible_ids
 from .models import Encounter
 from .serializers import EncounterSerializer
 
@@ -49,6 +49,12 @@ class AcknowledgeEncounterView(APIView):
             Q(user_one=user) | Q(user_two=user),
             pk=pk,
         )
+        other_id = (
+            encounter.user_two_id if encounter.user_one_id == user.pk
+            else encounter.user_one_id
+        )
+        if other_id not in proximity_visible_ids(user, [other_id]):
+            return not_found()
 
         if encounter.user_one_id == user.pk:
             encounter.acknowledged_by_one = True

@@ -282,7 +282,9 @@ class User(AbstractUser):
     # The old three-way `privacy_mode` (active/ghost/invisible) conflated both;
     # see users/migrations/0010 for the mapping.
 
-    #: The one off switch for the map, and it cuts both ways.
+    #: Anonymous profile mode and the mutual off switch for the map.
+    #: Profile details, stories and Swifts are hidden from everyone else,
+    #: including friends; owners keep access to their own content.
     #:
     #: Ghost Mode is mutual by design: while it is on, this user is on nobody
     #: else's map *and* nobody else is on theirs. Half of that is privacy and

@@ -1,4 +1,5 @@
 from django.urls import path
+from .creator import SwiftAnalyticsView, SwiftCreatorView
 
 from .views import (
     RecordSwiftViewView,
@@ -32,6 +33,8 @@ urlpatterns = [
     path('tracks/providers/', SwiftMusicProviderStatusView.as_view(),
          name='swift-music-providers'),
     path('mine/', SwiftMineView.as_view(), name='swift-mine'),
+    path('creator/<int:user_id>/', SwiftCreatorView.as_view(), name='swift-creator'),
+    path('analytics/', SwiftAnalyticsView.as_view(), name='swift-analytics'),
 
     # Comment deletion is keyed on the comment, not the Swift, so it sits above
     # the `<int:pk>/` patterns — otherwise `comments/<id>/` would be read as a

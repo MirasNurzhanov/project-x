@@ -3,20 +3,18 @@
     may this viewer *open* this story?        can_read / readable_q
     may this viewer see it *on the map*?      can_show_on_map / placed_q
 
-They used to be one question, and that was the bug. A story is two things at
-once: something you show your friends, and — sometimes — a pin at a coordinate.
-Answering both with the map's rule meant that turning location sharing off took
-your stories away from your friends as well, which is not what the switch says
-it does and not what it is for.
+A story is both something you show your friends and, sometimes, a map pin.
+Ghost Mode now hides the author's profile content from everyone else. A viewer
+in Ghost Mode may still read a non-anonymous friend's story without receiving
+that friend's location. Separate read and placement checks preserve that rule.
 
 So the split, stated once here rather than re-derived per endpoint:
 
     reading a story    friendship, blocking, the author's Stories setting,
-                       expiry. Location sharing is irrelevant — a paused
-                       author's stories still reach their friends.
+                       expiry and the anonymous-profile gate.
 
     placing a story    everything above, plus: the story actually has a
-                       coordinate, and its author is on the map *right now*.
+                       coordinate, and neither party is in Ghost Mode.
 
 The second is checked on read, not at write time, because the row outlives the
 moment it was written: pausing has to retract pins already posted, and resuming
@@ -79,6 +77,8 @@ def is_placed_for(viewer, story):
     """
     if not story.is_placed:
         return False
+    if story.user_id != viewer.pk and viewer.ghost_mode:
+        return False
     # `is_sharing`, not `is_on_map`. A pin sits at the coordinate the story was
     # posted at, so it makes no claim about where its author is standing now —
     # and withdrawing a friend's pin six hours after their phone stopped
@@ -113,4 +113,6 @@ def placed_q(viewer):
     # `sharing_q`, matching `is_placed_for` — see the note there for why a pin
     # is not gated on the freshness of its author's own position.
     author_sharing = Q(user_id=viewer.pk) | visibility.sharing_q('user')
+    if viewer.ghost_mode:
+        author_sharing = Q(user_id=viewer.pk)
     return readable_q(viewer) & has_position & author_sharing

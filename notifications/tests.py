@@ -79,16 +79,16 @@ class NearbyMatchAlertTests(TestCase):
         notify_nearby_matches(self.me, [(self.other, 0.2)])
         self.assertEqual(Notification.objects.count(), 0)
 
-    def test_paused_sender_is_not_announced(self):
-        """Each direction is gated on the sender's own setting, not the pair's."""
+    def test_ghost_mode_stops_nearby_alerts_both_ways(self):
+        """A ghost cannot be announced or learn who is nearby through alerts."""
         self.other.ghost_mode = True
         self.other.save(update_fields=['ghost_mode'])
 
         notify_nearby_matches(self.me, [(self.other, 0.2)])
         # Nothing about the paused user reaches me...
         self.assertEqual(self.alerts(self.me, self.other).count(), 0)
-        # ...but I am still findable, so they hear about me.
-        self.assertEqual(self.alerts(self.other, self.me).count(), 1)
+        # Mutual invisibility also prevents them hearing about me.
+        self.assertEqual(self.alerts(self.other, self.me).count(), 0)
 
     def test_interest_opt_out_stops_a_stranger_alert_only_one_way(self):
         self.other.discoverable_by_interest = False

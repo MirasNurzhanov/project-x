@@ -277,9 +277,9 @@ def visible_users(viewer, queryset=None, *, exclude_self=True,
 def can_view(viewer, target, field, rel=None):
     """Whether `viewer` may receive `field` of `target`.
 
-    Order matters: block, then the private-account gate, then the field's own
-    audience. A private account hides every gated field from non-approved
-    viewers regardless of how permissive the individual settings are.
+    Order matters: block, anonymous profile, private account, field audience.
+    Anonymous profiles hide their details even from approved friends. Owners
+    retain access to their own data.
     """
     from .models import User
 
@@ -288,6 +288,8 @@ def can_view(viewer, target, field, rel=None):
     if rel == SELF:
         return True
     if rel == BLOCKED:
+        return False
+    if target.ghost_mode:
         return False
     if target.is_private and not is_approved_viewer(rel):
         return False
@@ -371,6 +373,10 @@ def visible_field_q(viewer, field, prefix='user'):
         # Friends are always approved, so the private gate is already satisfied.
         q |= Q(**{setting: User.Audience.FRIENDS, f'{owner}__in': friend_ids})
 
+    # Anonymous profiles retract existing content as well as new posts. Keep
+    # the owner exception in SQL so list endpoints agree with `can_view`.
+    q &= Q(**{owner: viewer.pk}) | Q(**{f'{prefix}__ghost_mode': False})
+
     # Blocks are excluded here rather than left to the caller. Callers today
     # all happen to filter them separately, but this Q has to be safe on its
     # own or the next endpoint to use it inherits a leak.
@@ -391,6 +397,10 @@ def can_surface_in_proximity(viewer, target, rel=None):
     """
     from .models import User
 
+    # Ghost Mode is mutual even for notifications and encounter records that
+    # predate the switch. A live target cannot make a hidden viewer eligible.
+    if getattr(viewer, 'ghost_mode', False):
+        return False
     if rel is None:
         rel = relationship(viewer, target)
     if rel == BLOCKED:
@@ -411,6 +421,8 @@ def proximity_visible_ids(viewer, candidate_ids):
     queries regardless of list length."""
     from .models import User
 
+    if getattr(viewer, 'ghost_mode', False):
+        return set()
     candidate_ids = {cid for cid in candidate_ids if cid is not None} - {viewer.pk}
     if not candidate_ids:
         return set()
@@ -436,11 +448,25 @@ def proximity_visible_ids(viewer, candidate_ids):
 
 
 def minimal_only(viewer, target, rel=None):
-    """True when `target` is private and `viewer` has not been approved — the
-    caller should emit username + avatar and nothing else."""
+    """Whether only the basic profile identity may be shown.
+
+    Ghost Mode hides profile details from everyone else, including friends.
+    Ordinary private accounts still open to their approved viewers.
+    """
     if rel is None:
         rel = relationship(viewer, target)
+    if rel == SELF:
+        return False
+    if target.ghost_mode:
+        return True
     return bool(target.is_private) and not is_approved_viewer(rel)
+
+
+def can_view_profile_details(viewer, target, rel=None):
+    """Shared account-level gate for a profile and its Swift collection."""
+    if rel is None:
+        rel = relationship(viewer, target)
+    return rel != BLOCKED and not minimal_only(viewer, target, rel)
 
 
 # ─── Presence ─────────────────────────────────────────────────────────────────

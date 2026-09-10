@@ -236,6 +236,8 @@ class SwiftSerializer(serializers.ModelSerializer):
         viewer = self._viewer()
         if viewer is None or not viewer.is_authenticated:
             return False
+        if viewer.ghost_mode and obj.author_id != viewer.pk:
+            return False
         if self.context.get('watchable_verified'):
             return obj.location_shared and obj.has_location
         return swift_visibility.location_available_for(viewer, obj)

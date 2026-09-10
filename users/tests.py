@@ -232,10 +232,8 @@ class FieldVisibilityTests(TestCase):
         self.set_visibility(visibility_stories=User.Audience.NOBODY)
         self.assertNotIn('stories', self.profile())
 
-    def test_a_friends_story_survives_them_leaving_the_map(self):
-        """The two are separate products. Location sharing decides whether a
-        story can be a *pin*; it has never been what decides whether a friend
-        may read one — see stories/visibility.py."""
+    def test_an_anonymous_friends_story_is_hidden(self):
+        """Ghost Mode retracts existing profile content, including stories."""
         story = Story.objects.create(
             user=self.target, content='hi', latitude='10.001', longitude='10.001',
             expires_at=timezone.now() + timezone.timedelta(hours=5),
@@ -245,8 +243,8 @@ class FieldVisibilityTests(TestCase):
         self.target.save(update_fields=['ghost_mode'])
 
         feed = self.client.get('/api/stories/friends/').json()['results']
-        self.assertIn(story.pk, {s['id'] for s in feed})
-        # The pin, though, is gone with the dot.
+        self.assertNotIn(story.pk, {s['id'] for s in feed})
+        # The pin is gone with the dot, too.
         nearby = self.client.get('/api/stories/nearby/').json()
         self.assertEqual([s for s in nearby if s['id'] == story.pk], [])
 
@@ -457,16 +455,16 @@ class ApproximateLocationTests(TestCase):
         self.client.force_authenticate(self.user)
         self.assertEqual(self.client.get('/api/proximity/nearby/').json(), [])
 
-    def test_paused_does_not_hide_the_profile(self):
-        """Location sharing and profile privacy are separate axes — pausing
-        one must not silently apply the other."""
+    def test_ghost_mode_hides_profile_details(self):
+        """Anonymous accounts retain only their basic public identity."""
         viewer = make_user('viewer')
         self.user.ghost_mode = True
         self.user.save(update_fields=['ghost_mode'])
         self.client.force_authenticate(viewer)
         response = self.client.get(f'/api/users/profile/{self.user.pk}/')
         self.assertEqual(response.status_code, 200)
-        self.assertIn('bio', response.json())
+        self.assertNotIn('bio', response.json())
+        self.assertFalse(response.json()['can_view_swifts'])
 
 
 # ─── Blocking, and indistinguishability ───────────────────────────────────────

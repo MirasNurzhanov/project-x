@@ -297,6 +297,7 @@ REST_FRAMEWORK = {
         'swift_location_reveal': config('THROTTLE_SWIFT_REVEAL', default='60/hour'),
         # Posting. A ceiling on flooding rather than on people.
         'swift_create': config('THROTTLE_SWIFT_CREATE', default='30/hour'),
+        'swift_analytics': config('THROTTLE_SWIFT_ANALYTICS', default='60/min'),
         # Commenting. The only Swift write that both creates a row *and* pushes
         # a notification to somebody else's phone, which makes an unthrottled
         # one a harassment tool rather than a load problem. Set well above

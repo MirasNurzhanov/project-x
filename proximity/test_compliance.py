@@ -533,8 +533,8 @@ class StoryLocationTests(TestCase):
 
     The rule the app promises, and the one asserted here:
 
-        turning off location sharing takes you and your stories off the map.
-        It does not stop you sharing stories with your friends.
+        Ghost Mode takes you and your stories off other people's maps and
+        hides your profile content from everyone else, including friends.
 
     So every test below is one of two questions asked of the same row - may my
     friend read this, and may anybody draw it at a coordinate - and the point
@@ -658,10 +658,10 @@ class StoryLocationTests(TestCase):
         self.assertIn(story.pk, self.feed_story_ids())
         self.assertNotIn(story.pk, self.map_story_ids())
 
-    def test_a_paused_story_reaches_a_friend(self):
+    def test_a_ghosted_story_is_hidden_from_a_friend(self):
         self.pause(self.author_client)
         story_id = self.post_story().json()['id']
-        self.assertIn(story_id, self.feed_story_ids())
+        self.assertNotIn(story_id, self.feed_story_ids())
 
     def test_a_paused_story_is_not_on_the_map(self):
         # The viewer is still Live, and their own pin is the control: without
@@ -704,22 +704,21 @@ class StoryLocationTests(TestCase):
 
         self.pause(self.author_client)
         rows = self.viewer_client.get(self.FRIEND_STORIES).json()['results']
-        self.assertEqual([r['place_name'] for r in rows], [''])
+        self.assertEqual(rows, [])
 
     # -- pausing after posting ------------------------------------------------
-    def test_pausing_retracts_the_pin_but_keeps_the_story(self):
+    def test_ghosting_retracts_the_pin_and_the_publication(self):
         """The case a write-time check could never have handled.
 
         Nothing was wrong when this story was posted - the author was on the
-        map. Pausing is what changes the answer, and it has to change exactly
-        one of the two: the pin goes, the story stays.
+        map. Ghosting changes both answers; the author retains the saved row.
         """
         story_id = self.post_story().json()['id']
         self.assertIn(story_id, self.map_story_ids())
 
         self.pause(self.author_client)
         self.assertNotIn(story_id, self.map_story_ids())
-        self.assertIn(story_id, self.feed_story_ids())
+        self.assertNotIn(story_id, self.feed_story_ids())
 
     def test_resuming_brings_the_pin_back(self):
         """Pausing retracts, it does not destroy. Otherwise the switch is a
@@ -750,24 +749,18 @@ class StoryLocationTests(TestCase):
         )
 
     # -- acting on a paused author's story ------------------------------------
-    def test_a_friend_can_still_react_when_the_author_pauses(self):
-        """Reading and reacting are the story; the map is the other product.
-
-        The 500m rule this used to run is also a probe once the author is off
-        the map: the 403 would report whether the reactor is standing near the
-        position the author just withdrew.
-        """
+    def test_a_friend_cannot_react_when_the_author_goes_anonymous(self):
+        """A saved story ID must not bypass the anonymous profile gate."""
         story_id = self.post_story().json()['id']
         self.pause(self.author_client)
 
         response = self.viewer_client.post(
             f'/api/stories/{story_id}/react/', {'reaction': 'like'}, format='json',
         )
-        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.status_code, 404, response.content)
 
-    def test_a_paused_pair_can_still_react(self):
-        """Both ends off the map. Neither has a position and neither needs one:
-        there is nothing here to be within 500m of."""
+    def test_a_ghosted_pair_cannot_react_to_each_others_hidden_stories(self):
+        """Hiding one's own profile does not grant access to another's."""
         self.pause(self.author_client)
         self.pause(self.viewer_client)
         story_id = self.post_story().json()['id']
@@ -775,7 +768,7 @@ class StoryLocationTests(TestCase):
         response = self.viewer_client.post(
             f'/api/stories/{story_id}/react/', {'reaction': 'like'}, format='json',
         )
-        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.status_code, 404, response.content)
 
     def test_the_500m_rule_still_holds_for_a_pin(self):
         """The negative half. A story that *is* a pin still takes standing near

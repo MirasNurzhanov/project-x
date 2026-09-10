@@ -436,6 +436,10 @@ def nearby_users(user, lat, lon, request):
     what makes the private path safe to expose rather than a second way to
     become visible.
     """
+    # Apply mutual invisibility before relationship, zone or interest reads.
+    # The queryset and serializer repeat this gate to protect other callers.
+    if user.ghost_mode:
+        return []
     blocked_ids = visibility.blocked_ids_for(user)
 
     friend_ids, connected_ids = _get_relationship_ids(user, blocked_ids | {user.pk})
