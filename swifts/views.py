@@ -40,8 +40,8 @@ from . import ai_moderation
 from . import counters
 from . import visibility as swift_visibility
 from .models import (
-    SwiftComment, SwiftLike, SwiftLocationReveal, SwiftReport, SwiftRepost,
-    SwiftVideo, SwiftView,
+    SavedSwift, SwiftComment, SwiftLike, SwiftLocationReveal, SwiftReport,
+    SwiftRepost, SwiftVideo, SwiftView,
 )
 from .serializers import (
     SwiftCommentCreateSerializer,
@@ -196,16 +196,17 @@ def _verified(request):
 
 
 def _viewer_context(request, swifts):
-    """Serializer context that answers the viewer-relative flags in 3 queries.
+    """Serializer context that answers the viewer-relative flags in 4 queries.
 
     Without this the serializer falls back to a per-object `.exists()` for each
-    of liked / reposted / viewed — three queries per Swift on a page of twenty.
+    of liked / reposted / saved / viewed — four queries per Swift on a page of
+    twenty.
     """
     ids = [s.pk for s in swifts]
     base = {'request': request, 'watchable_verified': True}
     if not ids:
         return {**base, 'liked_ids': set(), 'reposted_ids': set(),
-                'viewed_ids': set()}
+                'saved_ids': set(), 'viewed_ids': set()}
     user = request.user
     return {
         **base,
@@ -215,6 +216,10 @@ def _viewer_context(request, swifts):
         ),
         'reposted_ids': set(
             SwiftRepost.objects.filter(user=user, swift_id__in=ids)
+            .values_list('swift_id', flat=True)
+        ),
+        'saved_ids': set(
+            SavedSwift.objects.filter(user=user, swift_id__in=ids)
             .values_list('swift_id', flat=True)
         ),
         'viewed_ids': set(
@@ -720,6 +725,98 @@ class SwiftRepostView(APIView):
         return Response(
             {'reposted': False, 'repost_count': _count_of(swift.pk, 'repost_count')}
         )
+
+
+class SwiftSaveView(APIView):
+    """POST to save a Swift to your shortlist, DELETE to take it off.
+
+    Same constraint-first shape as likes and reposts, and two deliberate
+    differences from both:
+
+    **No counter moves.** Saving is private, so there is nothing public to
+    count. The response carries `saved` and nothing else — a `save_count`
+    would be the one field on the Swift that leaked who had bookmarked it,
+    inferable by watching the number after your own tap.
+
+    **Saving your own Swift is allowed**, where reposting it is refused. The
+    refusal there exists because a self-repost inflates a public number that
+    other people read as endorsement. A shortlist has no such number, and
+    "keep my own video handy" is an ordinary thing to want.
+
+    Idempotent in both directions: saving twice is one row (the unique
+    constraint decides that, not this view), and un-saving something that was
+    never saved is a 200 rather than a 404. Both matter on a feed where the
+    same Swift is reachable from several screens at once.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        swift = _visible_swift(request.user, pk)
+        if swift is None:
+            return user_visibility.not_found()
+
+        # `get_or_create` inside `atomic`, with IntegrityError caught rather
+        # than pre-checked: two taps racing both reach the insert, and the one
+        # that loses is a duplicate the database refuses. Catching it here is
+        # what turns that race into "already saved" instead of a 500.
+        try:
+            with transaction.atomic():
+                _, created = SavedSwift.objects.get_or_create(
+                    swift=swift, user=request.user,
+                )
+        except IntegrityError:
+            created = False
+
+        return Response(
+            {'saved': True},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    def delete(self, request, pk):
+        # Deliberately *not* `_visible_swift`. Un-saving has to keep working
+        # for a Swift that has since been made private or been taken down —
+        # otherwise the one row a user most wants out of their list is the one
+        # row they cannot remove.
+        SavedSwift.objects.filter(swift_id=pk, user=request.user).delete()
+        return Response({'saved': False})
+
+
+class SwiftSavedView(APIView):
+    """The viewer's own shortlist, newest save first.
+
+    Filtered through the same visibility rules as any other list, which is the
+    point rather than an oversight: a Swift that was public when it was saved
+    and has since been made private, taken down or soft-deleted drops out of
+    the list. The bookmark row survives — nothing is silently deleted from
+    under the user — but a shortlist is not a way to keep watching something
+    its author has withdrawn.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        limit, offset = _page_params(request)
+        saved_ids = list(
+            SavedSwift.objects.filter(user=request.user)
+            .order_by('-created_at')
+            .values_list('swift_id', flat=True)
+        )
+        if not saved_ids:
+            return Response({'count': 0, 'results': []})
+
+        qs = swift_visibility.watchable(request.user).filter(pk__in=saved_ids)
+        by_id = {s.pk: s for s in qs.select_related('author')}
+        # Ordered by when it was *saved*, which the `pk__in` query cannot do —
+        # so the order comes from `saved_ids` and the query only decides
+        # membership.
+        ordered = [by_id[sid] for sid in saved_ids if sid in by_id]
+
+        page = ordered[offset:offset + limit]
+        serializer = SwiftSerializer(
+            page, many=True, context=_viewer_context(request, page),
+        )
+        return Response({'count': len(ordered), 'results': serializer.data})
 
 
 def _count_of(swift_id, field):

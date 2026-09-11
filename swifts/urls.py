@@ -14,6 +14,8 @@ from .views import (
     SwiftMineView,
     SwiftReportView,
     SwiftRepostView,
+    SwiftSavedView,
+    SwiftSaveView,
     SwiftMusicProviderStatusView,
     SwiftTrackGenresView,
     SwiftTrackListView,
@@ -33,6 +35,9 @@ urlpatterns = [
     path('tracks/providers/', SwiftMusicProviderStatusView.as_view(),
          name='swift-music-providers'),
     path('mine/', SwiftMineView.as_view(), name='swift-mine'),
+    # The viewer's own shortlist. Above `<int:pk>/` so "saved" is not read
+    # as a Swift id, same reason as `mine/` and `tracks/`.
+    path('saved/', SwiftSavedView.as_view(), name='swift-saved'),
     path('creator/<int:user_id>/', SwiftCreatorView.as_view(), name='swift-creator'),
     path('analytics/', SwiftAnalyticsView.as_view(), name='swift-analytics'),
 
@@ -44,6 +49,7 @@ urlpatterns = [
 
     path('<int:pk>/like/', SwiftLikeView.as_view(), name='swift-like'),
     path('<int:pk>/repost/', SwiftRepostView.as_view(), name='swift-repost'),
+    path('<int:pk>/save/', SwiftSaveView.as_view(), name='swift-save'),
     path('<int:pk>/comments/', SwiftCommentsView.as_view(), name='swift-comments'),
     path('<int:pk>/view/', RecordSwiftViewView.as_view(), name='swift-view'),
     path('<int:pk>/report/', SwiftReportView.as_view(), name='swift-report'),

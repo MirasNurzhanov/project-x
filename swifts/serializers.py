@@ -93,6 +93,10 @@ class SwiftSerializer(serializers.ModelSerializer):
     location_available = serializers.SerializerMethodField()
     viewer_liked = serializers.SerializerMethodField()
     viewer_reposted = serializers.SerializerMethodField()
+    #: Whether this viewer has it on their shortlist. Private to them —
+    #: there is no matching count, because a saved-by number would leak a
+    #: list nobody is meant to be able to read.
+    viewer_saved = serializers.SerializerMethodField()
     viewer_viewed = serializers.SerializerMethodField()
     is_mine = serializers.SerializerMethodField()
     review_state = serializers.SerializerMethodField()
@@ -110,7 +114,7 @@ class SwiftSerializer(serializers.ModelSerializer):
             'trim_start_ms', 'trim_end_ms', 'overlay_text', 'overlay_position',
             'visibility', 'allow_comments', 'allow_reposts',
             'like_count', 'comment_count', 'repost_count', 'view_count',
-            'viewer_liked', 'viewer_reposted', 'viewer_viewed',
+            'viewer_liked', 'viewer_reposted', 'viewer_saved', 'viewer_viewed',
             'location_available',
             'is_mine', 'created_at', 'updated_at',
         ]
@@ -143,6 +147,10 @@ class SwiftSerializer(serializers.ModelSerializer):
     def get_viewer_reposted(self, obj):
         from .models import SwiftRepost
         return self._flag(obj, 'reposted_ids', SwiftRepost)
+
+    def get_viewer_saved(self, obj):
+        from .models import SavedSwift
+        return self._flag(obj, 'saved_ids', SavedSwift)
 
     def get_viewer_viewed(self, obj):
         from .models import SwiftView

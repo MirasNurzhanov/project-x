@@ -374,6 +374,54 @@ class SwiftRepost(models.Model):
         return f'{self.user_id} reposted swift {self.swift_id}'
 
 
+class SavedSwift(models.Model):
+    """`user` saved `swift` to come back to.
+
+    A private shortlist, and that is what separates it from the two join rows
+    above. A like and a repost are *signals* — they move a public counter and
+    feed the recommender. Saving is a bookmark: nobody else can see it, no
+    count moves, and `recs` is deliberately not told about it. Someone saving a
+    video to watch later should not thereby be broadcasting an endorsement of
+    it, and a shortlist that quietly boosted what it held would stop being
+    usable as a shortlist.
+
+    **Saving twice keeps one row.** The unique constraint is the whole of that
+    guarantee, and it is enforced by the database rather than by a check in the
+    view: saving is a toggle on a scrolling feed, so a double tap, a retried
+    request on a flaky connection, and the same Swift reached from the feed and
+    from its detail screen are all ordinary. `filter().exists()` before an
+    insert is a race that loses under precisely the traffic that makes it
+    matter, so the view lets `get_or_create` collide against this instead.
+
+    Cascades on both sides, with different reasons. If the Swift is deleted the
+    bookmark is a pointer to nothing; if the user is deleted the shortlist was
+    only ever theirs.
+    """
+
+    swift = models.ForeignKey(SwiftVideo, on_delete=models.CASCADE, related_name='saves')
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='saved_swifts',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # Newest first: a shortlist is read as "what did I put here recently",
+        # not as the order the Swifts themselves were posted in.
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(fields=['swift', 'user'], name='unique_saved_swift'),
+        ]
+        indexes = [
+            # The saved list for one person, already ordered.
+            models.Index(fields=['user', '-created_at'], name='swift_saved_user_idx'),
+            # "has this viewer saved these" for a page of the feed, in one query.
+            models.Index(fields=['user', 'swift'], name='swift_saved_viewer_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.user_id} saved swift {self.swift_id}'
+
+
 class SwiftComment(models.Model):
     """A comment, or a reply to one.
 
