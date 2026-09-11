@@ -527,13 +527,34 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
     #: `/api/proximity/location/` a moment earlier, which is what it had to do
     #: before. The check is a guard against covering a city you are nowhere
     #: near, not a proof of presence, and it was never the latter.
-    latitude = serializers.DecimalField(
-        max_digits=11, decimal_places=8, write_only=True, required=False,
-        allow_null=True,
+    #: `FloatField`, deliberately, where the *column* is a `DecimalField`.
+    #:
+    #: These three are not columns — `validate` pops them and nothing is ever
+    #: stored — so mirroring the column's precision bought nothing and cost the
+    #: whole feature. `DecimalField(max_digits=11, decimal_places=8)` rejects
+    #: anything past 11 significant digits, and a phone does not send 11: a raw
+    #: IEEE-754 double out of `Location.getCurrentPositionAsync` serialises as
+    #: e.g. `43.238015199999996`, which is 17. Every save that carried a fix —
+    #: which is every city and district save — came back 400 with the error
+    #: under `latitude`/`longitude`, a key the zone screen does not read, so it
+    #: surfaced as the generic "Could not save. Please try again."
+    #:
+    #: The only consumer is `_anchor`, which immediately does `float(lat)`, and
+    #: `/api/regions/for-point/` has always taken the same coordinate through a
+    #: plain `float()`. A float is what this has actually been all along.
+    #:
+    #: The range bounds are new and are not a formality: they used to come free
+    #: with `max_digits`, and dropping that without replacing it would accept a
+    #: latitude of 900. Nothing would be corrupted — the value only feeds a
+    #: containment test it could never pass — but an out-of-range coordinate is
+    #: a broken client, and it should be told so rather than quietly refused.
+    latitude = serializers.FloatField(
+        write_only=True, required=False, allow_null=True,
+        min_value=-90, max_value=90,
     )
-    longitude = serializers.DecimalField(
-        max_digits=11, decimal_places=8, write_only=True, required=False,
-        allow_null=True,
+    longitude = serializers.FloatField(
+        write_only=True, required=False, allow_null=True,
+        min_value=-180, max_value=180,
     )
     #: Metres of GPS error the phone reports for that fix, widening the check by
     #: exactly the amount the fix is known to be wrong by. Clamped: an
@@ -709,7 +730,49 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
             self.instance and self.instance.zone_region
         )
 
-        if zone_type in User.POLYGON_ZONE_TYPES:
+        # ...but only against a request that is actually *setting* one.
+        #
+        # Both values above fall back to the stored row, which is right for
+        # deciding what the zone will look like afterwards and wrong for
+        # deciding whether to run this rule at all. Judged on the fallbacks, a
+        # user who merely *is* a polygon zone was re-validated on every PATCH,
+        # including ones that never mention the zone's shape — so an incomplete
+        # zone did not block the edit that would fix it, it blocked *every*
+        # edit: the radius, the music switches, the audio upload, `zone_active`.
+        #
+        # That state is not exotic, which is what made this a live bug rather
+        # than a latent one. A new account is created in it — `zone_type=CITY`
+        # with no region until the first location report resolves one (see
+        # migration 0036) — and `zone_region` is SET_NULL, so evicting a cached
+        # Region returns an established user to it. Both are states the rest of
+        # the codebase treats as ordinary: `effective_zone_mode` draws a circle,
+        # and `_viewer_zone_contains` falls back to the radius, which says in so
+        # many words that refusing to approximate "applies to *storing* a zone".
+        # This is the line that makes that true, rather than storing anything.
+        #
+        # So: the rule fires when the request names a shape. `zone_type` in the
+        # payload is an assertion about what the zone is — including re-asserting
+        # the type it already has, which is the Place tab switching back. A
+        # `zone_region` is an assertion about which place it covers, and that
+        # includes clearing one to null: dropping the boundary out from under a
+        # city zone is exactly the thing worth refusing.
+        #
+        # Nothing is loosened. Every request that could previously *store* an
+        # invalid polygon zone is refused on precisely the same terms; what
+        # changes is only that a request storing something else is no longer
+        # answered for a configuration it is not touching.
+        #
+        # `zone_active` is deliberately **not** in that set, which is a decision
+        # and not an oversight. It says whether the zone is switched on, not
+        # what shape it is, and a zone with no boundary yet is a handled state
+        # everywhere that reads one — discovery degrades to the circle rather
+        # than failing. Gating it would make the switch unreachable for exactly
+        # the people who start out in this state, to prevent a configuration
+        # they are already in by default and that resolves itself on their first
+        # location report.
+        asserts_zone_shape = 'zone_type' in attrs or 'zone_region' in attrs
+
+        if asserts_zone_shape and zone_type in User.POLYGON_ZONE_TYPES:
             if not region:
                 raise serializers.ValidationError({
                     'zone_region': f'Pick a place before switching to a {zone_type} zone.',

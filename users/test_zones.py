@@ -363,16 +363,45 @@ class LegacyZoneMigrationTests(TestCase):
     change could break without the migration ever being re-run.
     """
 
-    def test_a_default_zone_is_a_circle(self):
-        """Every account that predates the field, and every new one."""
+    def test_a_new_account_defaults_to_the_city_it_is_in(self):
+        """Since migration 0036. A circle is still a choice; it is no longer
+        the one you get by not choosing."""
         user = make_user('fresh', latitude='10.0', longitude='10.0')
-        self.assertEqual(user.zone_type, User.ZoneType.CIRCLE)
+        self.assertEqual(user.zone_type, User.ZoneType.CITY)
+        # Both together are what make the default mean "the city I am in"
+        # rather than "a city, once you pick one": the first location report
+        # runs `follow_location` and points the zone at their city.
+        self.assertTrue(user.zone_follows_location)
+        # The dial is still 500 underneath, which is what the fallback below
+        # measures with and what coming back to the Radius tab restores.
         self.assertEqual(user.zone_radius, 500)
-        self.assertTrue(user.zone_contains(10.0027, 10.0))
+
+    def test_the_default_is_testable_before_its_city_is_known(self):
+        """The state every new account is in for its first few seconds.
+
+        `zone_type` is CITY and `zone_region` is still null, because the
+        boundary cannot be resolved until a position has been reported. That
+        must not be an error at the edges — proximity/views.py catches
+        ZoneBoundaryUnavailable and degrades to the radius, so discovery
+        behaves exactly as it did before the default changed and widens once
+        the city lands.
+        """
+        user = make_user('fresh', latitude='10.0', longitude='10.0')
+        self.assertIsNone(user.zone_region_id)
+        # Drawable: the map has no polygon to trace, so it draws the circle.
+        self.assertEqual(user.effective_zone_mode, 'radius')
+        # Not testable, deliberately — the caller decides what to do about it.
+        with self.assertRaises(zones.ZoneBoundaryUnavailable):
+            user.zone_contains(10.0027, 10.0)
 
     def test_a_legacy_circle_keeps_a_non_default_radius(self):
+        # `zone_type` spelled out rather than left to the default. It used to
+        # be implicit — the default *was* CIRCLE — which quietly made this a
+        # test of two things at once. Since 0036 the default is CITY, and a
+        # test about what a circle does should say it is a circle.
         user = make_user(
-            'legacy', latitude='10.0', longitude='10.0', zone_radius=1500,
+            'legacy', latitude='10.0', longitude='10.0',
+            zone_type=User.ZoneType.CIRCLE, zone_radius=1500,
         )
         self.assertTrue(user.zone_contains(10.012, 10.0))    # ~1.3km
         self.assertFalse(user.zone_contains(10.018, 10.0))   # ~2km
@@ -382,6 +411,13 @@ class LegacyZoneMigrationTests(TestCase):
         broken = make_user(
             'broken', latitude='0.1', longitude='0.1', zone_type=User.ZoneType.CITY,
         )
-        ok = make_user('ok', latitude='10.0', longitude='10.0')
+        # Explicitly a circle: a circle with a stored position is the simplest
+        # zone that *is* available, which is what this half is asserting. Left
+        # to the default it would now be a city with no region — the same
+        # unavailable state as `broken`, and the test would pass for one case
+        # twice rather than for the two it names.
+        ok = make_user(
+            'ok', latitude='10.0', longitude='10.0', zone_type=User.ZoneType.CIRCLE,
+        )
         self.assertFalse(broken.zone_boundary_available)
         self.assertTrue(ok.zone_boundary_available)

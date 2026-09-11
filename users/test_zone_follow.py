@@ -191,8 +191,16 @@ class NotFollowingTests(FollowFixture):
         self.move(user, self.IN_KAZAKHFILM)
         self.assertEqual(user.zone_region_id, self.orbita.pk)
 
-    def test_following_is_off_by_default_so_no_existing_zone_changes(self):
-        self.assertFalse(User().zone_follows_location)
+    def test_following_is_on_by_default_so_a_new_zone_finds_its_city(self):
+        """Flipped by migration 0036, together with the CITY default.
+
+        The original guarantee behind the old `False` — that no zone anybody
+        already has changes under them — is unaffected and is not this test's
+        to make: a Django field default applies only to rows created after it,
+        and 0036 is an AlterField, not a data migration. `User()` is an unsaved
+        row, so this is the default itself and nothing else.
+        """
+        self.assertTrue(User().zone_follows_location)
 
     def test_a_circle_zone_is_untouched_even_with_following_on(self):
         """The flag persists across a type change the same way `zone_radius`
@@ -331,20 +339,46 @@ class ZoneFollowApiTests(FollowFixture):
 
     def test_staleness_is_reported_but_not_writable(self):
         """A client that could clear this could silence the only signal the
-        zone screen has that its boundary is out of date."""
-        # Saved through the instance, not `.update()`: `force_authenticate`
-        # binds this very object as `request.user`, so a queryset update would
-        # leave the view reading a stale copy and the test measuring that
-        # instead of the serializer.
-        self.user.zone_follow_stale = True
-        self.user.save(update_fields=['zone_follow_stale'])
-        body = self.client.get(reverse('zone')).json()
+        zone screen has that its boundary is out of date.
+
+        Set up as a district zone in a city with no districts mapped, which is
+        the state that genuinely raises the flag — and, more to the point, one
+        the server cannot resolve on its own. `ZoneView.patch` re-points a
+        following zone on every request that does not name a region, and a
+        re-point clears staleness by design, so a user standing anywhere the
+        follow *can* answer would have the flag cleared out from under this
+        assertion by the server rather than by the client. Then the test would
+        be measuring the follow, not the serializer.
+
+        It used to be written against `setUp`'s user, who is a CITY zone with
+        no region — and it passed because that request was refused outright by
+        the incomplete-zone bug (see users/test_zone_incomplete.py), not
+        because the field was read-only. Now that the request goes through, the
+        setup has to be one where the field is the only thing that could move.
+        """
+        # Its own user: `setUp` has already taken the default name.
+        user = self.make_user(
+            'stale-walker', at=self.IN_ORBITA,
+            zone_type=User.ZoneType.DISTRICT, zone_follows_location=True,
+        )
+        self.move(user, self.IN_ORBITA)
+        self.assertEqual(user.zone_region_id, self.orbita.pk)
+
+        self.move(user, self.IN_KARAGANDA)
+        self.assertTrue(user.zone_follow_stale, 'fixture should be stale')
+        self.assertEqual(
+            user.zone_region_id, self.orbita.pk,
+            'a stale zone holds the boundary it left',
+        )
+
+        client = APIClient()
+        client.force_authenticate(user)
+        body = client.get(reverse('zone')).json()
         self.assertTrue(body['zone_follow_stale'])
 
-        self.client.patch(
-            reverse('zone'), {'zone_follow_stale': False}, format='json')
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.zone_follow_stale)
+        client.patch(reverse('zone'), {'zone_follow_stale': False}, format='json')
+        user.refresh_from_db()
+        self.assertTrue(user.zone_follow_stale)
 
     def test_a_following_zone_still_cannot_be_pointed_at_a_place_you_are_not_in(self):
         """The existing rule is untouched. Following changes *when* the zone

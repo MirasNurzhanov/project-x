@@ -73,8 +73,21 @@ class User(AbstractUser):
     ZONE_RADIUS_MAX_M = 5000
 
     zone_audio = models.FileField(upload_to='zones/', null=True, blank=True)
+    #: Defaults to CITY, paired with `zone_follows_location=True` below, so a
+    #: new account's reach is "the city I am in" rather than a 500m ring. A
+    #: circle is still a first-class choice — it is simply no longer the one
+    #: nobody picked.
+    #:
+    #: A brand new user has this set to CITY with no `zone_region` yet, because
+    #: the boundary cannot be resolved until their first location report. That
+    #: state is safe and already handled: `_viewer_zone_box` filters on the
+    #: circle box and `_viewer_zone_contains` catches ZoneBoundaryUnavailable
+    #: and falls back to `zone_radius` (see proximity/views.py). So discovery
+    #: behaves exactly as it used to until the city is known, and widens once
+    #: it is. Do not "fix" that by defaulting zone_region — there is no correct
+    #: region to point at before we know where the person is.
     zone_type = models.CharField(
-        max_length=8, choices=ZoneType.choices, default=ZoneType.CIRCLE, db_index=True,
+        max_length=8, choices=ZoneType.choices, default=ZoneType.CITY, db_index=True,
     )
     #: Metres, and meaningful only while `zone_type` is CIRCLE. Kept rather than
     #: nulled on a switch to a polygon type so coming back restores the dial the
@@ -113,11 +126,17 @@ class User(AbstractUser):
     #: visibility — see `regions.places.refresh_quietly` — so this reads a
     #: snapshot that exists either way.
     #:
-    #: Defaults False so no existing zone changes under anybody. The client
-    #: turns it on for a zone set from "use my district", and leaves it off for
-    #: one picked by name, which is the distinction it actually encodes:
+    #: Defaults **True**, which is what makes the CITY default above mean "the
+    #: city I am in" rather than "a city, once you pick one". It is also what
+    #: resolves the empty `zone_region` a new account starts with: the first
+    #: location report runs `follow_location` and the zone lands on their city.
+    #:
+    #: A field default only applies to rows created after the migration, so no
+    #: existing zone changes under anybody — which was the original reason this
+    #: defaulted False, and that guarantee is unchanged. The client still turns
+    #: it off for a zone picked by name, which is the distinction it encodes:
     #: *where I am* versus *this place*.
-    zone_follows_location = models.BooleanField(default=False)
+    zone_follows_location = models.BooleanField(default=True)
 
     #: Set when a following zone had nowhere to move to — the user is somewhere
     #: OSM has no district mapped for, so `zone_region` is still the last one
