@@ -797,26 +797,33 @@ class SwiftSavedView(APIView):
 
     def get(self, request):
         limit, offset = _page_params(request)
-        saved_ids = list(
-            SavedSwift.objects.filter(user=request.user)
+        # Paged in the database, not in Python.
+        #
+        # The obvious shape — read every saved id, fetch the visible ones,
+        # order the result in Python and slice — is correct and does not
+        # scale: it loads one row per save on every request, so somebody with
+        # ten thousand bookmarks pays for all ten thousand to look at the first
+        # twenty. Ordering is the thing that makes it tempting, because the
+        # order lives on `SavedSwift.created_at` while the filter lives on
+        # `SwiftVideo`.
+        #
+        # Starting from `SavedSwift` resolves that: the ordering column is on
+        # the model being paged, and visibility becomes a subquery against
+        # `watchable`. One `LIMIT`/`OFFSET` in SQL, and the page is the only
+        # thing that comes back.
+        qs = (
+            SavedSwift.objects
+            .filter(user=request.user)
+            .filter(swift__in=swift_visibility.watchable(request.user))
+            .select_related('swift', 'swift__author')
             .order_by('-created_at')
-            .values_list('swift_id', flat=True)
         )
-        if not saved_ids:
-            return Response({'count': 0, 'results': []})
-
-        qs = swift_visibility.watchable(request.user).filter(pk__in=saved_ids)
-        by_id = {s.pk: s for s in qs.select_related('author')}
-        # Ordered by when it was *saved*, which the `pk__in` query cannot do —
-        # so the order comes from `saved_ids` and the query only decides
-        # membership.
-        ordered = [by_id[sid] for sid in saved_ids if sid in by_id]
-
-        page = ordered[offset:offset + limit]
+        count = qs.count()
+        page = [row.swift for row in qs[offset:offset + limit]]
         serializer = SwiftSerializer(
             page, many=True, context=_viewer_context(request, page),
         )
-        return Response({'count': len(ordered), 'results': serializer.data})
+        return Response({'count': count, 'results': serializer.data})
 
 
 def _count_of(swift_id, field):

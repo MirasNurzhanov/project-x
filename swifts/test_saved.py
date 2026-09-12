@@ -192,6 +192,39 @@ class TheListIsPrivateAndOrdered(SavedSwiftFixture):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(self.listed()['count'], 1)
 
+    def test_the_list_is_paged_in_sql_not_in_python(self):
+        """A shortlist of a thousand must not cost a thousand rows to read
+        twenty.
+
+        The tempting implementation reads every saved id, fetches the visible
+        ones and slices in Python — correct, and O(saves) on every request.
+        Query *count* alone would not catch that, since it is a fixed number of
+        queries either way; what catches it is that the page never grows.
+        """
+        for _ in range(25):
+            self.client.post(self.save_url(make_swift(self.creator)))
+
+        body = self.client.get(reverse('swift-saved'), {'limit': 5}).json()
+        self.assertEqual(body['count'], 25)
+        self.assertEqual(len(body['results']), 5)
+
+        # And the work per request does not scale with the shelf: the same
+        # number of queries serves a page whether there are 25 saves or 5.
+        with self.assertNumQueries(self.queries_for_a_page()):
+            self.client.get(reverse('swift-saved'), {'limit': 5})
+
+    def queries_for_a_page(self):
+        """Measured on a small shelf, then asserted against a large one."""
+        from django.test.utils import CaptureQueriesContext
+        from django.db import connection
+        other = make_user('measure')
+        client = APIClient()
+        client.force_authenticate(other)
+        client.post(reverse('swift-save', args=[make_swift(self.creator).pk]))
+        with CaptureQueriesContext(connection) as ctx:
+            client.get(reverse('swift-saved'), {'limit': 5})
+        return len(ctx)
+
     def test_an_empty_list_is_an_empty_list(self):
         body = self.listed()
         self.assertEqual(body['count'], 0)
