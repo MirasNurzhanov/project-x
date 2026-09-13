@@ -176,7 +176,7 @@ class Region(models.Model):
         region's window before anything is compared — see regions.geometry.
         """
         return geometry.contains(
-            self.rings,
+            self._prepared_rings(),
             self.min_lat, self.min_lon, self.max_lat, self.max_lon,
             lat, lon,
         )
@@ -189,10 +189,25 @@ class Region(models.Model):
         geometry.contains_within for why those differ.
         """
         return geometry.contains_within(
-            self.rings,
+            self._prepared_rings(),
             self.min_lat, self.min_lon, self.max_lat, self.max_lon,
             lat, lon, tolerance_m,
         )
+
+    def _prepared_rings(self):
+        """The rings with their edge index, built on first use by this instance.
+
+        A tolerance check asks up to nine points against the same rings, and a
+        map poll asks that of every candidate, so the index is kept rather than
+        rebuilt per point. Keyed on the rings object itself: assigning new rings
+        (or reloading them) builds a fresh index instead of reusing a stale one.
+        """
+        rings = self.rings
+        cached = self.__dict__.get('_prepared')
+        if cached is None or cached[0] is not rings:
+            cached = (rings, geometry.prepare(rings))
+            self.__dict__['_prepared'] = cached
+        return cached[1]
 
     @property
     def box_area(self) -> float:

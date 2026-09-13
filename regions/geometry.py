@@ -266,6 +266,9 @@ def rings_contain(rings, lat, lon):
 _INDEX_MARGIN_DEG = EDGE_EPSILON_DEG * 4
 #: Average edges per latitude band.
 _EDGES_PER_BAND = 8
+#: Most band entries the index holds per edge. Keeps it linear in the ring's size when edges each
+#: span much of the ring's height, where more bands would not shorten any band, only copy edges.
+_MAX_BAND_ENTRIES_PER_EDGE = 4
 
 
 class PreparedRing:
@@ -293,9 +296,16 @@ class PreparedRing:
         self.min_lon = min(edge[4] for edge in edges)
         self.max_lon = max(edge[5] for edge in edges)
 
-        band_count = max(1, count // _EDGES_PER_BAND)
         self._base = self.min_lat - _INDEX_MARGIN_DEG
-        self._height = (self.max_lat + _INDEX_MARGIN_DEG - self._base) / band_count
+        span = self.max_lat + _INDEX_MARGIN_DEG - self._base
+        # An edge lands in at most (its padded height / band height) + 1 bands, so this many bands
+        # keeps the total within _MAX_BAND_ENTRIES_PER_EDGE per edge. Any band count answers exactly.
+        padded_heights = sum(edge[7] - edge[6] + 2 * _INDEX_MARGIN_DEG for edge in edges)
+        band_count = max(1, min(
+            count // _EDGES_PER_BAND,
+            int((_MAX_BAND_ENTRIES_PER_EDGE - 1) * count * span / padded_heights),
+        ))
+        self._height = span / band_count
         self._bands = [[] for _ in range(band_count)]
         for edge in edges:
             first = self._band(edge[6] - _INDEX_MARGIN_DEG)

@@ -229,8 +229,9 @@ class RegionTraceView(APIView):
         rings = serializer.context['unwrapped']
         min_lat, min_lon, max_lat, max_lon = serializer.context['bounds']
 
+        # The user's coordinates are stored as Decimal; the geometry is float arithmetic.
         if not geometry.contains(
-            rings, min_lat, min_lon, max_lat, max_lon, user.latitude, user.longitude,
+            rings, min_lat, min_lon, max_lat, max_lon, float(user.latitude), float(user.longitude),
         ):
             # The same rule the zone endpoint enforces, applied at the source:
             # you can only draw the place you are in.
