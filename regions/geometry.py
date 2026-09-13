@@ -243,7 +243,12 @@ def rings_contain(rings, lat, lon):
 
     Otherwise: a point inside an odd number of rings is inside the region, which
     makes holes fall out for free rather than needing a second pass.
+
+    `rings` may also be a `PreparedRings`, which gives the same answer faster.
     """
+    if isinstance(rings, PreparedRings):
+        return rings.contain(lat, lon)
+
     for ring in rings:
         if point_on_ring(ring, lat, lon):
             return True
@@ -253,6 +258,119 @@ def rings_contain(rings, lat, lon):
         if ring_contains(ring, lat, lon):
             inside = not inside
     return inside
+
+
+# ─── Prepared rings ───────────────────────────────────────────────────────────
+#: Slack on every band and box cull, far above float error: the index may only over-select
+#: edges, and each edge it keeps is decided by exactly the arithmetic of the functions above.
+_INDEX_MARGIN_DEG = EDGE_EPSILON_DEG * 4
+#: Average edges per latitude band.
+_EDGES_PER_BAND = 8
+
+
+class PreparedRing:
+    """One ring indexed by latitude band; answers exactly what `ring_contains` and `point_on_ring` do."""
+
+    __slots__ = ('min_lat', 'max_lat', 'min_lon', 'max_lon', '_base', '_height', '_bands')
+
+    def __init__(self, ring):
+        self._bands = None
+        count = len(ring)
+        if count < 3:
+            return
+
+        edges = []
+        j = count - 1
+        for i in range(count):
+            # The same pairing as the ring walks above: (x1, y1) is vertex i, (x2, y2) the one before it.
+            x1, y1 = ring[i][0], ring[i][1]
+            x2, y2 = ring[j][0], ring[j][1]
+            j = i
+            edges.append((x1, y1, x2, y2, min(x1, x2), max(x1, x2), min(y1, y2), max(y1, y2)))
+
+        self.min_lat = min(edge[6] for edge in edges)
+        self.max_lat = max(edge[7] for edge in edges)
+        self.min_lon = min(edge[4] for edge in edges)
+        self.max_lon = max(edge[5] for edge in edges)
+
+        band_count = max(1, count // _EDGES_PER_BAND)
+        self._base = self.min_lat - _INDEX_MARGIN_DEG
+        self._height = (self.max_lat + _INDEX_MARGIN_DEG - self._base) / band_count
+        self._bands = [[] for _ in range(band_count)]
+        for edge in edges:
+            first = self._band(edge[6] - _INDEX_MARGIN_DEG)
+            last = self._band(edge[7] + _INDEX_MARGIN_DEG)
+            for band in range(first, last + 1):
+                self._bands[band].append(edge)
+
+    def _band(self, lat):
+        # Monotonic in `lat`, so an edge spanning a latitude is always filed under that latitude's band.
+        return min(max(int((lat - self._base) // self._height), 0), len(self._bands) - 1)
+
+    def on_boundary(self, lat, lon):
+        """`point_on_ring`, over only the edges that could lie within an epsilon of the point."""
+        if (self._bands is None
+                or not self.min_lat - _INDEX_MARGIN_DEG <= lat <= self.max_lat + _INDEX_MARGIN_DEG
+                or not self.min_lon - _INDEX_MARGIN_DEG <= lon <= self.max_lon + _INDEX_MARGIN_DEG):
+            return False
+        epsilon = EDGE_EPSILON_DEG
+        for x1, y1, x2, y2, lo_x, hi_x, lo_y, hi_y in self._bands[self._band(lat)]:
+            if (lon < lo_x - _INDEX_MARGIN_DEG or lon > hi_x + _INDEX_MARGIN_DEG
+                    or lat < lo_y - _INDEX_MARGIN_DEG or lat > hi_y + _INDEX_MARGIN_DEG):
+                continue
+            dx, dy = x2 - x1, y2 - y1
+            seg_len_sq = dx * dx + dy * dy
+            if seg_len_sq == 0:
+                if abs(lon - x1) <= epsilon and abs(lat - y1) <= epsilon:
+                    return True
+                continue
+            t = ((lon - x1) * dx + (lat - y1) * dy) / seg_len_sq
+            if t < 0 or t > 1:
+                continue
+            if abs(dx * (lat - y1) - dy * (lon - x1)) / (seg_len_sq ** 0.5) <= epsilon:
+                return True
+        return False
+
+    def crossings_odd(self, lat, lon):
+        """`ring_contains`, over only the edges of the point's latitude band.
+
+        Outside the ring's latitude span no edge crosses; far east of it none is east of the point;
+        far west of it every crossing counts and a closed ring always has an even number of them.
+        """
+        if (self._bands is None or lat < self.min_lat or lat > self.max_lat
+                or lon > self.max_lon + _INDEX_MARGIN_DEG or lon < self.min_lon - _INDEX_MARGIN_DEG):
+            return False
+        inside = False
+        for x1, y1, x2, y2, _lo_x, _hi_x, _lo_y, _hi_y in self._bands[self._band(lat)]:
+            if (y1 > lat) != (y2 > lat):
+                x_at = x1 + (lat - y1) * (x2 - x1) / (y2 - y1)
+                if lon < x_at:
+                    inside = not inside
+        return inside
+
+
+class PreparedRings:
+    """A ring set indexed once for many containment tests. Same answers as `rings_contain` on the raw rings."""
+
+    __slots__ = ('rings',)
+
+    def __init__(self, rings):
+        self.rings = [PreparedRing(ring) for ring in rings]
+
+    def contain(self, lat, lon):
+        for ring in self.rings:
+            if ring.on_boundary(lat, lon):
+                return True
+        inside = False
+        for ring in self.rings:
+            if ring.crossings_odd(lat, lon):
+                inside = not inside
+        return inside
+
+
+def prepare(rings):
+    """Index `rings` for repeated containment tests; pass the result anywhere `rings` is accepted."""
+    return PreparedRings(rings)
 
 
 def contains_within(rings, min_lat, min_lon, max_lat, max_lon, lat, lon, tolerance_m):

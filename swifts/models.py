@@ -80,6 +80,8 @@ class SwiftVideo(models.Model):
     author = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='swifts',
     )
+    # Null preserves legacy clients/rows. New composers send one UUID per take.
+    idempotency_key = models.UUIDField(null=True, blank=True, editable=False)
     caption = models.CharField(max_length=300, blank=True)
 
     # ── Media ─────────────────────────────────────────────────────────────────
@@ -244,6 +246,11 @@ class SwiftVideo(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['author', 'idempotency_key'], name='unique_swift_author_take',
+            ),
+        ]
         indexes = [
             # The feed: live Swifts, newest first. `deleted_at` leads because
             # it is the cheapest elimination and every read applies it.

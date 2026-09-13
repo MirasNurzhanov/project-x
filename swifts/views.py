@@ -26,7 +26,7 @@ from django.utils import timezone
 from moderation import services as moderation_services
 from moderation.models import ContentReport
 from moderation.reasons import VISIBLE_STATES
-from rest_framework import permissions, status
+from rest_framework import permissions, serializers, status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -362,6 +362,23 @@ class SwiftListCreateView(APIView):
     throttle_scope = 'swift_create'
 
     def post(self, request):
+        key = serializers.UUIDField(allow_null=True).run_validation(
+            request.data.get('idempotency_key'))
+        with transaction.atomic():
+            if key is not None:
+                # Serialize keyed publishes for this author before saving files.
+                # A losing retry must not upload an orphan file or enqueue a job.
+                type(request.user).objects.select_for_update().only('pk').get(pk=request.user.pk)
+                existing = SwiftVideo.objects.filter(
+                    author=request.user, idempotency_key=key,
+                ).first()
+                if existing is not None:
+                    if existing.deleted_at or existing.moderation == SwiftVideo.Moderation.REMOVED:
+                        return user_visibility.not_found()
+                    return Response(SwiftSerializer(existing, context=_verified(request)).data)
+            return self._create(request)
+
+    def _create(self, request):
         serializer = SwiftCreateSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

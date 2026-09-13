@@ -53,6 +53,8 @@ services:
     environment:
       SECRET_KEY: dev-only-not-a-real-secret
       DEBUG: "True"
+      # `django` is the hostname the Go services below call this container by.
+      ALLOWED_HOSTS: localhost,127.0.0.1,django
       DATABASE_URL: postgres://approx:approx@postgres:5432/approx
       REDIS_URL: redis://redis:6379
 

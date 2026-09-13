@@ -116,11 +116,11 @@ class RequestRejectionTests(BlockTestCase):
 
         self.as_user(self.bob)
         res = self.client.post('/api/friends/hi/', {'receiver_id': self.alice.pk})
-        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
         self.as_user(self.alice)
         res = self.client.post('/api/friends/hi/', {'receiver_id': self.bob.pk})
-        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_friend_request_rejected_in_both_directions(self):
         self.connect(self.alice, self.bob)

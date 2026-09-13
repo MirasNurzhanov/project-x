@@ -63,6 +63,7 @@ class BlockedUser(models.Model):
 
 
 class Message(models.Model):
+    client_id = models.UUIDField(null=True, blank=True, editable=False)
     sender = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='sent_messages'
     )
@@ -82,6 +83,11 @@ class Message(models.Model):
     deleted_for_receiver = models.BooleanField(default=False)
 
     class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['sender', 'receiver', 'client_id'], name='unique_dm_client_message',
+            ),
+        ]
         indexes = [
             # The unread badge, which every authenticated screen polls about
             # every ten seconds, and the per-sender breakdown beside it.

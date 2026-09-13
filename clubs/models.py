@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Exists, OuterRef, Q
 
 from moderation.reasons import Moderation
 from django.conf import settings
@@ -151,6 +152,53 @@ class ClubMember(models.Model):
 
     def __str__(self):
         return f'{self.user} — {self.club} ({self.role})'
+
+
+class ClubInvitationQuerySet(models.QuerySet):
+    def pending_for(self, user):
+        """Invitations `user` can still answer: pending, to an active club they are not in, with no block either way."""
+        from friends.models import BlockedUser
+
+        return self.filter(
+            receiver=user, status=ClubInvitation.Status.PENDING, club__is_active=True,
+        ).filter(
+            ~Exists(ClubMember.objects.filter(club_id=OuterRef('club_id'), user_id=user.pk)),
+            ~Exists(BlockedUser.objects.filter(
+                Q(blocker_id=user.pk, blocked_id=OuterRef('sender_id'))
+                | Q(blocked_id=user.pk, blocker_id=OuterRef('sender_id'))
+            )),
+        )
+
+
+class ClubInvitation(models.Model):
+    """An owner asking someone to join a club. Only the receiver's acceptance creates the membership."""
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        ACCEPTED = 'accepted', 'Accepted'
+        DECLINED = 'declined', 'Declined'
+
+    club = models.ForeignKey(Club, on_delete=models.CASCADE, related_name='invitations')
+    sender = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL,
+        related_name='sent_club_invitations',
+    )
+    receiver = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='club_invitations',
+    )
+    status = models.CharField(max_length=8, choices=Status.choices, default=Status.PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
+
+    objects = ClubInvitationQuerySet.as_manager()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['club', 'receiver'], name='club_invitation_one_per_receiver'),
+        ]
+
+    def __str__(self):
+        return f'{self.sender} → {self.receiver} @ {self.club} ({self.status})'
 
 
 class ClubEvent(models.Model):

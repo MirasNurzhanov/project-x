@@ -1,0 +1,76 @@
+name: Backend CI
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aura
+          POSTGRES_PASSWORD: aura-ci-only
+          POSTGRES_DB: aura_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aura -d aura_ci"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      # Disposable service credentials and placeholders, never production secrets.
+      SECRET_KEY: ci-only-aura-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ-abcdefghijklmnopqrstuvwxyz
+      DATABASE_URL: postgresql://aura:aura-ci-only@localhost:5432/aura_ci
+      CI_DATABASE_URL: postgresql://aura:aura-ci-only@localhost:5432/aura_ci
+      CI_REDIS_URL: redis://localhost:6379/15
+      R2_ACCESS_KEY_ID: ci-placeholder
+      R2_SECRET_ACCESS_KEY: ci-placeholder
+      R2_BUCKET_NAME: ci-placeholder
+      R2_ENDPOINT_URL: https://storage.example.test
+      R2_PUBLIC_URL: https://storage.example.test
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Check installed dependencies
+        run: python -m pip check
+      - name: Check deployment settings
+        env:
+          DEBUG: 'False'
+          ALLOWED_HOSTS: api.example.test
+          FORWARDED_ALLOW_IPS: 127.0.0.1
+          SECURE_HSTS_INCLUDE_SUBDOMAINS: 'True'
+          SECURE_HSTS_PRELOAD: 'True'
+        run: python manage.py check --deploy --fail-level WARNING --settings=core.settings
+      - name: Check migration drift
+        run: python manage.py makemigrations --check --dry-run --settings=core.ci_test_settings
+      - name: Full backend suite
+        run: python manage.py test --settings=core.test_settings --noinput
+      - name: PostgreSQL and Redis regressions
+        run: >-
+          python manage.py test swifts.test_publish_integrity recs.tests.test_exposure
+          friends.test_hi_abuse core.test_websocket_suspension core.test_query_budgets
+          --settings=core.ci_test_settings --noinput

@@ -3,7 +3,7 @@ from rest_framework import serializers
 
 from regions import places
 from users.models import User
-from .models import Club, ClubEvent, ClubMember, ClubMessage
+from .models import Club, ClubEvent, ClubInvitation, ClubMember, ClubMessage
 
 #: Where `with_card_data` parks the two facts `ClubSerializer` would otherwise
 #: fetch one club at a time. Named rather than inlined so the annotation and the
@@ -245,3 +245,44 @@ class ClubMessageSerializer(serializers.ModelSerializer):
         if obj.image_url:
             return obj.image_url
         return obj.image.url if obj.image else None
+
+
+#: The app's chat input stops here; both server write paths hold clients to the same limit.
+MESSAGE_MAX_CHARS = 2000
+#: The largest id a BigAutoField holds, so a cursor can never overflow the database parameter.
+MESSAGE_ID_MAX = 2 ** 63 - 1
+
+
+class ClubMessageInputSerializer(serializers.Serializer):
+    """What a member may send, validated identically for the REST view and the chat socket."""
+    content = serializers.CharField(max_length=MESSAGE_MAX_CHARS, allow_blank=True, default='')
+    # Meetup proposals are written by the event endpoint alongside their event, never claimed by a client.
+    message_type = serializers.ChoiceField(
+        choices=[ClubMessage.MessageType.TEXT],
+        default=ClubMessage.MessageType.TEXT,
+        error_messages={'invalid_choice': 'Unsupported message_type.'},
+    )
+
+
+class ClubMessageCursorSerializer(serializers.Serializer):
+    before = serializers.IntegerField(min_value=1, max_value=MESSAGE_ID_MAX, required=False)
+
+
+def first_error(errors):
+    """The first human-readable message in a DRF errors structure."""
+    while isinstance(errors, (dict, list)):
+        errors = next(iter(errors.values()), '') if isinstance(errors, dict) else (errors[0] if errors else '')
+    return str(errors)
+
+
+class ClubInvitationSerializer(serializers.ModelSerializer):
+    club = serializers.SerializerMethodField()
+    sender = BasicUserSerializer(read_only=True)
+    receiver = BasicUserSerializer(read_only=True)
+
+    class Meta:
+        model = ClubInvitation
+        fields = ('id', 'club', 'sender', 'receiver', 'status', 'created_at', 'responded_at')
+
+    def get_club(self, obj):
+        return {'id': obj.club_id, 'name': obj.club.name}

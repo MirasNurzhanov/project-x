@@ -607,6 +607,7 @@ class NearbyUsersView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = 'map_query'
 
     def get(self, request):
         delete_old_encounters_throttled()
@@ -662,6 +663,7 @@ class NearbyQueryView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = 'map_query'
 
     def post(self, request):
         serializer = NearbyQuerySerializer(data=request.data)
@@ -700,6 +702,7 @@ class NearbyMapView(APIView):
     """The map, anchored on the position stored for the caller."""
 
     permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = 'map_query'
 
     def get(self, request):
         user = request.user
@@ -734,6 +737,7 @@ class MapQueryView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = 'map_query'
 
     def post(self, request):
         serializer = NearbyQuerySerializer(data=request.data)

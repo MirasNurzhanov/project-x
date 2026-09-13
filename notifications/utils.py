@@ -508,22 +508,14 @@ def notify_club_event_decided(event, decided_by, approved: bool):
     )
 
 
-def notify_club_invite(club, invited_by, member):
-    """`member` was added to `club` by an owner.
-
-    An invitation here is not a request — the owner adds people directly, so
-    this is the first the invitee hears of it. Without it they are a member of
-    something they have never heard of.
-    """
-    return _club_alert(
-        [member],
-        Notification.Type.CLUB_INVITE,
-        f'@{invited_by.username} added you to {club.name}',
-        sender=invited_by,
-        club=club,
-        push_title='👥 Added to a club',
-        category='club_event',
-        data={'type': 'club', 'club_id': club.pk, 'club_name': club.name},
+def notify_club_invite(invitation):
+    """Ask the invitee to join. Push only, like a Hi: the invitation itself is the request they answer."""
+    club = invitation.club
+    return send_push_notification(
+        invitation.receiver, '👥 Club invitation',
+        f'@{invitation.sender.username} invited you to join {club.name}',
+        data={'type': 'request', 'club_id': club.pk, 'club_name': club.name},
+        category='social',
     )
 
 

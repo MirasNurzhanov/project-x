@@ -20,7 +20,7 @@ from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from clubs.models import Club, ClubEvent, ClubMember
+from clubs.models import Club, ClubEvent, ClubInvitation, ClubMember
 from friends.models import BlockedUser
 from notifications.models import Notification
 from notifications.push import allows, channel_for, push_to_users
@@ -287,13 +287,18 @@ class ClubEventAlertTests(PushTargetTestCase):
         self.club.delete()
         self.assertEqual(Notification.objects.count(), 0)
 
-    def test_an_invitation_tells_the_person_who_was_added(self):
+    def test_an_invitation_asks_the_invitee_by_push_without_an_activity_row(self):
         newcomer = make_user('newcomer')
-        notify_club_invite(self.club, self.owner, newcomer)
-        alert = self.alerts(Notification.Type.CLUB_INVITE).get()
-        self.assertEqual(alert.recipient_id, newcomer.pk)
-        self.assertEqual(alert.club_id, self.club.pk)
-        self.assertIn('Runners', alert.message)
+        invitation = ClubInvitation.objects.create(club=self.club, sender=self.owner, receiver=newcomer)
+        with patch('notifications.utils.push_to_user') as push:
+            notify_club_invite(invitation)
+        recipient, _title, message = push.call_args.args
+        self.assertEqual(recipient.pk, newcomer.pk)
+        self.assertIn('Runners', message)
+        self.assertEqual(push.call_args.kwargs['data'],
+                         {'type': 'request', 'club_id': self.club.pk, 'club_name': self.club.name})
+        self.assertEqual(push.call_args.kwargs['category'], 'social')
+        self.assertEqual(self.alerts(Notification.Type.CLUB_INVITE).count(), 0)
 
     def test_event_alerts_answer_to_the_club_events_switch(self):
         self.member.notify_club_events = False

@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import timedelta
 from decouple import config
 import dj_database_url
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -10,7 +11,20 @@ SECRET_KEY = config('SECRET_KEY')
 
 DEBUG = config('DEBUG', default=False, cast=bool)
 
-ALLOWED_HOSTS = ['*']
+
+def _csv_setting(name, default=''):
+    return tuple(p.strip() for p in config(name, default=default).split(',') if p.strip())
+
+
+# Exact names from the deployment; production refuses to start rather than answer any Host.
+ALLOWED_HOSTS = list(_csv_setting(
+    'ALLOWED_HOSTS', default='localhost,127.0.0.1,[::1]' if DEBUG else ''))
+if not DEBUG and not ALLOWED_HOSTS:
+    raise ImproperlyConfigured(
+        'ALLOWED_HOSTS is required when DEBUG is off: set it to the exact hostnames '
+        'this deployment serves, comma-separated.')
+if not DEBUG and '*' in ALLOWED_HOSTS:
+    raise ImproperlyConfigured("ALLOWED_HOSTS must not contain '*' when DEBUG is off.")
 
 INSTALLED_APPS = [
     'daphne',
@@ -247,6 +261,9 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 REST_FRAMEWORK = {
+    # uvicorn resolves REMOTE_ADDR from the explicitly trusted proxy set.
+    # Do not let a caller rotate a raw X-Forwarded-For header to evade limits.
+    'NUM_PROXIES': 0,
     # Not simplejwt's own class. This subclass re-reads the suspension columns
     # on every request, which is what makes a ban take effect at once instead
     # of whenever the current access token happens to expire. See
@@ -285,6 +302,14 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.ScopedRateThrottle',
     ),
     'DEFAULT_THROTTLE_RATES': {
+        'login': config('THROTTLE_LOGIN', default='10/min'),
+        'register': config('THROTTLE_REGISTER', default='10/hour'),
+        'refresh': config('THROTTLE_REFRESH', default='120/hour'),
+        'social_login': config('THROTTLE_SOCIAL_LOGIN', default='30/min'),
+        # A composite poll every ten seconds costs 360/hour. Even two legacy
+        # map reads per tick fit comfortably; alternate anchors share a budget.
+        'map_query': config('THROTTLE_MAP_QUERY', default='1200/hour'),
+        'social_request': config('THROTTLE_SOCIAL_REQUEST', default='30/hour'),
         # The one that matters. Without a limit here, anybody who can watch a
         # Swift can walk the id space and harvest every coordinate the app
         # holds — the reveal gate makes each one cost a view, but nothing
@@ -331,21 +356,20 @@ REST_FRAMEWORK = {
 # silently does nothing is the worst failure a tuning knob can have.
 SWIFT_RECS = {}
 
-CSRF_TRUSTED_ORIGINS = config(
-    'CSRF_TRUSTED_ORIGINS',
-    default='https://*.railway.app,https://*.vercel.app,https://project-x-frontend-alpha.vercel.app',
-).split(',')
+# Django reads '*' as "every subdomain", and railway.app / vercel.app subdomains are free to claim.
+CSRF_TRUSTED_ORIGINS = list(_csv_setting('CSRF_TRUSTED_ORIGINS'))
+if any('*' in origin for origin in CSRF_TRUSTED_ORIGINS):
+    raise ImproperlyConfigured('CSRF_TRUSTED_ORIGINS must list exact origins, without wildcards.')
 
-CORS_URLS_REGEX = r'^.*$'
-
-CORS_ALLOW_ALL_ORIGINS = not DEBUG
-
-CORS_ALLOWED_ORIGINS = config(
+# API auth is a bearer header: no cookies cross-origin, and /admin/, /legal/, /api/internal/ get no CORS.
+CORS_URLS_REGEX = r'^/api/(?!internal/)'
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOW_CREDENTIALS = False
+CORS_ALLOWED_ORIGINS = list(_csv_setting(
     'CORS_ALLOWED_ORIGINS',
-    default='http://localhost:3000,http://localhost:5173,http://192.168.68.113:5173,http://192.168.68.113:8000,https://project-x-frontend-alpha.vercel.app',
-).split(',')
-
-CORS_ALLOW_CREDENTIALS = True
+    default='http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173'
+    if DEBUG else '',
+))
 
 CORS_ALLOW_HEADERS = [
     'accept',
@@ -374,8 +398,24 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
-USE_X_FORWARDED_HOST = True
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+# Never read forwarded headers here: uvicorn applies them only from FORWARDED_ALLOW_IPS peers (core/asgi.py).
+SECURE_PROXY_SSL_HEADER = None
+USE_X_FORWARDED_HOST = False
+
+SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=not DEBUG, cast=bool)
+# The Go moderation worker calls in over Railway's plain-HTTP private network.
+SECURE_REDIRECT_EXEMPT = [r'^api/internal/']
+# Browsers keep HSTS for max-age, so start short and raise it by environment variable.
+SECURE_HSTS_SECONDS = config('SECURE_HSTS_SECONDS', default=0 if DEBUG else 3600, cast=int)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = config('SECURE_HSTS_INCLUDE_SUBDOMAINS', default=False, cast=bool)
+SECURE_HSTS_PRELOAD = config('SECURE_HSTS_PRELOAD', default=False, cast=bool)
+SECURE_REFERRER_POLICY = 'same-origin'
+
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = 'Lax'
 
 # Cloudflare R2, via django-storages' S3-compatible backend — R2 speaks the S3
 # API, so no R2-specific package is needed. `custom_domain` is the public
@@ -759,10 +799,6 @@ EPIDEMIC_SOUND_TRACK_PATH = config(
 #
 # Left empty, that provider's half of the endpoint answers 503 `not_configured`
 # and the app hides the button rather than offering one that cannot work.
-def _csv_setting(name):
-    return tuple(p.strip() for p in config(name, default='').split(',') if p.strip())
-
-
 GOOGLE_OAUTH_CLIENT_IDS = _csv_setting('GOOGLE_OAUTH_CLIENT_IDS')
 APPLE_SIGN_IN_CLIENT_IDS = _csv_setting('APPLE_SIGN_IN_CLIENT_IDS')
 

@@ -267,6 +267,7 @@ class SwiftCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
     #: `blank=True` on the model is for the legacy Cloudinary-era rows that
     #: never populate this column at all — a new post always carries the file.
     video = serializers.FileField(required=True)
+    idempotency_key = serializers.UUIDField(required=False, allow_null=True, write_only=True)
 
     #: The two pieces of a Swift a person writes. The video itself is not
     #: screened by anything here and this module does not pretend otherwise —
@@ -276,7 +277,7 @@ class SwiftCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
     class Meta:
         model = SwiftVideo
         fields = [
-            'video', 'thumbnail',
+            'video', 'thumbnail', 'idempotency_key',
             'duration_ms', 'width', 'height', 'status',
             'caption',
             'uses_original_audio',

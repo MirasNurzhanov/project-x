@@ -530,6 +530,12 @@ class EnforcementTests(TestCase):
 
 # ─── B · The agreement ────────────────────────────────────────────────────────
 class TermsTests(TestCase):
+    def setUp(self):
+        # Database rollback does not isolate DRF's IP-based cache counters.
+        from django.core.cache import cache
+        cache.clear()
+        self.addCleanup(cache.clear)
+
     def test_the_documents_are_public(self):
         res = APIClient().get('/api/users/terms/')
         self.assertEqual(res.status_code, 200)

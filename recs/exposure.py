@@ -26,8 +26,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from django.db import transaction
-from django.db.models import F, Q
+from django.db import connection, transaction
+from django.db.models import F
 from django.utils import timezone
 
 from swifts.models import SwiftView
@@ -87,42 +87,37 @@ def mark_served(viewer, entries):
 
     `entries` is a sequence of `(swift_id, source)`.
 
-    Written with `bulk_create(..., update_conflicts=True)` so a re-served Swift
-    bumps its counter instead of raising on the unique constraint — one
-    statement whatever the page size, which matters because this sits directly
-    in the feed request's latency.
+    One atomic upsert per batch, including the existing-row increment. Django's
+    bulk_create update_fields only assigns proposed values; it cannot express
+    that increment. PostgreSQL and SQLite both support this ON CONFLICT form.
+    Duplicate ids within a page count as one serve, with the last source kept.
     """
     if not entries:
         return 0
 
-    now = timezone.now()
-    rows = [
-        SwiftImpression(
-            viewer=viewer,
-            swift_id=swift_id,
-            served_by=source or '',
-            first_served_at=now,
-            last_served_at=now,
-        )
-        for swift_id, source in entries
-    ]
-    SwiftImpression.objects.bulk_create(
-        rows,
-        update_conflicts=True,
-        update_fields=['last_served_at', 'served_by'],
-        unique_fields=['viewer', 'swift'],
-    )
-
-    # The counter cannot be expressed in the upsert above — `update_fields`
-    # takes values from the proposed row, not an expression — so the increment
-    # for rows that already existed is a second statement. Bounded by page size.
-    SwiftImpression.objects.filter(
-        viewer=viewer,
-        swift_id__in=[swift_id for swift_id, _ in entries],
-        first_served_at__lt=now,
-    ).update(serve_count=F('serve_count') + 1)
-
-    return len(rows)
+    unique_entries = list(dict(entries).items())
+    now = SwiftImpression._meta.get_field('last_served_at').get_db_prep_value(
+        timezone.now(), connection)
+    table = connection.ops.quote_name(SwiftImpression._meta.db_table)
+    max_params = connection.features.max_query_params
+    batch_size = max_params // 6 if max_params else len(unique_entries)
+    with connection.cursor() as cursor:
+        for start in range(0, len(unique_entries), batch_size):
+            batch = unique_entries[start:start + batch_size]
+            placeholders = ', '.join(['(%s, %s, %s, %s, %s, %s)'] * len(batch))
+            values = [value for swift_id, source in batch
+                      for value in (viewer.pk, swift_id, now, now, 1, source or '')]
+            cursor.execute(
+                f'INSERT INTO {table} '
+                '(viewer_id, swift_id, first_served_at, last_served_at, serve_count, served_by) '
+                f'VALUES {placeholders} '
+                'ON CONFLICT (viewer_id, swift_id) DO UPDATE SET '
+                'last_served_at = EXCLUDED.last_served_at, '
+                'served_by = EXCLUDED.served_by, '
+                f'serve_count = {table}.serve_count + 1',
+                values,
+            )
+    return len(unique_entries)
 
 
 def reclaim(viewer, *, params=None, now=None):

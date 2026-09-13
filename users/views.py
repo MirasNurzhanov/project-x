@@ -45,6 +45,7 @@ class SafeTokenRefreshSerializer(TokenRefreshSerializer):
 
 class SafeTokenRefreshView(TokenRefreshView):
     serializer_class = SafeTokenRefreshSerializer
+    throttle_scope = 'refresh'
 
 
 class _SuspendedAccount(Exception):
@@ -148,6 +149,7 @@ class SuspensionAwareTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 class SuspensionAwareTokenObtainPairView(TokenObtainPairView):
     serializer_class = SuspensionAwareTokenObtainPairSerializer
+    throttle_scope = 'login'
 
     def post(self, request, *args, **kwargs):
         try:
@@ -165,6 +167,8 @@ class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_scope = 'register'
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -210,11 +214,12 @@ class SocialLoginView(APIView):
     will be, and a client that had to guess would get it wrong for exactly the
     people who already had an account.
 
-    Rate limiting is deliberately absent: every path through here is gated on a
-    signature from Google or Apple, so there is nothing to guess at and nothing
-    to enumerate.
+    Provider verification and account resolution retain their existing behavior;
+    a separate generous IP budget limits abusive verification traffic.
     """
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_scope = 'social_login'
 
     def post(self, request):
         provider = str(request.data.get('provider', '')).lower().strip()

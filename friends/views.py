@@ -2,13 +2,14 @@ import json
 
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.db import transaction
 from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from moderation import services as moderation_services
 from moderation.models import ContentReport
 from moderation.reasons import Reason
-from rest_framework import permissions, status
+from rest_framework import permissions, serializers, status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -17,6 +18,7 @@ from users import visibility
 from users.models import User
 from .models import BlockedUser, FriendRequest, HiRequest, Message
 from .serializers import BasicUserSerializer, FriendRequestSerializer, HiRequestSerializer, MessageSerializer
+from .serializers import MessageHistoryQuerySerializer, MessageReadSerializer
 from notifications.utils import (
     notify_direct_message, notify_story_reply, send_push_notification,
 )
@@ -87,29 +89,33 @@ def _are_friends(user_a, user_b):
 
 class SendHiView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = 'social_request'
 
     def post(self, request):
         receiver_id = request.data.get('receiver_id')
         if not receiver_id:
             return Response({'detail': 'receiver_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        receiver = get_object_or_404(User, pk=receiver_id)
-        if receiver == request.user:
-            return Response({'detail': 'You cannot send a Hi to yourself.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            receiver = visibility.visible_users(request.user).filter(pk=receiver_id).first()
+        except (TypeError, ValueError, OverflowError):
+            receiver = None
+        if receiver is None:
+            return visibility.not_found()
 
-        if _blocked_either_way(request.user, receiver):
-            return Response({'detail': 'Cannot send Hi to this user.'}, status=status.HTTP_403_FORBIDDEN)
-
-        HiRequest.objects.filter(sender=request.user, receiver=receiver).delete()
-
-        hi = HiRequest.objects.create(sender=request.user, receiver=receiver)
-        send_push_notification(
-            receiver, 'New Hi! 👋', f'@{request.user.username} wants to connect',
-            data={'type': 'request', 'user_id': request.user.pk,
-                  'username': request.user.username},
-            category='social',
-        )
-        return Response(HiRequestSerializer(hi).data, status=status.HTTP_201_CREATED)
+        # The existing unique constraint arbitrates concurrent first sends.
+        # Repeats preserve pending, accepted and rejected rows and never re-push.
+        with transaction.atomic():
+            hi, created = HiRequest.objects.get_or_create(sender=request.user, receiver=receiver)
+            if created:
+                transaction.on_commit(lambda: send_push_notification(
+                    receiver, 'New Hi! 👋', f'@{request.user.username} wants to connect',
+                    data={'type': 'request', 'user_id': request.user.pk,
+                          'username': request.user.username},
+                    category='social',
+                ))
+        return Response(HiRequestSerializer(hi).data,
+                        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
 
 class AcceptHiView(APIView):
@@ -119,8 +125,10 @@ class AcceptHiView(APIView):
         hi = get_object_or_404(HiRequest, pk=pk, receiver=request.user, status=HiRequest.Status.PENDING)
         if _blocked_either_way(request.user, hi.sender):
             return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        if not HiRequest.objects.filter(pk=hi.pk, status=HiRequest.Status.PENDING).update(
+                status=HiRequest.Status.ACCEPTED):
+            return visibility.not_found()
         hi.status = HiRequest.Status.ACCEPTED
-        hi.save(update_fields=['status'])
         send_push_notification(
             hi.sender, '🎉 Connected!', f'@{request.user.username} accepted your Hi',
             data={'type': 'message', 'user_id': request.user.pk,
@@ -134,8 +142,10 @@ class DeclineHiView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        hi = get_object_or_404(HiRequest, pk=pk, receiver=request.user, status=HiRequest.Status.PENDING)
-        hi.delete()
+        if not HiRequest.objects.filter(pk=pk, receiver=request.user,
+                                        status=HiRequest.Status.PENDING).update(
+                status=HiRequest.Status.REJECTED):
+            return visibility.not_found()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -253,11 +263,21 @@ class MessagesView(APIView):
         ).exclude(
             Q(sender=request.user, deleted_for_sender=True) |
             Q(receiver=request.user, deleted_for_receiver=True)
-        ).order_by('created_at')
-
-        Message.objects.filter(sender=other, receiver=request.user, is_read=False).update(is_read=True)
-
-        return Response(MessageSerializer(messages, many=True).data)
+        ).select_related('sender').order_by('-id')
+        query = MessageHistoryQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        before = query.validated_data.get('before')
+        if before is not None:
+            messages = messages.filter(id__lt=before)
+        limit = query.validated_data['limit']
+        page = list(messages[:limit + 1])
+        has_more = len(page) > limit
+        page = page[:limit]
+        return Response({
+            'results': MessageSerializer(list(reversed(page)), many=True).data,
+            'next_before': page[-1].id if has_more else None,
+            'has_more': has_more,
+        })
 
     def post(self, request, user_id):
         other = get_object_or_404(User, pk=user_id)
@@ -266,6 +286,14 @@ class MessagesView(APIView):
 
         if BlockedUser.objects.filter(blocker=other, blocked=request.user).exists():
             return Response({'detail': 'Cannot send messages to this user.'}, status=status.HTTP_403_FORBIDDEN)
+
+        client_id = serializers.UUIDField(allow_null=True).run_validation(request.data.get('client_id'))
+        if client_id is not None:
+            existing = Message.objects.filter(sender=request.user, receiver=other, client_id=client_id).first()
+            if existing is not None:
+                if existing.deleted_for_sender or existing.deleted_for_receiver:
+                    return visibility.not_found()
+                return Response(MessageSerializer(existing).data)
 
         content = request.data.get('content', '').strip()
         image = request.FILES.get('image')
@@ -286,13 +314,22 @@ class MessagesView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        message = Message.objects.create(
-            sender=request.user,
-            receiver=other,
-            content=content,
-            image=image,
-            image_url=image_url,
-        )
+        if client_id is not None:
+            if image or image_url:
+                return Response({'detail': 'client_id is supported for text sends only.'}, status=400)
+            with transaction.atomic():
+                message, created = Message.objects.get_or_create(
+                    sender=request.user, receiver=other, client_id=client_id,
+                    defaults={'content': content},
+                )
+            if not created:
+                if message.deleted_for_sender or message.deleted_for_receiver:
+                    return visibility.not_found()
+                return Response(MessageSerializer(message).data)
+        else:
+            message = Message.objects.create(
+                sender=request.user, receiver=other, content=content, image=image, image_url=image_url,
+            )
 
         # A story reply is a normal DM carrying an encoded payload, plus a
         # `story_id` naming what it answers. It gets a story alert instead of the
@@ -313,6 +350,7 @@ class MessagesView(APIView):
             {
                 'type': 'chat.message',
                 'id': message.id,
+                'client_id': str(message.client_id) if message.client_id else None,
                 'sender_id': request.user.pk,
                 'content': message.content,
                 'image_url': message.image_url or (message.image.url if message.image else None),
@@ -321,6 +359,30 @@ class MessagesView(APIView):
         )
 
         return Response(MessageSerializer(message).data, status=status.HTTP_201_CREATED)
+
+
+class ReadMessagesView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, user_id):
+        other = get_object_or_404(User, pk=user_id)
+        if not _are_connected(request.user, other):
+            return Response({'detail': 'You are not friends with this user.'}, status=403)
+        payload = MessageReadSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        through_id = payload.validated_data['through_id']
+        # A real, visible inbound message anchors the acknowledgement to this
+        # conversation. Newer messages arriving during a fetch remain unread.
+        anchor = Message.objects.filter(
+            pk=through_id, sender=other, receiver=request.user, deleted_for_receiver=False,
+        ).exists()
+        if not anchor:
+            return visibility.not_found()
+        updated = Message.objects.filter(
+            sender=other, receiver=request.user, id__lte=through_id,
+            deleted_for_receiver=False, is_read=False,
+        ).update(is_read=True)
+        return Response({'read_through': through_id, 'updated': updated})
 
 
 class RemoveFriendView(APIView):
@@ -458,6 +520,7 @@ class UnblockUserView(APIView):
 
 class SendFriendRequestView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = 'social_request'
 
     def post(self, request, user_id):
         receiver = get_object_or_404(User, pk=user_id)

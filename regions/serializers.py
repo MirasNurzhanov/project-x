@@ -1,7 +1,23 @@
+from django.conf import settings
 from rest_framework import serializers
 
 from . import geometry
 from .models import Region
+
+
+class _BoundedListField(serializers.ListField):
+    """A ListField that refuses an oversized list before validating a single item of it."""
+
+    default_error_messages = {'too_many_items': 'Ensure this field has no more than {max_items} elements.'}
+
+    def __init__(self, *args, max_items=None, **kwargs):
+        self.max_items = max_items
+        super().__init__(*args, **kwargs)
+
+    def to_internal_value(self, data):
+        if self.max_items is not None and isinstance(data, list) and len(data) > self.max_items:
+            self.fail('too_many_items', max_items=self.max_items)
+        return super().to_internal_value(data)
 
 
 class RegionSummarySerializer(serializers.ModelSerializer):
@@ -57,16 +73,21 @@ class TracedRegionSerializer(serializers.Serializer):
     parent_name = serializers.CharField(
         max_length=200, required=False, allow_blank=True, default='',
     )
-    rings = serializers.ListField(
-        child=serializers.ListField(
-            child=serializers.ListField(
-                child=serializers.FloatField(), min_length=2, max_length=2,
-            ),
+    # Every level is bounded before its items are parsed, so an oversized body costs a length check, not a float parse.
+    rings = _BoundedListField(
+        child=_BoundedListField(
+            child=_BoundedListField(child=serializers.FloatField(), min_length=2, max_items=2),
             min_length=3,
+            error_messages={'too_many_items': 'Each ring may have at most {max_items} points.'},
         ),
         min_length=1,
-        max_length=8,
+        max_items=8,
+        error_messages={'too_many_items': 'An outline may have at most {max_items} rings.'},
     )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['rings'].child.max_items = settings.REGION_MAX_TRACED_RING_POINTS
 
     def validate_rings(self, rings):
         """Unwrap, measure, and refuse anything that is not a plausible area.
@@ -76,6 +97,12 @@ class TracedRegionSerializer(serializers.Serializer):
         of a province is either a mistake or an attempt to blanket a region, and
         neither should be stored.
         """
+        max_points = settings.REGION_MAX_TRACED_POINTS
+        if sum(len(ring) for ring in rings) > max_points:
+            raise serializers.ValidationError(
+                f'That outline has too many points. Keep it to {max_points} in total.'
+            )
+
         for ring in rings:
             for lon, lat in ring:
                 if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):

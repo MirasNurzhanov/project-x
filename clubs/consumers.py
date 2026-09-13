@@ -1,9 +1,9 @@
 import json
-from channels.generic.websocket import AsyncWebsocketConsumer
+from core.websockets import SuspensionAwareConsumer, account_can_use_socket
 from channels.db import database_sync_to_async
 
 
-class ClubChatConsumer(AsyncWebsocketConsumer):
+class ClubChatConsumer(SuspensionAwareConsumer):
 
     async def connect(self):
         user = self.scope.get('user')
@@ -34,8 +34,15 @@ class ClubChatConsumer(AsyncWebsocketConsumer):
             await self._send_error('Invalid JSON.')
             return
 
-        content = data.get('content', '').strip()
-        message_type = data.get('message_type', 'text')
+        from .serializers import ClubMessageInputSerializer, first_error
+
+        # The same definition the REST view validates against, so neither write path is the weaker one.
+        payload = ClubMessageInputSerializer(data=data)
+        if not payload.is_valid():
+            await self._send_error(first_error(payload.errors))
+            return
+        content = payload.validated_data['content']
+        message_type = payload.validated_data['message_type']
 
         if not content:
             await self._send_error('content is required.')
@@ -58,6 +65,9 @@ class ClubChatConsumer(AsyncWebsocketConsumer):
             return
 
         message = await self._save_message(content, message_type, verdict)
+        if message is None:
+            await self.close(code=4001)
+            return
         if verdict.flagged:
             # Stored, invisible to the club, and in the moderation queue. It is
             # deliberately not broadcast: putting it on everyone's screen and
@@ -108,6 +118,9 @@ class ClubChatConsumer(AsyncWebsocketConsumer):
         from moderation.models import ContentReport
         from notifications.utils import notify_club_message
         from .models import ClubMessage
+
+        if not account_can_use_socket(self.user.pk):
+            return None
 
         moderation = (
             moderation_services.moderation_for(verdict)

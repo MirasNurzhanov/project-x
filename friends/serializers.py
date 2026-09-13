@@ -36,9 +36,18 @@ class MessageSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Message
-        fields = ('id', 'sender', 'content', 'image', 'created_at', 'is_read')
+        fields = ('id', 'client_id', 'sender', 'content', 'image', 'created_at', 'is_read')
 
     def get_image(self, obj):
         if obj.image_url:
             return obj.image_url
         return obj.image.url if obj.image else None
+
+
+class MessageHistoryQuerySerializer(serializers.Serializer):
+    before = serializers.IntegerField(required=False, min_value=1, max_value=2**63 - 1)
+    limit = serializers.IntegerField(default=50, min_value=1, max_value=100)
+
+
+class MessageReadSerializer(serializers.Serializer):
+    through_id = serializers.IntegerField(min_value=1, max_value=2**63 - 1)

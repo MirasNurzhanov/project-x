@@ -1,10 +1,10 @@
 import json
-from channels.generic.websocket import AsyncWebsocketConsumer
+from core.websockets import SuspensionAwareConsumer, account_can_use_socket
 from channels.db import database_sync_to_async
 from django.db.models import Q
 
 
-class UserNotificationConsumer(AsyncWebsocketConsumer):
+class UserNotificationConsumer(SuspensionAwareConsumer):
     async def connect(self):
         user = self.scope.get('user')
         if not user or not user.is_authenticated:
@@ -28,7 +28,7 @@ class UserNotificationConsumer(AsyncWebsocketConsumer):
         }))
 
 
-class ChatConsumer(AsyncWebsocketConsumer):
+class ChatConsumer(SuspensionAwareConsumer):
 
     async def connect(self):
         user = self.scope.get('user')
@@ -89,6 +89,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             return
 
         message = await self._save_message(content)
+        if message is None:
+            await self.close(code=4001)
+            return
         await self.channel_layer.group_send(
             self.room_group,
             {
@@ -105,6 +108,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.send(json.dumps({
             'type': 'chat_message',
             'id': event['id'],
+            'client_id': event.get('client_id'),
             'sender_id': event['sender_id'],
             'content': event['content'],
             'image_url': event.get('image_url'),
@@ -145,6 +149,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
     def _save_message(self, content):
         from notifications.utils import notify_direct_message
         from .models import Message
+        # Moderation may await an external service after the dispatch check.
+        if not account_can_use_socket(self.user.pk):
+            return None
         message = Message.objects.create(
             sender=self.user,
             receiver=self.other,

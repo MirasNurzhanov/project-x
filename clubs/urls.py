@@ -5,6 +5,9 @@ urlpatterns = [
     path('', views.ClubListCreateView.as_view(), name='club-list-create'),
     # Before the <int:pk> route so the word is never read as an id.
     path('my-location/', views.MyClubLocationView.as_view(), name='club-my-location'),
+    path('invitations/', views.ClubInvitationListView.as_view(), name='club-invitations'),
+    path('invitations/<int:pk>/accept/', views.ClubInvitationAcceptView.as_view(), name='club-invitation-accept'),
+    path('invitations/<int:pk>/decline/', views.ClubInvitationDeclineView.as_view(), name='club-invitation-decline'),
     path('<int:pk>/', views.ClubDetailView.as_view(), name='club-detail'),
     path('<int:pk>/join/', views.ClubJoinView.as_view(), name='club-join'),
     path('<int:pk>/leave/', views.ClubLeaveView.as_view(), name='club-leave'),

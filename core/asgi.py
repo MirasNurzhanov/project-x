@@ -1,10 +1,37 @@
+import ipaddress
 import os
+
+from decouple import config
 from django.core.asgi import get_asgi_application
+from django.core.exceptions import ImproperlyConfigured
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
 
+
+def require_trusted_proxies(debug, value):
+    """Refuse production traffic unless uvicorn trusts an explicit, bounded set of proxy addresses."""
+    if debug:
+        return
+    entries = [entry.strip() for entry in (value or '').split(',') if entry.strip()]
+    if not entries:
+        raise ImproperlyConfigured(
+            'FORWARDED_ALLOW_IPS must list the trusted proxy addresses when DEBUG is off.')
+    for entry in entries:
+        try:
+            network = ipaddress.ip_network(entry, strict=False)
+        except ValueError:
+            raise ImproperlyConfigured(
+                f'FORWARDED_ALLOW_IPS entry {entry!r} is not an IP address or CIDR range.') from None
+        if network.prefixlen == 0:
+            raise ImproperlyConfigured(f'FORWARDED_ALLOW_IPS entry {entry!r} would trust every peer.')
+
+
 # Must be called before any app imports so django.setup() runs first
 django_asgi_app = get_asgi_application()
+
+# Django takes the scheme from uvicorn, which honours X-Forwarded-Proto only from these peers.
+# DEBUG is read as settings.py reads it: the test runner forces settings.DEBUG off.
+require_trusted_proxies(config('DEBUG', default=False, cast=bool), os.environ.get('FORWARDED_ALLOW_IPS'))
 
 from channels.routing import ProtocolTypeRouter, URLRouter  # noqa: E402
 from django.contrib.staticfiles.handlers import ASGIStaticFilesHandler  # noqa: E402

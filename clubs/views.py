@@ -18,13 +18,14 @@ from notifications.utils import (
     notify_club_message,
 )
 from regions import upstream
-from users.models import User
+from users import visibility as user_visibility
 from . import visibility
-from .models import Club, ClubEvent, ClubMember, ClubMessage
+from .models import Club, ClubEvent, ClubInvitation, ClubMember, ClubMessage
 from .serializers import (
     ClubDetailSerializer, ClubEventNearbySerializer, ClubEventSerializer,
-    ClubMemberSerializer, ClubMessageSerializer, ClubSerializer, PlaceSerializer,
-    with_card_data,
+    ClubInvitationSerializer, ClubMemberSerializer, ClubMessageCursorSerializer,
+    ClubMessageInputSerializer, ClubMessageSerializer, ClubSerializer, PlaceSerializer,
+    first_error, with_card_data,
 )
 
 
@@ -87,6 +88,27 @@ def _accessible_club_or_none(pk, user, place, queryset=None, **filters):
     if club is None or not visibility.can_access(club, user, place):
         return None
     return club
+
+
+def _invalid(serializer):
+    """A 400 carrying DRF's field errors plus the single `detail` line the app shows."""
+    return Response(
+        {'detail': first_error(serializer.errors), **serializer.errors},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _invitable_user(owner, user_id):
+    """Whom `owner` may invite, or None; a missing, blocked or private account all read the same."""
+    try:
+        target = user_visibility.visible_users(owner).filter(pk=user_id, is_active=True).first()
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if target is None or target.discoverable_by_username:
+        return target
+    # Opted out of username search, so only people who already know them may invite them.
+    rel = user_visibility.relationship(owner, target)
+    return target if user_visibility.is_approved_viewer(rel) else None
 
 
 class ClubListCreateView(APIView):
@@ -312,26 +334,84 @@ class ClubLeaveView(APIView):
 
 
 class ClubInviteView(APIView):
+    """Ask someone to join a club. Membership only ever comes from their acceptance."""
     permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = 'social_request'
 
     def post(self, request, pk, user_id):
-        # Not location-gated, on either side. An owner is a member, so they can
-        # always reach their own club; and an invitation is a deliberate act by
-        # somebody who *is* in the area, which is a better authority on who
-        # belongs there than the invitee's current coordinates. The invitee then
-        # holds access through membership, like every other member.
+        # Not location-gated: the owner vouches, the invitee consents, and membership then outranks location.
         club = get_object_or_404(Club, pk=pk, is_active=True)
         membership = _get_membership(club, request.user)
         if not membership or membership.role != ClubMember.Role.OWNER:
             return Response({'detail': 'Only owners can invite.'}, status=status.HTTP_403_FORBIDDEN)
 
-        target = get_object_or_404(User, pk=user_id)
+        target = _invitable_user(request.user, user_id)
+        if target is None:
+            return user_visibility.not_found()
         if club.members.filter(user=target).exists():
             return Response({'detail': 'User is already a member.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        member = ClubMember.objects.create(user=target, club=club)
-        notify_club_invite(club, request.user, target)
+        # One row per person per club, as with a Hi: repeats keep a pending or declined answer and never re-notify.
+        with transaction.atomic():
+            invitation, created = ClubInvitation.objects.get_or_create(
+                club=club, receiver=target, defaults={'sender': request.user},
+            )
+            # Accepted before but no longer a member means they left; coming back needs a fresh yes.
+            if not created and invitation.status == ClubInvitation.Status.ACCEPTED:
+                created = bool(ClubInvitation.objects.filter(
+                    pk=invitation.pk, status=ClubInvitation.Status.ACCEPTED,
+                ).update(
+                    status=ClubInvitation.Status.PENDING, sender=request.user,
+                    responded_at=None, created_at=timezone.now(),
+                ))
+                invitation.refresh_from_db()
+            if created:
+                transaction.on_commit(lambda: notify_club_invite(invitation))
+        return Response(
+            ClubInvitationSerializer(invitation).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class ClubInvitationListView(APIView):
+    """The club invitations waiting on the requester's answer."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        invitations = (
+            ClubInvitation.objects.pending_for(request.user)
+            .select_related('club', 'sender', 'receiver')
+            .order_by('-created_at')
+        )
+        return Response(ClubInvitationSerializer(invitations, many=True).data)
+
+
+class ClubInvitationAcceptView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        with transaction.atomic():
+            # The conditional update is the claim: a repeat, a decline or a block since the invite all lose it.
+            claimed = ClubInvitation.objects.pending_for(request.user).filter(pk=pk).update(
+                status=ClubInvitation.Status.ACCEPTED, responded_at=timezone.now(),
+            )
+            if not claimed:
+                return user_visibility.not_found()
+            club = Club.objects.get(invitations__pk=pk)
+            member, _ = ClubMember.objects.get_or_create(user=request.user, club=club)
         return Response(ClubMemberSerializer(member).data, status=status.HTTP_201_CREATED)
+
+
+class ClubInvitationDeclineView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        declined = ClubInvitation.objects.pending_for(request.user).filter(pk=pk).update(
+            status=ClubInvitation.Status.DECLINED, responded_at=timezone.now(),
+        )
+        if not declined:
+            return user_visibility.not_found()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ClubKickView(APIView):
@@ -567,8 +647,11 @@ class ClubMessageListView(APIView):
             .select_related('sender')
             .order_by('-created_at')
         )
-        before_id = request.query_params.get('before')
-        if before_id:
+        cursor = ClubMessageCursorSerializer(data=request.query_params)
+        if not cursor.is_valid():
+            return _invalid(cursor)
+        before_id = cursor.validated_data.get('before')
+        if before_id is not None:
             qs = qs.filter(id__lt=before_id)
         messages = list(reversed(qs[:50]))
         return Response(ClubMessageSerializer(messages, many=True).data)
@@ -581,15 +664,15 @@ class ClubMessageListView(APIView):
         if not club.members.filter(user=request.user).exists():
             return Response({'detail': 'Members only.'}, status=status.HTTP_403_FORBIDDEN)
 
-        content = request.data.get('content', '').strip()
+        payload = ClubMessageInputSerializer(data=request.data)
+        if not payload.is_valid():
+            return _invalid(payload)
+        content = payload.validated_data['content']
+        message_type = payload.validated_data['message_type']
         image = request.FILES.get('image')
         image_url = (request.data.get('image_url') or '').strip()
         if not content and not image and not image_url:
             return Response({'detail': 'content or image is required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        message_type = request.data.get('message_type', ClubMessage.MessageType.TEXT)
-        if message_type not in ClubMessage.MessageType.values:
-            message_type = ClubMessage.MessageType.TEXT
 
         # A club is semi-public - anyone who joins reads the whole history -
         # so club text takes the same screening story captions and comments do.

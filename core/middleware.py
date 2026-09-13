@@ -2,17 +2,17 @@ from urllib.parse import parse_qs
 from channels.middleware import BaseMiddleware
 from channels.db import database_sync_to_async
 from django.contrib.auth.models import AnonymousUser
-from rest_framework_simplejwt.tokens import AccessToken
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.exceptions import TokenError
+from users.authentication import SuspensionAwareJWTAuthentication
 
 
 @database_sync_to_async
 def _get_user_from_token(token_str):
-    from users.models import User
     try:
-        token = AccessToken(token_str)
-        return User.objects.get(pk=token['user_id'])
-    except (TokenError, User.DoesNotExist):
+        auth = SuspensionAwareJWTAuthentication()
+        return auth.get_user(auth.get_validated_token(token_str))
+    except (TokenError, AuthenticationFailed):
         return AnonymousUser()
 
 

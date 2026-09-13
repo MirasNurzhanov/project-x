@@ -2,6 +2,7 @@
 from django.db.models import Count, Exists, OuterRef, Q, Subquery, Value
 from django.db.models.functions import Coalesce
 
+from clubs.models import ClubInvitation
 from friends.models import BlockedUser, FriendRequest, HiRequest, Message
 from users.models import User
 from .models import Notification
@@ -31,13 +32,15 @@ def navigation_badges(user):
         friend_count=count(FriendRequest.objects.filter(
             receiver_id=user.pk, status=FriendRequest.Status.PENDING,
         ), 'receiver_id'),
+        club_invite_count=count(ClubInvitation.objects.pending_for(user), 'receiver_id'),
         activity_count=count(Notification.objects.filter(
             recipient_id=user.pk, is_read=False,
         ).exclude(notification_type__in=(
             'proximity', 'nearby', 'nearby_user', 'wave',
         )), 'recipient_id'),
-    ).values('chat_count', 'hi_count', 'friend_count', 'activity_count').get()
+    ).values('chat_count', 'hi_count', 'friend_count', 'club_invite_count', 'activity_count').get()
     return {
         'chat': counts['chat_count'],
-        'alerts': counts['hi_count'] + counts['friend_count'] + counts['activity_count'],
+        'alerts': (counts['hi_count'] + counts['friend_count'] + counts['club_invite_count']
+                   + counts['activity_count']),
     }
