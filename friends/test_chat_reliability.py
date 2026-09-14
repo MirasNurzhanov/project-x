@@ -1,10 +1,13 @@
 from datetime import timedelta
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+from unittest import skipUnless
 from unittest.mock import patch
 from uuid import uuid4
 
 from django.core.cache import cache
-from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.db import IntegrityError, close_old_connections, connection, transaction
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -48,6 +51,25 @@ class ChatReliabilityTests(TestCase):
                        {'before': '0'}, {'limit': 0}, {'limit': 101}, {'limit': 'bad'}):
             with self.subTest(params=params):
                 self.assertEqual(self.client.get(self.url, params).status_code, 400)
+
+    def test_club_reconnect_pages_do_not_lose_messages_with_equal_timestamps(self):
+        from clubs.models import Club, ClubMember, ClubMessage
+
+        club = Club.objects.create(name='Catch-up', creator=self.me)
+        ClubMember.objects.create(club=club, user=self.me)
+        messages = [ClubMessage.objects.create(club=club, sender=self.me, content=str(n))
+                    for n in range(125)]
+        ClubMessage.objects.filter(club=club).update(created_at=timezone.now())
+        url = f'/api/clubs/{club.pk}/messages/'
+        latest = self.client.get(url)
+        self.assertEqual(latest.status_code, 200)
+        self.assertEqual([row['id'] for row in latest.data], [row.pk for row in messages[-50:]])
+        # A live arrival between page fetches must not move the older boundary.
+        ClubMessage.objects.create(club=club, sender=self.me, content='new arrival')
+        middle = self.client.get(url, {'before': latest.data[0]['id']})
+        oldest = self.client.get(url, {'before': middle.data[0]['id']})
+        self.assertEqual([row['id'] for row in oldest.data + middle.data + latest.data],
+                         [row.pk for row in messages])
 
     def test_read_acknowledges_only_visible_inbound_messages_through_its_anchor(self):
         older, anchor, newer = [self.incoming() for _ in range(3)]
@@ -106,3 +128,71 @@ class ChatReliabilityTests(TestCase):
         message.deleted_for_sender = True
         message.save(update_fields=['deleted_for_sender'])
         self.assertEqual(self.client.post(self.url, {'client_id': str(key), 'content': 'sent'}).status_code, 404)
+
+
+class MessageEchoTests(TransactionTestCase):
+    def setUp(self):
+        self.sender = User.objects.create_user(username='echo', email='echo@example.test')
+        self.receiver = User.objects.create_user(username='peer', email='peer@example.test')
+        HiRequest.objects.create(sender=self.sender, receiver=self.receiver, status='accepted')
+
+    async def test_rest_acknowledgement_and_real_socket_echo_share_the_client_key(self):
+        from channels.db import database_sync_to_async
+        from channels.routing import URLRouter
+        from channels.testing import WebsocketCommunicator
+        from rest_framework_simplejwt.tokens import AccessToken
+        from core.middleware import JWTAuthMiddleware
+        from .routing import websocket_urlpatterns
+
+        token = str(AccessToken.for_user(self.sender))
+        socket = WebsocketCommunicator(JWTAuthMiddleware(URLRouter(websocket_urlpatterns)),
+                                       f'/ws/chat/{self.receiver.pk}/?token={token}')
+        self.assertTrue((await socket.connect())[0])
+        key = str(uuid4())
+
+        @database_sync_to_async
+        def post():
+            client = APIClient()
+            client.force_authenticate(self.sender)
+            return client.post(f'/api/friends/messages/{self.receiver.pk}/',
+                               {'content': 'echo me', 'client_id': key})
+
+        try:
+            with patch('friends.views.notify_direct_message'):
+                response = await post()
+            echo = await socket.receive_json_from()
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual((echo['id'], echo['client_id']), (response.data['id'], key))
+            self.assertEqual(echo['content'], 'echo me')
+        finally:
+            await socket.disconnect()
+
+
+@skipUnless(connection.vendor == 'postgresql', 'Concurrent inserts require PostgreSQL.')
+class ConcurrentMessageTests(TransactionTestCase):
+    def test_concurrent_retries_create_one_message_acknowledge_both_and_notify_once(self):
+        sender = User.objects.create_user(username='retry', email='retry@example.test')
+        receiver = User.objects.create_user(username='peer', email='peer@example.test')
+        HiRequest.objects.create(sender=sender, receiver=receiver, status='accepted')
+        key = str(uuid4())
+        barrier = Barrier(2)
+
+        def send():
+            close_old_connections()
+            try:
+                client = APIClient()
+                client.force_authenticate(User.objects.get(pk=sender.pk))
+                barrier.wait(timeout=5)
+                response = client.post(f'/api/friends/messages/{receiver.pk}/',
+                                       {'content': 'retry', 'client_id': key})
+                return response.status_code, response.data['id'], response.data['client_id']
+            finally:
+                close_old_connections()
+
+        with patch('friends.views.notify_direct_message') as notify, ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: send(), range(2)))
+        self.assertEqual(sorted(row[0] for row in results), [200, 201])
+        self.assertEqual(len({row[1] for row in results}), 1)
+        self.assertEqual({row[2] for row in results}, {key})
+        self.assertEqual(Message.objects.count(), 1)
+        notify.assert_called_once()

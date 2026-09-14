@@ -16,13 +16,13 @@ per the batch instructions.
 | H5 | High | Polygon containment performs expensive Python geometry on frequent map polling | FIXED (exact latitude-band edge index, linear in size, built once per region; same answers; 24–30× faster at 1,500 vertices in the synthetic benchmark; production latency not measured; no deployment) | `regions/test_containment_index.py` (8), `manage.py bench_containment` | [H5.md](H5.md) |
 | H6 | High | Hand-traced region rings have no vertex limit | FIXED (1,500 points per ring and in total, configurable; refused before parsing; stored geometry readable; pre-existing trace-view 500 fixed; no deployment) | `regions/test_trace_limits.py` (6) | [H6.md](H6.md) |
 | H7 | High | TBD | UNREVIEWED | — | — |
-| H8 | High | TBD | UNREVIEWED | — | — |
+| H8 | High | Chat sockets do not reconnect despite the UI label | FIXED (shared reconnect lifecycle, jitter/backoff, foreground cleanup and missed-history recovery; no deployment) | Mobile chat regressions (25); full mobile suite (888); PostgreSQL/Redis chat tests (17) | [H8.md](H8.md) |
 | H9 | High | TBD | UNREVIEWED | — | — |
 | H10 | High | TBD | UNREVIEWED | — | — |
 | M1 | Medium | TBD | UNREVIEWED | — | — |
 | M2 | Medium | TBD | UNREVIEWED | — | — |
 | M3 | Medium | TBD | UNREVIEWED | — | — |
-| M4 | Medium | TBD | UNREVIEWED | — | — |
+| M4 | Medium | DM text disappears or its failure removes an unrelated pending image | FIXED (optimistic keyed sends, REST ack, exact-message failure/retry, DB uniqueness; migration 0008 required; no deployment) | `friends/test_chat_reliability.py` (10, including PostgreSQL concurrency and real socket echo); mobile chat tests | [M4.md](M4.md) |
 | M5 | Medium | TBD | UNREVIEWED | — | — |
 | M6 | Medium | TBD | UNREVIEWED | — | — |
 | M7 | Medium | TBD | UNREVIEWED | — | — |
@@ -34,16 +34,16 @@ per the batch instructions.
 | M13 | Medium | TBD | UNREVIEWED | — | — |
 | M14 | Medium | Club WebSocket write path skips validation performed by REST | FIXED (one serializer for REST + socket; `?before=` parsed; no deployment) | `clubs/test_message_validation.py` (5) | [M14.md](M14.md) |
 | M15 | Medium | TBD | UNREVIEWED | — | — |
-| M16 | Medium | TBD | UNREVIEWED | — | — |
+| M16 | Medium | DM history is unbounded and GET marks messages read | FIXED (bounded exclusive before cursor, explicit visible-message read ack, updated mobile; coordinated client release required) | Backend pagination/read tests; mobile history/hook/screen tests | [M16.md](M16.md) |
 | M17 | Medium | Storage dependencies unpinned; no lock, unused gunicorn | FIXED (direct pins in `requirements.in`, full uv lock in `requirements.txt`, gunicorn removed, daphne kept for `runserver`; pip-audit ran: 49 advisories in 13 packages fixed by upgrading, now clean on PyPI and OSV; CI lock check and audit job added but not yet run on GitHub) | full backend suite (1696) on the upgraded lock; `.github/workflows/backend-ci.yml` | [M17.md](M17.md) |
 | M18 | Medium | Map-query endpoints lack throttling | FIXED (shared configurable map budget; no deployment) | `proximity/test_throttles.py` (2 passed) + related proximity suite | [M18.md](M18.md) |
 | M19 | Medium | Hi sends race uniqueness, spam and expose hidden users | FIXED (canonical visibility, retained decline, notify once; concurrency verified on PostgreSQL 16.15 + Redis; no deployment) | `friends/test_hi_abuse.py` (5 passed, no skips) | [M19.md](M19.md) |
 | M20 | Medium | Only one uvicorn worker is configured | NEEDS EXTERNAL ACTION (code complete: `WEB_CONCURRENCY` workers, default 2, with Redis and connection-budget startup checks; Railway start-command override, `WEB_CONCURRENCY` and `DB_MAX_CONNECTIONS` unverified) | `core/test_capacity.py` (8), `core/test_security.py` (1 case adapted) | [M20.md](M20.md) |
 | L1 | Low | TBD | UNREVIEWED | — | — |
-| L2 | Low | TBD | UNREVIEWED | — | — |
-| L3 | Low | TBD | UNREVIEWED | — | — |
-| L4 | Low | TBD | UNREVIEWED | — | — |
-| L5 | Low | TBD | UNREVIEWED | — | — |
+| L2 | Low | Many modals do not trap screen-reader focus | FIXED (`accessibilityViewIsModal` on 15 modals in 14 files incl. TermsGate; labelled/added close paths so nothing traps; not verified with VoiceOver/TalkBack on a device) | mobile `modalAccessibility.test.ts` (35), `termsGate.test.tsx` (5) | [L2.md](L2.md) |
+| L3 | Low | Module-level map callback registries are never unregistered | FIXED (register returns an identity-checked unregister; `useMapData` effects clean up) | mobile `nearbyRefresh.test.tsx` (3) | [L3.md](L3.md) |
+| L4 | Low | AuthProvider value/functions recreated; fixed startup delay | FIXED (`useCallback`/`useMemo`; 2.5 s wait removed; bootstrap otherwise unchanged; cold start not measured on a device) | mobile `authContext.test.tsx` (7) | [L4.md](L4.md) |
+| L5 | Low | map.tsx is excessively large | FIXED (4,385 → 432 lines; 8 files in `components/map`, code moved verbatim; no MapScreen render test; not run on a device) | existing suites (886 run), typecheck, lint | [L5.md](L5.md) |
 | L6 | Low | Frontend BASE_URL is hardcoded to production | FIXED (`EXPO_PUBLIC_API_URL` per build, production default, production EAS profile pinned, release builds refuse http/local hosts; no EAS or device build run) | mobile `services/__tests__/apiUrl.test.ts` (21) | [L6.md](L6.md) |
 | L7 | Low | Google client API keys are committed; restrictions need verification | NEEDS EXTERNAL ACTION (repo side verified: 3 client keys, no private credential in tree or history; Google Cloud restrictions unverified) | — | [L7.md](L7.md) |
 | L8 | Low | Blocked-author subquery is duplicated in feed visibility query | FIXED (3 → 1 `friends_blockeduser` subquery in the feed gate; same rows; no deployment) | `swifts/test_visibility_block_subquery.py` (3) | [L8.md](L8.md) |
@@ -69,6 +69,7 @@ per the batch instructions.
 | CLUB CONSENT AND MESSAGE VALIDATION | H2, M14 | 2026-09-13 |
 | MAP PERFORMANCE AND CAPACITY | H5, H6, M20, L8 | 2026-09-13 |
 | DEPENDENCIES AND BUILD CONFIGURATION | M17, L6, L7 | 2026-09-14 |
+| FRONTEND QUALITY | L2, L3, L4, L5 | 2026-09-14 |
 
 **Open deployment action from SECURITY PERIMETER:** with `DEBUG=False`, the backend refuses to
 start without `ALLOWED_HOSTS`, or with a wildcard in `CSRF_TRUSTED_ORIGINS`. The web process also
