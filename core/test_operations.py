@@ -23,7 +23,7 @@ from users.models import User
 class DeploymentTests(SimpleTestCase):
     def test_web_boot_only_starts_application(self):
         entries = dict(line.split(': ', 1) for line in (Path(settings.BASE_DIR) / 'Procfile').read_text().splitlines())
-        self.assertTrue(entries['web'].startswith('uvicorn core.asgi:application'))
+        self.assertTrue(entries['web'].startswith('python -c "import core.asgi" && uvicorn core.asgi:application'))
         self.assertNotIn('manage.py', entries['web'])
         self.assertIn('manage.py migrate', entries['release'])
         self.assertNotIn('fix_age_tiers', '\n'.join(entries.values()))

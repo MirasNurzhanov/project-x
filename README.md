@@ -56,6 +56,8 @@ the process instead, so connections outlive requests for real.
 | `DB_POOL_MIN_SIZE` | `2` | connections opened at startup |
 | `DB_POOL_MAX_SIZE` | `12` | ceiling **per process** — this is the number that has to fit the provider's connection limit |
 | `DB_POOL_TIMEOUT_S` | `10` | how long a request waits for a free connection |
+| `DB_CONNECTION_RESERVE` | `20` | connections kept outside the web workers' pools: moderation worker, migrations, admin sessions |
+| `DB_MAX_CONNECTIONS` | `0` (unchecked) | this replica's share of the database's connection limit; the web process refuses to start when `WEB_CONCURRENCY × DB_POOL_MAX_SIZE + DB_CONNECTION_RESERVE` exceeds it |
 | `DB_SERVER_SIDE_BINDING` | `False` | send parameters separately from the SQL — cheaper per query, but changes parameter type inference |
 | `DB_PREPARE_THRESHOLD` | `0` (off) | executions before Postgres prepares and reuses a plan. Django disables preparation by default because it does not survive a transaction-mode pooler like PgBouncer; psycopg's own pool above is session-level and does not have that problem |
 
@@ -69,6 +71,31 @@ timeout: one long-lived connection doing one thing needs neither.
 Confirm the effect against `pg_stat_activity` after deploying — connection
 count should stop tracking request volume and settle between the two sizes
 above.
+
+## Dependencies
+
+`requirements.in` lists the direct dependencies, each pinned exactly.
+`requirements.txt` is generated from it and pins every transitive package too,
+so two deploys of one commit install the same code. Railway, the Dockerfile and
+CI all install `requirements.txt`.
+
+To change a dependency, edit `requirements.in` and regenerate with uv 0.12.5:
+
+```sh
+uv pip compile requirements.in --universal --python-version 3.12 -o requirements.txt
+```
+
+uv keeps the versions already in `requirements.txt` unless `requirements.in`
+forces a change. Add `--upgrade-package NAME` to move one package deliberately.
+`--universal` keeps the platform markers (uvloop on Linux, colorama and tzdata on
+Windows), so one file serves both.
+
+CI fails when `requirements.txt` does not match `requirements.in`, and audits the
+lock with `pip-audit`. To run the same audit locally:
+
+```sh
+uvx pip-audit --no-deps --disable-pip -r requirements.txt
+```
 
 ## AI moderation for Swift video
 

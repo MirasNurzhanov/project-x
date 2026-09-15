@@ -33,6 +33,21 @@ django_asgi_app = get_asgi_application()
 # DEBUG is read as settings.py reads it: the test runner forces settings.DEBUG off.
 require_trusted_proxies(config('DEBUG', default=False, cast=bool), os.environ.get('FORWARDED_ALLOW_IPS'))
 
+from django.conf import settings  # noqa: E402
+from core.capacity import require_worker_capacity, web_workers  # noqa: E402
+
+# Several workers share nothing in memory: groups, throttles and the cache must live in Redis,
+# and every worker's pool must fit the database.
+require_worker_capacity(
+    debug=config('DEBUG', default=False, cast=bool),
+    workers=web_workers(),
+    redis_url=config('REDIS_URL', default=''),
+    pool_enabled=settings.DB_POOL,
+    pool_max_size=settings.DB_POOL_MAX_SIZE,
+    reserve=settings.DB_CONNECTION_RESERVE,
+    max_connections=settings.DB_MAX_CONNECTIONS,
+)
+
 from channels.routing import ProtocolTypeRouter, URLRouter  # noqa: E402
 from django.contrib.staticfiles.handlers import ASGIStaticFilesHandler  # noqa: E402
 from core.middleware import SocketTicketMiddleware  # noqa: E402

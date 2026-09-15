@@ -86,6 +86,17 @@ def audience_q(viewer):
     The author's own rows always pass. Their own Swift on their own profile is
     not a publication to anybody.
     """
+    return _audience_q(viewer, ~_blocked_author_q(viewer))
+
+
+def _audience_q(viewer, unblocked):
+    """`audience_q` with the block clause its approved-viewer branches use passed in.
+
+    `watchable_q` already requires "nobody blocked anybody" for every row, so it
+    passes an empty Q here: repeating the clause inside the audience would put
+    the same correlated blocked-user subquery into the SQL three times without
+    changing a single answer.
+    """
     from friends.models import FriendRequest, HiRequest
     from .models import SwiftVideo
 
@@ -102,7 +113,6 @@ def audience_q(viewer):
     connected = Q(Exists(HiRequest.objects.filter(
         pair, status=HiRequest.Status.ACCEPTED,
     )))
-    unblocked = ~_blocked_author_q(viewer)
 
     own = Q(author_id=viewer.pk)
 
@@ -129,8 +139,11 @@ def watchable_q(viewer):
     to filter them anyway, but this Q has to be safe on its own or the next
     endpoint to use it inherits a leak. Same argument, and same placement, as
     `users.visibility.visible_field_q`.
+
+    That one clause covers every row, so the audience is built without its own
+    copies of it: `(own | (A & unblocked)) & unblocked` is `(own | A) & unblocked`.
     """
-    return live_q() & audience_q(viewer) & ~_blocked_author_q(viewer)
+    return live_q() & _audience_q(viewer, Q()) & ~_blocked_author_q(viewer)
 
 
 def watchable(viewer, queryset=None):

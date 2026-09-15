@@ -230,6 +230,31 @@ For example, three replicas with two processes and 12 connections each can open
 recommended deployment size. Keep `DB_POOL_MIN_SIZE` in the idle-connection budget
 too. Raising every pool and adding replicas together can overload the database.
 
+### Web worker processes
+
+The Procfile starts `uvicorn --workers "${WEB_CONCURRENCY:-2}"`. Before that it
+imports `core.asgi` once in the foreground, because with more than one worker
+uvicorn restarts a child that fails to load the application instead of exiting.
+A failed startup guard therefore stops the deploy rather than looping. With
+`DEBUG=False` that import refuses to start when:
+
+- more than one worker is configured without `REDIS_URL`. The channel layer, DRF
+  throttles and the Nominatim rate limit must be shared by every process.
+- `DB_MAX_CONNECTIONS` is set and
+  `WEB_CONCURRENCY * DB_POOL_MAX_SIZE + DB_CONNECTION_RESERVE` exceeds it.
+
+The check runs per replica. Set `DB_MAX_CONNECTIONS` to this replica's share of
+PostgreSQL `max_connections`, less the server's reserved connections. The default
+`DB_CONNECTION_RESERVE` of 20 covers:
+
+- the moderation worker's pool, up to `DB_POOL_MAX_SIZE`;
+- the release migration;
+- an admin session.
+
+The Railway start-command override recorded above bypasses the Procfile.
+Remove it, or give it the same pre-flight import and `--workers` flag. Set
+`WEB_CONCURRENCY` explicitly either way.
+
 If measurements justify it, evaluate Railway's
 [PgBouncer connection pooling](https://docs.railway.com/guides/connection-pooling-pgbouncer)
 in staging. Railway exposes pooled and unpooled connection URLs; migrations and

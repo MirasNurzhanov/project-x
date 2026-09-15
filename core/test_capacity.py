@@ -46,6 +46,9 @@ class WorkerCountTests(SimpleTestCase):
     def test_procfile_starts_that_many_workers(self):
         web = next(line for line in (BASE_DIR / 'Procfile').read_text().splitlines() if line.startswith('web:'))
         self.assertIn(f'--workers "${{WEB_CONCURRENCY:-{capacity.DEFAULT_WEB_WORKERS}}}"', web)
+        # With several workers uvicorn restarts a child that fails to import the app instead of exiting,
+        # so the startup guards run once, in the foreground, before it starts.
+        self.assertTrue(web.startswith('web: python -c "import core.asgi" && uvicorn '))
 
     @skipUnless(shutil.which('sh'), 'needs a POSIX shell to expand the Procfile command')
     def test_procfile_expands_the_worker_count(self):

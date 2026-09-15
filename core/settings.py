@@ -162,6 +162,15 @@ DB_POOL_MAX_SIZE = config('DB_POOL_MAX_SIZE', default=12, cast=int)
 # shorter than the statement timeout below: waiting for a slot is queueing, and
 # a queue that outlasts the client's patience is worse than a clear error.
 DB_POOL_TIMEOUT_S = config('DB_POOL_TIMEOUT_S', default=10.0, cast=float)
+# The web process runs WEB_CONCURRENCY uvicorn workers (Procfile), each with its
+# own pool, and core.asgi refuses to serve when
+#   workers × DB_POOL_MAX_SIZE + DB_CONNECTION_RESERVE > DB_MAX_CONNECTIONS.
+# The reserve is everything that is not a web worker: the moderation worker's
+# pool (up to DB_POOL_MAX_SIZE itself), the release-phase migration and an admin
+# psql session. DB_MAX_CONNECTIONS is what this replica may use of the database's
+# limit; 0 means it has not been declared and the check is skipped.
+DB_CONNECTION_RESERVE = config('DB_CONNECTION_RESERVE', default=20, cast=int)
+DB_MAX_CONNECTIONS = config('DB_MAX_CONNECTIONS', default=0, cast=int)
 
 # ── Two psycopg 3 levers, both off, both real ─────────────────────────────────
 # Left off because neither can be verified without a Postgres to point at, and
@@ -739,6 +748,13 @@ REGION_MAX_CANDIDATES = config('REGION_MAX_CANDIDATES', default=5, cast=int)
 REGION_MAX_TRACED_AREA_DEG2 = config(
     'REGION_MAX_TRACED_AREA_DEG2', default=1.0, cast=float
 )
+# Most vertices a hand-traced outline may have, per ring and across all of its
+# rings. Every containment test walks these, on every map poll that considers
+# the region, so an outline is refused rather than stored past them. The total
+# matches what regions.nominatim keeps of an OpenStreetMap boundary; a finger
+# on a phone draws far fewer. Geometry already stored is not re-checked.
+REGION_MAX_TRACED_RING_POINTS = config('REGION_MAX_TRACED_RING_POINTS', default=1500, cast=int)
+REGION_MAX_TRACED_POINTS = config('REGION_MAX_TRACED_POINTS', default=1500, cast=int)
 
 # Per-country admin_level overrides, merged over regions/admin_levels.py.
 # Shaped {'kz': {'city': (4,), 'district': (6, 7)}}. Left empty here because the

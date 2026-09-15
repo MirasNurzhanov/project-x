@@ -54,6 +54,12 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
+      - name: Check requirements.txt is generated from requirements.in
+        run: |
+          python -m pip install uv==0.12.5
+          uv pip compile requirements.in --universal --python-version 3.12 -o requirements.txt \
+            --custom-compile-command "uv pip compile requirements.in --universal --python-version 3.12 -o requirements.txt"
+          git diff --exit-code -- requirements.txt
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Check installed dependencies
@@ -76,4 +82,23 @@ jobs:
           friends.test_hi_abuse core.test_websocket_suspension core.test_query_budgets
           core.test_socket_tickets core.test_message_media clubs.test_message_validation
           users.test_account_deletion friends.test_connection_removal
+          core.test_operations friends.test_chat_reliability
+          notifications.test_push_delivery users.test_privacy_batch
           --settings=core.ci_test_settings --noinput
+
+  dependency-audit:
+    # A separate job so a newly published advisory shows as its own failure, not as broken tests.
+    name: Dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install pip-audit
+        run: python -m pip install pip-audit==2.10.1
+      - name: Audit the locked requirements
+        # requirements.txt pins every package, so no resolution is needed: each pinned version is
+        # checked against the PyPI advisory database.
+        run: pip-audit --no-deps --disable-pip --progress-spinner off -r requirements.txt

@@ -1,34 +1,44 @@
 # Final four-batch validation — 2026-09-15
 
 Implementation scope: M5/M15, M2/M3/M6, M1/M7/M13, H7/M8/M9/M10/M12.
-This is not a resolution claim for all 39 original audit findings. No commit,
-push, production migration or deployment was performed.
+This is not a resolution claim for all 39 original audit findings. The hardening
+was committed locally and integrated with mobile `81c860b` and backend `ed4687c`.
+Publishing is separate from validation; no production migration or deployment
+was performed by this validation run.
+
+Backend checks used an isolated Python 3.12.14 environment with the incoming
+dependency lock (Django 5.2.17, DRF 3.17.2). The existing developer venv was not
+modified. Dependency consistency (`pip check`) passed.
 
 | Check | Result |
 |---|---|
 | Mobile Expo declared/installed | Both 54.0.37 |
 | Mobile `npx tsc --noEmit` | Pass |
-| Mobile Jest | 62 suites, 826 tests pass |
-| Full Django SQLite suite | 1,774 tests; 5 failures, 20 errors, 8 skipped |
-| PostgreSQL/Redis targeted suite | 106 tests pass, no skips |
+| Mobile Jest | 71 suites, 923 tests pass |
+| Mobile lint | 0 errors, 4 warnings |
+| Full Django SQLite suite | 1,778 tests; no failures or errors, 9 skipped |
+| PostgreSQL/Redis targeted suite | 167 tests pass, no skips |
 | Go push `go test -race ./...` | Pass, Go 1.23.12 |
 | Go moderation `go test -race ./...` | Pass, Go 1.23.12 |
 | `makemigrations --check --dry-run` | Pass; no drift |
 | Production-shaped `check --deploy --fail-level WARNING` | Pass; dummy variables, no external verification |
 
-The full backend suite is **not green**. Its failure/error identities match the
-untouched-HEAD baseline independently reproduced earlier: traced-region limits
-and geometry, capacity/worker configuration, prepared containment indexing, and
-the Swift blocked-user subquery count. No new failure identities appeared. These
-remain outside the four requested batches; do not hide them or weaken their tests.
+The merged full backend suite is now green. Incoming fixes address the earlier
+baseline failures in region geometry/limits, capacity configuration and feed
+queries. Merge regression fixtures were updated for ticket authentication and
+the capacity preflight without removing their behavioral assertions. Go race
+results were obtained before integration; the incoming commits did not change
+either Go service's source.
 
 The PostgreSQL run used isolated localhost PostgreSQL 18.6 and Redis 8.10.1,
 not Railway or a shared developer database. It covered:
 
 ```
 core.test_operations core.test_socket_tickets core.test_message_media
+core.test_capacity core.test_security core.test_websocket_suspension
 notifications.test_push_delivery users.test_privacy_batch
 users.test_account_deletion friends.test_connection_removal friends.test_hi_abuse
+friends.test_chat_reliability
 swifts.test_worker_endpoints swifts.test_publish_integrity
 ```
 
@@ -47,7 +57,7 @@ CI_DATABASE_URL and CI_REDIS_URL. Ordinary full tests use core.test_settings.
    consent and foreground location; scheduled deletion finalizer (M5, M15, M7).
 5. If using Go push, configure/authenticate its dead-token callback. Delayed Expo
    receipt polling is an explicitly unimplemented delivery-monitoring enhancement (M9).
-6. Resolve the separately identified baseline backend failures before claiming
-   a fully green overall application/CI run.
+6. Confirm the actual GitHub CI jobs, including dependency-lock/audit checks and
+   PostgreSQL 16. Local passing tests do not establish remote CI success.
 
 No live Google Cloud, Railway or Cloudflare settings were changed.

@@ -645,7 +645,9 @@ class ClubMessageListView(APIView):
                 Q(moderation__in=VISIBLE_STATES) | Q(sender_id=request.user.pk),
             )
             .select_related('sender')
-            .order_by('-created_at')
+            # Catch-up and older-page requests use an exclusive ID cursor.
+            # Timestamp ties must not change which 50 rows a page selects.
+            .order_by('-id')
         )
         cursor = ClubMessageCursorSerializer(data=request.query_params)
         if not cursor.is_valid():

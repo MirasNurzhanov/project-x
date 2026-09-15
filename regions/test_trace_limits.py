@@ -1,8 +1,10 @@
 """H6: a traced outline has a bounded number of vertices, while geometry already stored stays readable."""
 import math
+from unittest import mock
 
 from django.conf import settings
 from django.test import TestCase, override_settings
+from rest_framework import serializers
 from rest_framework.test import APIClient
 
 from users.models import User
@@ -62,11 +64,17 @@ class TracedVertexLimitTests(TestCase):
     def test_too_many_rings_or_oversized_points_are_refused_without_parsing_them(self):
         for label, rings in (
             ('nine rings', [circle_ring(5, radius=0.001 * (k + 1)) for k in range(9)]),
-            ('a point with 10,000 values', [[[0.5] * 10_000] + circle_ring(5)]),
+            ('a point with 10,000 values', [[[0.5] * 10_000]]),
             ('a ring of 100,000 points', [[[0.5, 0.5]] * 100_000]),
         ):
-            with self.subTest(label):
+            parse = mock.patch.object(
+                serializers.FloatField, 'to_internal_value', autospec=True,
+                side_effect=serializers.FloatField.to_internal_value,
+            )
+            with self.subTest(label), parse as parsed:
                 self.assertEqual(self.trace(rings).status_code, 400)
+                # Refused on the length of a list, before a single coordinate in it is read.
+                self.assertEqual(parsed.call_count, 0)
         self.assertFalse(Region.objects.exists())
 
 

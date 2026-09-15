@@ -80,6 +80,17 @@ class PreparedRingsMatchTheRingWalkTests(SimpleTestCase):
                 points = probe_points(random.Random(2), rings, 200) + [(0.5, 0.5), (0.3, 0.3), (0.5, 1.0)]
                 self.assert_same_answers(rings, points)
 
+    def test_index_stays_linear_when_every_edge_spans_the_ring(self):
+        # A zig-zag whose every edge runs from the bottom of the ring to the top: more bands would
+        # not shorten any band, only copy every edge into each of them.
+        vertices = 1001
+        ring = [[k * 0.001, 0.0 if k % 2 else 1.0] for k in range(vertices - 1)]
+        ring.append(list(ring[0]))
+        prepared = geometry.prepare([ring])
+        entries = sum(len(band) for band in prepared.rings[0]._bands)
+        self.assertLessEqual(entries, geometry._MAX_BAND_ENTRIES_PER_EDGE * vertices)
+        self.assert_same_answers([ring], probe_points(random.Random(5), [ring], 400))
+
     def test_antimeridian_regions_through_contains(self):
         rng = random.Random(3)
         for label, raw in (('fiji', [FIJI]), ('fiji split', FIJI_SPLIT), ('kiribati', [KIRIBATI]),

@@ -1,0 +1,60 @@
+# Direct dependencies of the Django backend, each pinned to the version the test suite runs on.
+#
+# requirements.txt is generated from this file and pins every transitive dependency as well, so two
+# deploys of the same commit install the same code. Edit this file, never requirements.txt, then
+# regenerate from backend/project-x with uv 0.12.5:
+#
+#   uv pip compile requirements.in --universal --python-version 3.12 -o requirements.txt
+#
+# `--universal` keeps platform markers, so the one file serves Linux (Railway, CI, Docker) and
+# Windows development. uv keeps the versions already in requirements.txt unless this file forces a
+# change; add `--upgrade-package NAME` to move one deliberately. CI fails when requirements.txt does
+# not match this file, and audits it with pip-audit.
+
+Django==5.2.17
+# Imported directly by project code as well as required by Django and Channels.
+asgiref==3.11.1
+djangorestframework==3.17.2
+djangorestframework_simplejwt==5.5.1
+# Verifies Google and Apple identity tokens (RS256, users/socialauth.py) and signs the Apple Music
+# developer token (ES256, users/applemusic.py). Both algorithms need `cryptography` at runtime.
+PyJWT==2.13.0
+cryptography==50.0.0
+django-cors-headers==4.9.0
+dj-database-url==3.1.2
+python-decouple==3.8
+requests==2.33.1
+# Nothing in the project imports requests_oauthlib or oauthlib. Carried over from the previous
+# manifest rather than dropped unreviewed.
+requests-oauthlib==2.0.0
+
+channels==4.3.2
+# The channel layer every web worker shares.
+channels_redis==4.3.0
+# Not the production server; uvicorn is. It stays in INSTALLED_APPS so `manage.py runserver`
+# serves ASGI and websockets locally, and it is the documented one-line rollback server (README.md).
+daphne==4.2.2
+# The `standard` extra is what makes uvicorn worth switching to: uvloop for the event loop and
+# httptools for HTTP parsing, both C, plus the `websockets` implementation the channels routes
+# need. uvloop carries a marker excluding Windows, so a Linux dyno gets it and local development
+# quietly does not.
+uvicorn[standard]==0.46.0
+
+# psycopg 3, replacing psycopg2-binary. Same Django engine name; `binary` is the prebuilt libpq so
+# the dyno needs no compiler, `pool` is the connection pool that core/settings.py turns on.
+psycopg[binary,pool]==3.3.4
+# The hiredis extra swaps redis-py's pure-Python protocol parser for the C one. Both the channel
+# layer and the cache go through it, so it is free speed on every group_send and every Nominatim
+# throttle check.
+redis[hiredis]==7.4.0
+
+# Every upload and every media URL goes through these (STORAGES in core/settings.py). Pinned
+# exactly: a django-storages release can change its backend settings, and boto3 fixes the botocore
+# minor, which requirements.txt records.
+boto3==1.43.79
+django-storages[s3]==1.14.6
+
+pillow==12.3.0
+# JSON encoding for the API, via core/jsonio.py. Replaces ujson, which was listed here but never
+# imported by anything.
+orjson==3.11.9
