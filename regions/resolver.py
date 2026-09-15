@@ -506,7 +506,7 @@ def _from_boundary_relations(context):
     except upstream.UpstreamError as exc:
         # A fallback that fails is not a failed lookup. Whatever the earlier
         # stages found still stands.
-        logger.warning('Boundary-relation fallback failed: %s', exc)
+        logger.warning('region_boundary_fallback_failed', extra={'error_type': type(exc).__name__})
         return []
     if not boundaries:
         return []
@@ -514,7 +514,7 @@ def _from_boundary_relations(context):
     try:
         return nominatim.lookup([b.osm_ref for b in boundaries])
     except nominatim.NominatimError as exc:
-        logger.warning('Could not fetch geometry for boundary relations: %s', exc)
+        logger.warning('region_boundary_geometry_failed', extra={'error_type': type(exc).__name__})
         return []
 
 

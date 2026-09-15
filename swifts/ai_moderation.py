@@ -17,9 +17,8 @@ The lifecycle
                           from the instant it exists the Swift is invisible to
                           everybody except its author. The response is sent.
 
-    on_commit             a daemon thread picks the job up. Latency only —
-                          losing it loses nothing, because the job row is still
-                          queued and `manage.py moderate_swifts` will find it.
+    on_commit             the committed job is available to the supervised
+                          `manage.py moderate_swifts` worker. No web threads.
 
     run()                 frames out of Media Transformations, each one through
                           the vision model, the caption through the existing
@@ -50,7 +49,6 @@ be invisible if it were wrong:
     underneath that. Two runs of the same job produce one queue item.
 """
 import logging
-import threading
 from datetime import timedelta
 
 from django.conf import settings
@@ -142,38 +140,26 @@ def enqueue(swift):
 
 
 def start(job_id):
-    """Run job `job_id`, off the request thread.
-
-    The same shape `notifications.push._queue` uses, for the same reason and
-    with the same escape hatch: under the test settings the thread is not
-    started and the work runs inline, so a test asserts on a finished state
-    rather than on a sleep, and no daemon thread outlives the case that spawned
-    it.
-
-    Unlike a push, losing this thread is not losing the work — the job row is
-    still `QUEUED` and the sweeper will claim it. That is the only reason a
-    thread is an acceptable executor here.
-    """
+    """Leave durable work for the worker; only explicit synchronous mode runs inline."""
     if _setting('SWIFT_AI_MODERATION_SYNC', False):
         run(job_id)
         return
-    threading.Thread(target=run, args=(job_id,), daemon=True).start()
+    # Production execution belongs to the existing supervised worker/sweeper.
+    # The durable QUEUED row is the queue; web bursts create no new threads.
+    logger.info('swift_moderation_queued')
 
 
 # ─── Running one job ──────────────────────────────────────────────────────────
 def claim(job_id):
     """Take ownership of a job, or return None if somebody else has it.
 
-    A conditional UPDATE, not a read-then-write. The sweeper and the in-process
-    thread genuinely race — the thread is started on commit and the sweeper
-    runs on a timer, and a slow commit puts them microseconds apart — so the
-    only safe claim is one the database arbitrates. Two winners would mean two
-    classifications billed and two reports filed.
+    A conditional UPDATE arbitrates competing supervised workers. A queued
+    retry is claimable only once its backoff has elapsed.
     """
     now = timezone.now()
     claimed = SwiftModerationJob.objects.filter(
         pk=job_id, state__in=(SwiftModerationJob.State.QUEUED,),
-    ).update(
+    ).filter(Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now)).update(
         state=SwiftModerationJob.State.RUNNING,
         attempts=F('attempts') + 1,
         next_attempt_at=None,
@@ -189,6 +175,21 @@ def claim(job_id):
 
 
 def run(job_id):
+    """One job per worker; release thread-owned DB connections on every exit."""
+    from django.db import connection, connections, close_old_connections
+
+    # Synchronous tests/callers can own a transaction. Never close their DB
+    # connection; production worker calls run outside an enclosing transaction.
+    if connection.in_atomic_block:
+        return _run(job_id)
+    try:
+        close_old_connections()
+        return _run(job_id)
+    finally:
+        connections.close_all()
+
+
+def _run(job_id):
     """Classify one Swift end to end. Never raises.
 
     Never raises because both of its callers are places an exception would be
@@ -211,8 +212,8 @@ def run(job_id):
         # thing three times.
         return _fail(job, str(exc), retryable=exc.retryable)
     except Exception as exc:  # noqa: BLE001 - see docstring
-        logger.exception('[SwiftAI] job %s crashed', job_id)
-        return _fail(job, f'{type(exc).__name__}: {exc}', retryable=False)
+        logger.error('swift_moderation_job_crashed', extra={'error_type': type(exc).__name__})
+        return _fail(job, 'Unexpected moderation error; inspect the worker error type.', retryable=False)
 
     if decision.outcome == policy.FAILED:
         return _fail(job, decision.error or 'classification incomplete', retryable=True)
@@ -261,8 +262,7 @@ def _classify(swift):
             # point it is built.
             failures.append(exc)
             logger.warning(
-                '[SwiftAI] swift %s frame %sms: %s',
-                swift.pk, at_ms, cloudflare_ai.redact(exc))
+                'swift_moderation_frame_failed', extra={'error_type': type(exc).__name__})
 
     if not results and failures and not any(e.retryable for e in failures):
         # Every frame failed and none of the failures will ever answer
@@ -307,7 +307,7 @@ def _screen_audio(swift, source, duration_ms, decision):
         transcript = cloudflare_ai.transcribe(audio)
     except cloudflare_ai.CloudflareError as exc:
         logger.warning(
-            '[SwiftAI] swift %s audio: %s', swift.pk, cloudflare_ai.redact(exc))
+            'swift_moderation_audio_failed', extra={'error_type': type(exc).__name__})
         return decision, False
 
     if not transcript.text:
@@ -650,9 +650,8 @@ def due_jobs(limit=50):
 
     Two populations, and the second is the reason this exists at all:
 
-      queued & due     a first attempt whose thread never ran (the process was
-                       replaced between the commit and the thread starting), or
-                       a retry whose backoff has elapsed.
+      queued & due     a committed first attempt, or a retry whose backoff
+                       has elapsed.
       running & stale  a job whose worker died mid-flight. Without this they
                        would sit in RUNNING forever and their Swifts would stay
                        invisible with nothing scheduled to look at them again.
@@ -675,19 +674,25 @@ def due_jobs(limit=50):
     )
 
 
+def requeue_stale(job_id):
+    """Recheck staleness at write time: a selected ID may now have a live owner."""
+    return SwiftModerationJob.objects.filter(
+        pk=job_id, state=SwiftModerationJob.State.RUNNING,
+        updated_at__lte=timezone.now() - timedelta(seconds=int(_setting('SWIFT_AI_STALE_AFTER_S', 900))),
+    ).update(state=SwiftModerationJob.State.QUEUED)
+
+
 def sweep(limit=50):
     """Run every due job. Returns how many were actually claimed.
 
-    Claimed, not attempted: a job the in-process thread grabbed first is not a
+    Claimed, not attempted: a job another worker grabbed first is not a
     failure of the sweep, and counting it as one would make the number useless
     for spotting a real backlog.
     """
     done = 0
     for job_id in due_jobs(limit):
         # A stale RUNNING job has to be put back before `claim` will take it.
-        SwiftModerationJob.objects.filter(
-            pk=job_id, state=SwiftModerationJob.State.RUNNING,
-        ).update(state=SwiftModerationJob.State.QUEUED)
+        requeue_stale(job_id)
         if run(job_id) is not None:
             done += 1
     return done

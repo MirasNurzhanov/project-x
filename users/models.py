@@ -11,6 +11,11 @@ class User(AbstractUser):
         ADULT = 'adult', '18+'
 
     email = models.EmailField(unique=True)
+    deletion_requested_at = models.DateTimeField(null=True, blank=True, editable=False)
+    delete_after = models.DateTimeField(null=True, blank=True, db_index=True, editable=False)
+    # A credential-free identity for retained shared history after the original
+    # account is purged. Never usable for authentication or discovery.
+    retired_account_id = models.PositiveBigIntegerField(null=True, blank=True, unique=True, editable=False)
     date_of_birth = models.DateField(null=True, blank=True)
     age_tier = models.CharField(
         max_length=5,

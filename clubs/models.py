@@ -1,4 +1,5 @@
 from django.db import models
+from core.media_storage import protected_media
 from django.db.models import Exists, OuterRef, Q
 
 from moderation.reasons import Moderation
@@ -256,7 +257,7 @@ class ClubMessage(models.Model):
         related_name='club_messages',
     )
     content = models.TextField(blank=True)
-    image = models.ImageField(upload_to='club_messages/', null=True, blank=True)
+    image = models.ImageField(upload_to='club_messages/', storage=protected_media, null=True, blank=True)
     # Legacy: set when the client uploaded straight to Cloudinary, before the
     # R2 migration retired that path — every upload now goes through Django as
     # `image`. Still takes precedence over `image` on rows from that era, since

@@ -257,6 +257,7 @@ def visible_users(viewer, queryset=None, *, exclude_self=True,
     from .models import User
 
     qs = User.objects.all() if queryset is None else queryset
+    qs = qs.filter(is_active=True, deletion_requested_at__isnull=True, retired_account_id__isnull=True)
     qs = qs.exclude(pk__in=blocked_ids_for(viewer))
     if exclude_self:
         qs = qs.exclude(pk=viewer.pk)
@@ -283,6 +284,8 @@ def can_view(viewer, target, field, rel=None):
     """
     from .models import User
 
+    if not target.is_active or target.deletion_requested_at or target.retired_account_id:
+        return False
     if rel is None:
         rel = relationship(viewer, target)
     if rel == SELF:
@@ -383,7 +386,9 @@ def visible_field_q(viewer, field, prefix='user'):
     blocked = blocked_ids_for(viewer)
     if blocked:
         q &= ~Q(**{f'{owner}__in': blocked})
-    return q
+    return q & Q(**{f'{prefix}__is_active': True,
+                   f'{prefix}__deletion_requested_at__isnull': True,
+                   f'{prefix}__retired_account_id__isnull': True})
 
 
 def can_surface_in_proximity(viewer, target, rel=None):

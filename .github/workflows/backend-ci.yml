@@ -45,6 +45,7 @@ jobs:
       R2_ACCESS_KEY_ID: ci-placeholder
       R2_SECRET_ACCESS_KEY: ci-placeholder
       R2_BUCKET_NAME: ci-placeholder
+      R2_PRIVATE_BUCKET_NAME: ci-private-placeholder
       R2_ENDPOINT_URL: https://storage.example.test
       R2_PUBLIC_URL: https://storage.example.test
     steps:
@@ -73,4 +74,6 @@ jobs:
         run: >-
           python manage.py test swifts.test_publish_integrity recs.tests.test_exposure
           friends.test_hi_abuse core.test_websocket_suspension core.test_query_budgets
+          core.test_socket_tickets core.test_message_media clubs.test_message_validation
+          users.test_account_deletion friends.test_connection_removal
           --settings=core.ci_test_settings --noinput

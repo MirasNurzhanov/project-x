@@ -103,7 +103,7 @@ class RegionSearchView(APIView):
         try:
             fetched = nominatim.search(query)
         except nominatim.NominatimError as exc:
-            logger.warning('Region search failed for %r: %s', query, exc)
+            logger.warning('region_search_failed', extra={'error_type': type(exc).__name__})
             # Partial results beat an error page: whatever is cached is still a
             # usable answer, and the client shows it rather than an empty state.
             if local:
@@ -161,7 +161,7 @@ class RegionForPointView(APIView):
         try:
             result = resolver.resolve(lat, lon, kind=level, viewer=request.user)
         except upstream.UpstreamError as exc:
-            logger.warning('Region lookup failed at %s: %s', places.log_point(lat, lon), exc)
+            logger.warning('region_lookup_failed', extra={'error_type': type(exc).__name__})
             return _upstream_unavailable(
                 exc, 'Could not find your area right now. Please try again.',
             )

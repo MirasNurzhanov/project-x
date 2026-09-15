@@ -104,10 +104,6 @@ _LEET = str.maketrans({
 #: cheapest possible evasion: one of these inside a word defeats any pattern.
 _INVISIBLE = re.compile(r'[​-‏‪-‮⁠-⁤﻿]')
 
-#: Anything that is not a letter or a digit becomes a single space, so
-#: "f.u.c.k" and "f u c k" reduce to the same shape as the joined form below.
-_SEPARATORS = re.compile(r'[^a-z0-9]+')
-
 #: Three or more of the same letter collapse to one. "heeeeey" -> "hey".
 _REPEATS = re.compile(r'(.)\1{2,}')
 
@@ -123,12 +119,18 @@ def normalise(text):
     if not text:
         return '', ''
     text = _INVISIBLE.sub('', str(text))
-    # NFKD splits accented characters into letter + combining mark, and the
-    # comprehension drops the marks - so "nàïve" and "naive" are one string.
-    text = unicodedata.normalize('NFKD', text.casefold())
-    text = ''.join(c for c in text if not unicodedata.combining(c))
+    # Preserve scripts and their meaningful marks. Only Latin accents are
+    # folded for the existing English patterns; e.g. Cyrillic й must remain й.
+    text = unicodedata.normalize('NFKC', text.casefold())
+    text = ''.join(
+        ''.join(part for part in unicodedata.normalize('NFKD', c) if not unicodedata.combining(part))
+        if 'LATIN' in unicodedata.name(c, '') else c for c in text
+    )
     text = text.translate(_LEET)
-    spaced = _SEPARATORS.sub(' ', text).strip()
+    # Unicode marks outside the Latin combining range (Arabic/Indic, etc.)
+    # belong to their words too; punctuation/emoji remain separators.
+    text = ''.join(c if unicodedata.category(c)[0] in 'LNM' else ' ' for c in text)
+    spaced = ' '.join(text.split())
     spaced = _REPEATS.sub(r'\1', spaced)
     joined = spaced.replace(' ', '')
     return spaced, joined

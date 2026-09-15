@@ -97,9 +97,8 @@ func (c *DjangoClient) decodeLeases(body []byte) ([]Lease, error) {
 	}
 
 	c.drift.Add(1)
-	c.log.Warn("lease payload carries fields this build does not know; "+
-		"the Django contract has changed and services/go-moderation is behind",
-		"error", err)
+	c.log.Warn("lease payload carries fields this build does not know; " +
+		"the Django contract has changed and services/go-moderation is behind")
 
 	var lenient leaseResponse
 	if err := json.Unmarshal(body, &lenient); err != nil {

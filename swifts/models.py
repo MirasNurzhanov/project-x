@@ -26,6 +26,7 @@ Three things about this module are load-bearing and are argued where they live:
 from django.conf import settings
 from django.core.validators import MaxValueValidator
 from django.db import models
+from core.media_storage import protected_media
 
 from moderation.reasons import (
     Action as SharedAction,
@@ -96,8 +97,8 @@ class SwiftVideo(models.Model):
     # volume, a music bed and a text overlay into the delivered file from these
     # URLs/id. No client writes them any more — see `swifts.media` — but they
     # stay so any row created under that design keeps resolving.
-    video = models.FileField(upload_to='swifts/', null=True, blank=True)
-    thumbnail = models.ImageField(upload_to='swifts/posters/', null=True, blank=True)
+    video = models.FileField(upload_to='swifts/', storage=protected_media, null=True, blank=True)
+    thumbnail = models.ImageField(upload_to='swifts/posters/', storage=protected_media, null=True, blank=True)
     video_url = models.URLField(max_length=500, blank=True)
     thumbnail_url = models.URLField(max_length=500, blank=True)
     media_id = models.CharField(max_length=200, blank=True, db_index=True)

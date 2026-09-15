@@ -8,8 +8,10 @@ def account_can_use_socket(user_id):
 
     user = User.objects.filter(pk=user_id).only(
         'is_active', 'suspended_at', 'suspended_until', 'suspension_reason',
+        'deletion_requested_at', 'retired_account_id',
     ).first()
-    return user is not None and user.is_active and user.suspension_detail() is None
+    return (user is not None and user.is_active and user.suspension_detail() is None
+            and user.deletion_requested_at is None and user.retired_account_id is None)
 
 
 class SuspensionAwareConsumer(AsyncWebsocketConsumer):

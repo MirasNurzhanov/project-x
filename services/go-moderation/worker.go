@@ -103,7 +103,7 @@ func (w *Worker) Run(ctx context.Context, interval time.Duration) {
 				// Django being unreachable is expected during its own deploys.
 				// Logged at warn, not error: it is self-correcting, and paging
 				// on it would page on every Django release.
-				w.log.Warn("lease failed", "error", err)
+				w.log.Warn("lease failed", "error_type", fmt.Sprintf("%T", err))
 			}
 			for _, lease := range leases {
 				w.leased.Add(1)
@@ -151,7 +151,7 @@ func (w *Worker) runJob(ctx context.Context, lease Lease) {
 
 	if err := lease.Validate(); err != nil {
 		// Not retryable: the payload will be identical next time.
-		log.Error("unusable lease", "error", err)
+		log.Error("unusable lease", "error_type", fmt.Sprintf("%T", err))
 		w.settle(ctx, SettleRequest{
 			JobID: lease.JobID, Error: err.Error(), Retryable: false,
 		})
@@ -174,7 +174,7 @@ func (w *Worker) runJob(ctx context.Context, lease Lease) {
 	// opinion on a different channel, not a second gate.
 	if lease.WantAudio {
 		if transcript, err := w.transcribe(ctx, lease); err != nil {
-			log.Warn("audio skipped", "error", err)
+			log.Warn("audio skipped", "error_type", fmt.Sprintf("%T", err))
 		} else {
 			result.Transcript = transcript
 			result.AudioChecked = true
@@ -227,7 +227,7 @@ func (w *Worker) classifyFrames(ctx context.Context, lease Lease, log *slog.Logg
 				// Debug, not warn: one failed frame out of ten is a normal
 				// outcome that Django already knows how to weigh. Logging it
 				// at warn would make a healthy service look sick.
-				log.Debug("frame failed", "at_ms", at, "error", results[idx].Error)
+				log.Debug("frame failed", "at_ms", at)
 			} else {
 				w.framesOK.Add(1)
 			}
@@ -281,7 +281,7 @@ func (w *Worker) settle(parent context.Context, req SettleRequest) {
 		// than a Swift stuck invisible forever. Worth an error line because a
 		// rising count here means the two sides cannot talk.
 		w.log.Error("settle failed; job will be re-queued as stale",
-			"job", req.JobID, "error", err)
+			"job", req.JobID, "error_type", fmt.Sprintf("%T", err))
 		return
 	}
 	w.settled.Add(1)

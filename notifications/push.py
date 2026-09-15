@@ -19,11 +19,18 @@ Two things here that the single-recipient original could not do:
     routing side.
 """
 import threading
+import logging
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from django.conf import settings
 
 from . import push_dispatcher
+from .dead_tokens import forget_tokens
+
+logger = logging.getLogger(__name__)
+_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='push')
+_slots = threading.BoundedSemaphore(32)
 
 EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send'
 
@@ -75,14 +82,14 @@ def channel_for(category: str) -> str:
 def _post(messages):
     """POST to Expo in chunks, swallowing everything.
 
-    Runs on a daemon thread. Nothing upstream can act on a failed push — the
+    Runs in a bounded worker pool. Nothing upstream can act on a failed push — the
     message it announces is already saved — so a dead Expo must cost a log line
     and nothing else.
     """
     for start in range(0, len(messages), MAX_PER_REQUEST):
         chunk = messages[start:start + MAX_PER_REQUEST]
         try:
-            requests.post(
+            response = requests.post(
                 EXPO_PUSH_URL,
                 json=chunk,
                 headers={
@@ -91,8 +98,48 @@ def _post(messages):
                 },
                 timeout=TIMEOUT_SECONDS,
             )
-        except requests.RequestException as exc:
-            print(f'[Push] send failed for {len(chunk)} message(s): {exc}')
+            response.raise_for_status()
+            payload = response.json()
+            tickets = payload.get('data') if isinstance(payload, dict) else None
+            if isinstance(tickets, dict) and len(chunk) == 1:
+                tickets = [tickets]
+            if not isinstance(tickets, list) or len(tickets) != len(chunk):
+                logger.warning('push_ticket_response_invalid', extra={'count': len(chunk)})
+                continue
+            dead = []
+            for message, ticket in zip(chunk, tickets):
+                if not isinstance(ticket, dict) or ticket.get('status') not in ('ok', 'error'):
+                    logger.warning('push_ticket_invalid')
+                    continue
+                if ticket['status'] == 'error':
+                    details = ticket.get('details')
+                    if isinstance(details, dict) and details.get('error') == 'DeviceNotRegistered':
+                        dead.append(message['to'])
+                    else:
+                        logger.warning('push_ticket_rejected')
+            if dead:
+                count = forget_tokens(dead)
+                logger.info('push_dead_tokens_cleared', extra={'count': count})
+        except (requests.RequestException, ValueError):
+            logger.warning('push_send_failed', extra={'count': len(chunk)})
+        except Exception:
+            # Database cleanup must never turn an already-saved message into
+            # an API failure. Do not log request bodies, tokens or provider text.
+            logger.error('push_token_cleanup_failed')
+
+
+def _deliver(messages):
+    from django.db import close_old_connections, connections
+    try:
+        close_old_connections()
+        _post(messages)
+    except Exception:
+        logger.error('push_worker_failed')
+    finally:
+        try:
+            connections.close_all()
+        finally:
+            _slots.release()
 
 
 def _envelope(token, title, body, data, category):
@@ -137,7 +184,15 @@ def _queue(messages):
     if push_dispatcher.configured() and push_dispatcher.send(messages):
         return len(messages)
 
-    threading.Thread(target=_post, args=(messages,), daemon=True).start()
+    if not _slots.acquire(blocking=False):
+        logger.warning('push_queue_full', extra={'count': len(messages)})
+        return 0
+    try:
+        _executor.submit(_deliver, messages)
+    except RuntimeError:
+        _slots.release()
+        logger.warning('push_executor_unavailable')
+        return 0
     return len(messages)
 
 

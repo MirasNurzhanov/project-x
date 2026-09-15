@@ -197,7 +197,11 @@ def _event(event, **fields):
     The same fields go out under a single `nominatim` key in `extra`, so a
     JSON formatter emits them as structure rather than as a prose message.
     """
-    present = {k: v for k, v in fields.items() if v is not None}
+    # Classification categories help diagnose gaps; queried places/OSM IDs
+    # identify a person's location and do not belong in request-correlated logs.
+    safe = {'reason', 'osm_type', 'klass', 'type', 'addresstype', 'admin_level',
+            'country_code', 'address_keys', 'wanted', 'got', 'kind'}
+    present = {k: v for k, v in fields.items() if k in safe and v is not None}
     logger.info(
         'nominatim %s %s',
         event,
@@ -780,5 +784,4 @@ def _resolve_boundary(query, country_code, kind, lat, lon, name_hint=None):
             query=query, wanted=kind, got=region.kind,
         )
     return None
-
 

@@ -267,6 +267,7 @@ class SwiftCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
     #: `blank=True` on the model is for the legacy Cloudinary-era rows that
     #: never populate this column at all — a new post always carries the file.
     video = serializers.FileField(required=True)
+    thumbnail = serializers.FileField(required=False, allow_null=True)
     idempotency_key = serializers.UUIDField(required=False, allow_null=True, write_only=True)
 
     #: The two pieces of a Swift a person writes. The video itself is not
@@ -289,12 +290,12 @@ class SwiftCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
         ]
 
     def validate_video(self, value):
-        from .media import MAX_UPLOAD_BYTES
+        from core.uploads import validate_video
+        return validate_video(value)
 
-        if value.size > MAX_UPLOAD_BYTES:
-            raise serializers.ValidationError(
-                f'That file is too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)}MB).')
-        return value
+    def validate_thumbnail(self, value):
+        from core.uploads import validate_image
+        return validate_image(value) if value is not None else None
 
     def validate_duration_ms(self, value):
         from .media import MAX_DURATION_MS, MIN_DURATION_MS

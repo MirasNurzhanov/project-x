@@ -115,7 +115,10 @@ def audience_q(viewer):
 
     # Anonymous creators retract all their Swifts from other people,
     # including existing friends. Their own collection remains available.
-    return own | (Q(author__ghost_mode=False) & (public | friends))
+    return (own | (Q(author__ghost_mode=False) & (public | friends))) & Q(
+        author__is_active=True, author__deletion_requested_at__isnull=True,
+        author__retired_account_id__isnull=True,
+    )
 
 
 def watchable_q(viewer):
@@ -147,6 +150,8 @@ def can_watch(viewer, swift):
     from .models import SwiftVideo
 
     if not swift.is_live:
+        return False
+    if not swift.author.is_active or swift.author.deletion_requested_at or swift.author.retired_account_id:
         return False
     if swift.author_id == viewer.pk:
         return True
@@ -197,7 +202,6 @@ def reveal_denial(viewer, swift):
     """
     if not can_watch(viewer, swift):
         return DENY_NOT_FOUND
-
     if not swift.has_location:
         return DENY_NO_COORDINATES
 

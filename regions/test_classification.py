@@ -219,10 +219,11 @@ class RejectionLoggingTests(TestCase):
             ))
         fields = self.assert_logged(
             logs, 'unclassifiable-addresstype',
-            addresstype='parish', osm_id=3100, osm_type='relation',
-            klass='boundary', name='Somewhere', admin_level='10',
+            addresstype='parish', osm_type='relation',
+            klass='boundary', admin_level='10',
         )
-        self.assertEqual(fields['display_name'], 'Somewhere, Somewhere')
+        for private in ('name', 'display_name', 'osm_id', 'query'):
+            self.assertNotIn(private, fields)
         self.assertEqual(fields['country_code'], 'gb')
 
     def test_a_wrong_class_is_logged_with_its_class_and_type(self):
@@ -234,7 +235,7 @@ class RejectionLoggingTests(TestCase):
                 nominatim.search('estate')
         self.assert_logged(
             logs, 'class-is-not-an-area',
-            klass='landuse', type='residential', osm_id=3101,
+            klass='landuse', type='residential',
         )
 
     def test_a_place_with_no_polygon_is_logged(self):
@@ -244,7 +245,7 @@ class RejectionLoggingTests(TestCase):
                 'display_name': 'Pin', 'addresstype': 'village',
                 'geojson': {'type': 'Point', 'coordinates': [1, 2]},
             })
-        self.assert_logged(logs, 'no-mapped-boundary', addresstype='village', osm_id=3102)
+        self.assert_logged(logs, 'no-mapped-boundary', addresstype='village')
 
     def test_a_wrong_size_candidate_is_logged_with_both_sizes(self):
         """The district lookup found a boundary of that name containing the

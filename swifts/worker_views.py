@@ -102,9 +102,7 @@ class ModerationLeaseView(APIView):
                 break
             # A stale RUNNING row has to be put back before `claim` will take
             # it — the same two-step `sweep` does.
-            SwiftModerationJob.objects.filter(
-                pk=job_id, state=SwiftModerationJob.State.RUNNING,
-            ).update(state=SwiftModerationJob.State.QUEUED)
+            ai_moderation.requeue_stale(job_id)
 
             job = ai_moderation.claim(job_id)
             if job is None:

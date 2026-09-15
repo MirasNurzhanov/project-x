@@ -1,3 +1,4 @@
+import logging
 from django.db.models import Max, Q
 from django.utils import timezone
 from rest_framework import generics, permissions, status
@@ -24,6 +25,7 @@ from .serializers import (
     UserSearchSerializer, ZoneUpdateSerializer, serialize_links,
 )
 from .models import Device, ProfileLink, User
+logger = logging.getLogger(__name__)
 
 
 class SafeTokenRefreshSerializer(TokenRefreshSerializer):
@@ -38,6 +40,11 @@ class SafeTokenRefreshSerializer(TokenRefreshSerializer):
 
     def validate(self, attrs):
         try:
+            token = RefreshToken(attrs['refresh'])
+            if User.objects.filter(pk=token['user_id']).filter(
+                Q(deletion_requested_at__isnull=False) | Q(retired_account_id__isnull=False)
+            ).exists():
+                raise InvalidToken('This account is unavailable.')
             return super().validate(attrs)
         except User.DoesNotExist as exc:
             raise InvalidToken('No account matches this token anymore.') from exc
@@ -107,6 +114,8 @@ class SuspensionAwareTokenObtainPairSerializer(TokenObtainPairSerializer):
     """
 
     def get_token(self, user):
+        if user.deletion_requested_at or user.retired_account_id:
+            raise InvalidToken('This account is unavailable.')
         detail = user.suspension_detail()
         if detail is not None:
             raise _SuspendedAccount(detail)
@@ -256,6 +265,9 @@ class SocialLoginView(APIView):
 
         if accepted and not terms.has_accepted(user):
             terms.record_acceptance(user)
+
+        if not user.is_active or user.deletion_requested_at or user.retired_account_id:
+            return Response({'detail': 'This account is unavailable.'}, status=status.HTTP_403_FORBIDDEN)
 
         suspended = user.suspension_detail()
         if suspended is not None:
@@ -638,7 +650,7 @@ class ZoneView(APIView):
         except Exception as exc:  # noqa: BLE001
             # The setting is saved either way. A zone that could not move yet is
             # the stale case, which the next location report resolves.
-            print(f'[Zone] follow-on-save failed for user {user.pk}: {exc}')
+            logger.warning('zone_follow_on_save_failed', extra={'error_type': type(exc).__name__})
 
 
 class AppleMusicStatusView(APIView):
@@ -885,7 +897,20 @@ class TermsAcceptView(APIView):
 
 class DeleteAccountView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = 'account_deletion'
+
+    def get(self, request):
+        from .deletion import GRACE_DAYS
+        return Response({
+            'has_password': request.user.has_usable_password(),
+            'providers': list(request.user.social_accounts.values_list('provider', flat=True)),
+            'grace_days': GRACE_DAYS,
+        })
 
     def delete(self, request):
-        request.user.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        from .deletion import request_deletion
+        user = request_deletion(request.user.pk, request.data)
+        return Response({
+            'status': 'pending_deletion',
+            'delete_after': user.delete_after.isoformat(),
+        }, status=status.HTTP_202_ACCEPTED)

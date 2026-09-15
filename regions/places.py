@@ -230,7 +230,7 @@ def _deepen(lat, lon, country):
         boundaries = overpass.boundaries_at(lat, lon, levels)
     except upstream.UpstreamError as exc:
         # A shallower chain is a narrower menu, not a failed lookup.
-        logger.warning('Chain deepening failed at %s: %s', log_point(lat, lon), exc)
+        logger.warning('region_chain_deepening_failed', extra={'error_type': type(exc).__name__})
         return
     if not boundaries:
         return
@@ -249,7 +249,7 @@ def _deepen(lat, lon, country):
     try:
         nominatim.lookup(missing)
     except upstream.UpstreamError as exc:
-        logger.warning('Could not fetch deeper boundaries at %s: %s', log_point(lat, lon), exc)
+        logger.warning('region_deeper_boundaries_failed', extra={'error_type': type(exc).__name__})
 
 
 def hierarchy_for_point(lat, lon, allow_upstream=True, tolerance_m=0.0):
@@ -288,7 +288,7 @@ def hierarchy_for_point(lat, lon, allow_upstream=True, tolerance_m=0.0):
             )
         except upstream.UpstreamError as exc:
             # A missing district tier is a narrower menu, not a failed lookup.
-            logger.warning('District warm-up failed at %s: %s', log_point(lat, lon), exc)
+            logger.warning('region_district_warmup_failed', extra={'error_type': type(exc).__name__})
         _deepen(lat, lon, country or city.country_code)
 
     chain = _sub_areas(city, lat, lon, tolerance_m)
@@ -440,7 +440,7 @@ def refresh_quietly(user):
     try:
         return snapshot_for(user, allow_upstream=False)
     except Exception as exc:  # noqa: BLE001
-        logger.warning('Place snapshot failed for user %s: %s', user.pk, exc)
+        logger.warning('region_snapshot_failed', extra={'error_type': type(exc).__name__})
         return None
 
 

@@ -23,6 +23,7 @@ from django.utils import timezone
 from clubs.models import Club, ClubEvent, ClubInvitation, ClubMember
 from friends.models import BlockedUser
 from notifications.models import Notification
+from notifications import push
 from notifications.push import allows, channel_for, push_to_users
 from notifications.utils import (
     notify_club_event_created, notify_club_event_decided, notify_club_invite,
@@ -83,26 +84,22 @@ class PushTransportTests(PushTargetTestCase):
 
     def test_large_audience_is_chunked_into_expo_sized_requests(self):
         crowd = [make_user(f'p{i}', token=f'tok{i}') for i in range(5)]
+        submit = push._executor.submit
         with override_settings(PUSH_DISABLED=False), \
                 patch('notifications.push.requests.post') as post, \
+                patch('notifications.push._executor.submit', side_effect=lambda *args: submit(*args).result(timeout=5)), \
                 patch('notifications.push.MAX_PER_REQUEST', 2):
             push_to_users(crowd, 'T', 'B')
-            # The send is off-thread; join it rather than sleeping on it.
-            import threading
-            for thread in threading.enumerate():
-                if thread is not threading.current_thread() and thread.daemon:
-                    thread.join(timeout=5)
+            # Wait on this task's Future, not unrelated daemon threads.
         self.assertEqual(post.call_count, 3)  # 2 + 2 + 1
 
     def test_payload_carries_the_deep_link(self):
         user = make_user('a')
+        submit = push._executor.submit
         with override_settings(PUSH_DISABLED=False), \
+                patch('notifications.push._executor.submit', side_effect=lambda *args: submit(*args).result(timeout=5)), \
                 patch('notifications.push.requests.post') as post:
             push_to_users([user], 'T', 'B', data={'type': 'message', 'user_id': 7})
-            import threading
-            for thread in threading.enumerate():
-                if thread is not threading.current_thread() and thread.daemon:
-                    thread.join(timeout=5)
         sent = post.call_args.kwargs['json'][0]
         self.assertEqual(sent['data'], {'type': 'message', 'user_id': 7})
         self.assertEqual(sent['to'], 'tok')

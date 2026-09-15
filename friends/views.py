@@ -17,6 +17,7 @@ from rest_framework.views import APIView
 from users import visibility
 from users.models import User
 from .models import BlockedUser, FriendRequest, HiRequest, Message
+from .lifecycle import lock_participants, lock_writable_conversation
 from .serializers import BasicUserSerializer, FriendRequestSerializer, HiRequestSerializer, MessageSerializer
 from .serializers import MessageHistoryQuerySerializer, MessageReadSerializer
 from notifications.utils import (
@@ -70,6 +71,8 @@ def _blocked_ids_for(user):
 
 
 def _are_connected(user_a, user_b):
+    if not user_a.is_active or not user_b.is_active:
+        return False
     if _blocked_either_way(user_a, user_b):
         return False
     return HiRequest.objects.filter(
@@ -195,7 +198,17 @@ class FriendsListView(APIView):
                 friends.append(other)
 
         # Latest message and unread count per counterpart, for chat-list previews
+        # Retained history remains reachable after a connection is removed or
+        # the counterpart requests deletion; it grants no relationship rights.
+        connections = [u for u in connections if u.is_active]
+        friends = [u for u in friends if u.is_active]
         other_ids = {u.id for u in connections} | {u.id for u in friends}
+        history_ids = set(Message.objects.filter(sender=request.user, deleted_for_sender=False)
+                          .values_list('receiver_id', flat=True).distinct())
+        history_ids.update(Message.objects.filter(receiver=request.user, deleted_for_receiver=False)
+                           .values_list('sender_id', flat=True).distinct())
+        archived = list(User.objects.filter(pk__in=history_ids - other_ids - hidden_ids))
+        other_ids.update(u.id for u in archived)
 
         last_by_user = {}
         if other_ids:
@@ -219,7 +232,7 @@ class FriendsListView(APIView):
         if other_ids:
             unread_rows = (
                 Message.objects.filter(
-                    receiver=request.user, is_read=False, sender_id__in=other_ids
+                    receiver=request.user, is_read=False, deleted_for_receiver=False, sender_id__in=other_ids
                 )
                 .values('sender_id')
                 .annotate(unread_count=Count('id'))
@@ -244,6 +257,7 @@ class FriendsListView(APIView):
         return Response({
             'connections': [serialize_user(u, visibility.CONNECTED) for u in connections],
             'friends':     [serialize_user(u, visibility.FRIEND) for u in friends],
+            'archived':    [dict(serialize_user(u, visibility.STRANGER), archived=True) for u in archived],
         })
 
 
@@ -252,10 +266,8 @@ class MessagesView(APIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request, user_id):
-        other = get_object_or_404(User, pk=user_id)
-        if not _are_connected(request.user, other):
-            return Response({'detail': 'You are not friends with this user.'}, status=status.HTTP_403_FORBIDDEN)
-        if BlockedUser.objects.filter(blocker=other, blocked=request.user).exists():
+        other = get_object_or_404(User, Q(pk=user_id) | Q(retired_account_id=user_id))
+        if _blocked_either_way(request.user, other):
             return Response({'detail': 'Cannot receive messages from this user.'}, status=status.HTTP_403_FORBIDDEN)
 
         messages = Message.objects.filter(
@@ -264,6 +276,9 @@ class MessagesView(APIView):
             Q(sender=request.user, deleted_for_sender=True) |
             Q(receiver=request.user, deleted_for_receiver=True)
         ).select_related('sender').order_by('-id')
+        connected = _are_connected(request.user, other)
+        if not connected and not messages.exists():
+            return Response({'detail': 'No retained conversation.'}, status=status.HTTP_403_FORBIDDEN)
         query = MessageHistoryQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         before = query.validated_data.get('before')
@@ -277,6 +292,7 @@ class MessagesView(APIView):
             'results': MessageSerializer(list(reversed(page)), many=True).data,
             'next_before': page[-1].id if has_more else None,
             'has_more': has_more,
+            'can_send': connected,
         })
 
     def post(self, request, user_id):
@@ -287,6 +303,9 @@ class MessagesView(APIView):
         if BlockedUser.objects.filter(blocker=other, blocked=request.user).exists():
             return Response({'detail': 'Cannot send messages to this user.'}, status=status.HTTP_403_FORBIDDEN)
 
+        if 'image_url' in request.data:
+            return Response({'detail': 'Upload images using the image file field.',
+                             'image_url': ['Legacy image URLs are read-only.']}, status=400)
         client_id = serializers.UUIDField(allow_null=True).run_validation(request.data.get('client_id'))
         if client_id is not None:
             existing = Message.objects.filter(sender=request.user, receiver=other, client_id=client_id).first()
@@ -297,9 +316,11 @@ class MessagesView(APIView):
 
         content = request.data.get('content', '').strip()
         image = request.FILES.get('image')
-        image_url = (request.data.get('image_url') or '').strip()
+        if image is not None:
+            from core.uploads import validate_image
+            image = validate_image(image)
 
-        if not content and not image and not image_url:
+        if not content and not image:
             return Response({'detail': 'content or image is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # A direct message has exactly one reader, who already has Block,
@@ -314,22 +335,26 @@ class MessagesView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if client_id is not None:
-            if image or image_url:
-                return Response({'detail': 'client_id is supported for text sends only.'}, status=400)
-            with transaction.atomic():
+        if client_id is not None and image:
+            return Response({'detail': 'client_id is supported for text sends only.'}, status=400)
+        with transaction.atomic():
+            # Screening may await external work. Re-check standing after it,
+            # serialized with removal/deletion, before creating any message.
+            if not lock_writable_conversation(request.user.pk, other.pk):
+                return Response({'detail': 'This conversation is no longer writable.'}, status=403)
+            if client_id is not None:
                 message, created = Message.objects.get_or_create(
                     sender=request.user, receiver=other, client_id=client_id,
                     defaults={'content': content},
                 )
-            if not created:
-                if message.deleted_for_sender or message.deleted_for_receiver:
-                    return visibility.not_found()
-                return Response(MessageSerializer(message).data)
-        else:
-            message = Message.objects.create(
-                sender=request.user, receiver=other, content=content, image=image, image_url=image_url,
-            )
+                if not created:
+                    if message.deleted_for_sender or message.deleted_for_receiver:
+                        return visibility.not_found()
+                    return Response(MessageSerializer(message).data)
+            else:
+                message = Message.objects.create(
+                    sender=request.user, receiver=other, content=content, image=image,
+                )
 
         # A story reply is a normal DM carrying an encoded payload, plus a
         # `story_id` naming what it answers. It gets a story alert instead of the
@@ -341,7 +366,7 @@ class MessagesView(APIView):
             notify_story_reply(story, request.user, _story_reply_comment(content))
         else:
             notify_direct_message(
-                request.user, other, _story_reply_comment(content), image=image or image_url,
+                request.user, other, _story_reply_comment(content), image=image,
             )
 
         room_group = f"chat_{min(request.user.pk, other.pk)}_{max(request.user.pk, other.pk)}"
@@ -365,8 +390,8 @@ class ReadMessagesView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, user_id):
-        other = get_object_or_404(User, pk=user_id)
-        if not _are_connected(request.user, other):
+        other = get_object_or_404(User, Q(pk=user_id) | Q(retired_account_id=user_id))
+        if _blocked_either_way(request.user, other):
             return Response({'detail': 'You are not friends with this user.'}, status=403)
         payload = MessageReadSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
@@ -388,8 +413,10 @@ class ReadMessagesView(APIView):
 class RemoveFriendView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    @transaction.atomic
     def delete(self, request, user_id):
         other = get_object_or_404(User, pk=user_id)
+        lock_participants(request.user.pk, other.pk)
         deleted, _ = HiRequest.objects.filter(
             status=HiRequest.Status.ACCEPTED,
         ).filter(
@@ -400,9 +427,8 @@ class RemoveFriendView(APIView):
         FriendRequest.objects.filter(
             Q(sender=request.user, receiver=other) | Q(sender=other, receiver=request.user)
         ).delete()
-        Message.objects.filter(
-            Q(sender=request.user, receiver=other) | Q(sender=other, receiver=request.user)
-        ).delete()
+        Message.objects.filter(sender=request.user, receiver=other).update(deleted_for_sender=True)
+        Message.objects.filter(sender=other, receiver=request.user).update(deleted_for_receiver=True)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

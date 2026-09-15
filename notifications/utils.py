@@ -1,3 +1,4 @@
+import logging
 from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
@@ -9,6 +10,7 @@ from .push import (  # noqa: F401
 )
 
 NEARBY_COOLDOWN_MINUTES = 60
+logger = logging.getLogger(__name__)
 
 
 def send_push_notification(user, title, message, *, data=None, category='default'):
@@ -54,7 +56,7 @@ def _story_alert(recipient, sender, story, notification_type, message, push_titl
             category='story',
         )
     except Exception as exc:  # noqa: BLE001 — push is never worth a 500
-        print(f'[Push] story alert failed: {exc}')
+        logger.warning('story_alert_failed', extra={'error_type': type(exc).__name__})
     return notification
 
 
@@ -144,7 +146,7 @@ def _zone_music_alert(recipient, sender, message, push_title):
             category='zone_music',
         )
     except Exception as exc:  # noqa: BLE001 — push is never worth a 500
-        print(f'[Push] zone music alert failed: {exc}')
+        logger.warning('zone_music_alert_failed', extra={'error_type': type(exc).__name__})
     return notification
 
 
@@ -309,7 +311,7 @@ def _cooldown_passed(key: str, seconds: int) -> bool:
     try:
         return bool(cache.add(key, 1, timeout=seconds))
     except Exception as exc:  # noqa: BLE001 — a dead cache must not mute the app
-        print(f'[Push] cooldown check failed, sending anyway: {exc}')
+        logger.warning('push_cooldown_check_failed', extra={'error_type': type(exc).__name__})
         return True
 
 
@@ -422,7 +424,7 @@ def _club_alert(recipients, notification_type, message, *, sender, club,
     try:
         push_to_users(recipients, push_title, message, data=data, category=category)
     except Exception as exc:  # noqa: BLE001 — push is never worth a 500
-        print(f'[Push] club alert failed: {exc}')
+        logger.warning('club_alert_failed', extra={'error_type': type(exc).__name__})
     return created
 
 
@@ -570,7 +572,7 @@ def _swift_alert(sender, swift, notification_type, message, push_title):
             category='swift',
         )
     except Exception as exc:  # noqa: BLE001 — push is never worth a 500
-        print(f'[Push] swift alert failed: {exc}')
+        logger.warning('swift_alert_failed', extra={'error_type': type(exc).__name__})
     return notification
 
 
@@ -651,5 +653,5 @@ def notify_new_device(device):
             category='security',
         )
     except Exception as exc:  # noqa: BLE001 — push is never worth a 500
-        print(f'[Push] new-device alert failed: {exc}')
+        logger.warning('new_device_alert_failed', extra={'error_type': type(exc).__name__})
     return notification

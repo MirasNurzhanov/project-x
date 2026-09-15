@@ -96,7 +96,7 @@ func (m Message) Validate() error {
 		// batch containing one malformed token is not partially delivered by
 		// Expo, and finding out at the far end costs a whole round trip for
 		// every message that shared the batch with it.
-		return fmt.Errorf("token %q is not an Expo push token", truncate(m.To, 24))
+		return errors.New("invalid Expo push token")
 	}
 	if m.Title == "" && m.Body == "" {
 		return errors.New("message has neither title nor body")
