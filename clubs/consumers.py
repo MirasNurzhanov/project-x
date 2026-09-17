@@ -1,6 +1,8 @@
 import json
+import logging
 from core.websockets import SuspensionAwareConsumer, account_can_use_socket
 from channels.db import database_sync_to_async
+logger = logging.getLogger(__name__)
 
 
 class ClubChatConsumer(SuspensionAwareConsumer):
@@ -148,7 +150,7 @@ class ClubChatConsumer(SuspensionAwareConsumer):
         try:
             notify_club_message(message.club, self.user, content)
         except Exception as exc:  # noqa: BLE001 — never drop a delivered message
-            print(f'[Push] club message alert failed: {exc}')
+            logger.warning('club_message_alert_failed', extra={'error_type': type(exc).__name__})
         return message
 
     @database_sync_to_async

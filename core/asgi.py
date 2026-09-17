@@ -50,7 +50,7 @@ require_worker_capacity(
 
 from channels.routing import ProtocolTypeRouter, URLRouter  # noqa: E402
 from django.contrib.staticfiles.handlers import ASGIStaticFilesHandler  # noqa: E402
-from core.middleware import JWTAuthMiddleware  # noqa: E402
+from core.middleware import SocketTicketMiddleware  # noqa: E402
 from friends.routing import websocket_urlpatterns as friends_ws  # noqa: E402
 from clubs.routing import websocket_urlpatterns as clubs_ws  # noqa: E402
 
@@ -79,7 +79,7 @@ from clubs.routing import websocket_urlpatterns as clubs_ws  # noqa: E402
 # engine and wrote a position before checking whether sharing was on.
 application = ProtocolTypeRouter({
     'http': ASGIStaticFilesHandler(django_asgi_app),
-    'websocket': JWTAuthMiddleware(
+    'websocket': SocketTicketMiddleware(
         URLRouter(friends_ws + clubs_ws)
     ),
 })

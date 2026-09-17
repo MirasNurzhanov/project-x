@@ -2,11 +2,11 @@
 from channels.db import database_sync_to_async
 from channels.routing import URLRouter
 from channels.testing import WebsocketCommunicator
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 from rest_framework.test import APIClient
-from rest_framework_simplejwt.tokens import AccessToken
 
-from core.middleware import JWTAuthMiddleware
+from core.middleware import SocketTicketMiddleware
+from core.socket_tickets import issue_ticket
 from users.models import User
 from .models import Club, ClubMember, ClubMessage
 from .routing import websocket_urlpatterns
@@ -61,13 +61,15 @@ class RestMessageValidationTests(TestCase):
                 self.assertIn('before', response.data)
 
 
+@override_settings(DEBUG=True)
 class SocketMessageValidationTests(TransactionTestCase):
     def setUp(self):
         self.member = User.objects.create_user(username='sock', email='sock@example.test')
         self.club = Club.objects.create(name='Socket validation', creator=self.member)
         ClubMember.objects.create(club=self.club, user=self.member)
-        self.application = JWTAuthMiddleware(URLRouter(websocket_urlpatterns))
-        self.path = f'/ws/clubs/{self.club.pk}/?token={AccessToken.for_user(self.member)}'
+        self.application = SocketTicketMiddleware(URLRouter(websocket_urlpatterns))
+        path = f'/ws/clubs/{self.club.pk}/'
+        self.path = f'{path}?ticket={issue_ticket(self.member.pk, path)}'
 
     async def test_malformed_frames_are_refused_without_storing_or_closing(self):
         socket = WebsocketCommunicator(self.application, self.path)

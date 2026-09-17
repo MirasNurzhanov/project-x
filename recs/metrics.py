@@ -108,8 +108,7 @@ def log_ranking(viewer_id, *, stages, sources, distribution, latency_ms, cache_h
     diagnosable in one look instead of five.
     """
     logger.info(
-        'recs.rank user=%s cache_hit=%s page=%s funnel=%s sources=%s served=%s latency_ms=%.1f',
-        viewer_id,
+        'recs.rank cache_hit=%s page=%s funnel=%s sources=%s served=%s latency_ms=%.1f',
         cache_hit,
         page_size,
         stages,

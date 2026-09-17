@@ -60,7 +60,9 @@ def event(service, name, /, **fields):
     field genuinely called `name` or `service` — which region lookups do, all
     the time — without colliding with the signature.
     """
-    present = {k: v for k, v in fields.items() if v is not None}
+    safe = {'path', 'status', 'status_code', 'found', 'count', 'ttl_s',
+            'waited_ms', 'upstream_ms', 'kind', 'address_keys', 'country_code'}
+    present = {k: v for k, v in fields.items() if k in safe and v is not None}
     logger.info(
         '%s %s %s',
         service,

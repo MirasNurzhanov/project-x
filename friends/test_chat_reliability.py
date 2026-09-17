@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from django.core.cache import cache
 from django.db import IntegrityError, close_old_connections, connection, transaction
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -130,6 +130,7 @@ class ChatReliabilityTests(TestCase):
         self.assertEqual(self.client.post(self.url, {'client_id': str(key), 'content': 'sent'}).status_code, 404)
 
 
+@override_settings(DEBUG=True)
 class MessageEchoTests(TransactionTestCase):
     def setUp(self):
         self.sender = User.objects.create_user(username='echo', email='echo@example.test')
@@ -140,13 +141,14 @@ class MessageEchoTests(TransactionTestCase):
         from channels.db import database_sync_to_async
         from channels.routing import URLRouter
         from channels.testing import WebsocketCommunicator
-        from rest_framework_simplejwt.tokens import AccessToken
-        from core.middleware import JWTAuthMiddleware
+        from core.middleware import SocketTicketMiddleware
+        from core.socket_tickets import issue_ticket
         from .routing import websocket_urlpatterns
 
-        token = str(AccessToken.for_user(self.sender))
-        socket = WebsocketCommunicator(JWTAuthMiddleware(URLRouter(websocket_urlpatterns)),
-                                       f'/ws/chat/{self.receiver.pk}/?token={token}')
+        path = f'/ws/chat/{self.receiver.pk}/'
+        ticket = await database_sync_to_async(issue_ticket)(self.sender.pk, path)
+        socket = WebsocketCommunicator(SocketTicketMiddleware(URLRouter(websocket_urlpatterns)),
+                                       f'{path}?ticket={ticket}')
         self.assertTrue((await socket.connect())[0])
         key = str(uuid4())
 

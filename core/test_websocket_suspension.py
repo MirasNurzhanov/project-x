@@ -5,18 +5,19 @@ from channels.db import database_sync_to_async
 from channels.layers import get_channel_layer
 from channels.routing import URLRouter
 from channels.testing import WebsocketCommunicator
-from django.test import TransactionTestCase
+from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
-from rest_framework_simplejwt.tokens import AccessToken
 
 from clubs.models import Club, ClubMember, ClubMessage
 from clubs.routing import websocket_urlpatterns as club_routes
-from core.middleware import JWTAuthMiddleware
+from core.middleware import SocketTicketMiddleware
+from core.socket_tickets import issue_ticket
 from friends.models import HiRequest, Message
 from friends.routing import websocket_urlpatterns as friend_routes
 from users.models import User
 
 
+@override_settings(DEBUG=True)
 class SocketSuspensionTests(TransactionTestCase):
     def setUp(self):
         self.user = User.objects.create_user(username='socket', email='socket@example.test')
@@ -24,12 +25,12 @@ class SocketSuspensionTests(TransactionTestCase):
         HiRequest.objects.create(sender=self.user, receiver=self.other, status='accepted')
         self.club = Club.objects.create(name='Socket club', creator=self.user)
         ClubMember.objects.create(club=self.club, user=self.user)
-        self.token = str(AccessToken.for_user(self.user))
         self.routes = [f'/ws/chat/{self.other.pk}/', f'/ws/clubs/{self.club.pk}/', '/ws/notifications/']
-        self.application = JWTAuthMiddleware(URLRouter(friend_routes + club_routes))
+        self.application = SocketTicketMiddleware(URLRouter(friend_routes + club_routes))
 
     def socket(self, path, token=None):
-        return WebsocketCommunicator(self.application, f'{path}?token={self.token if token is None else token}')
+        ticket = issue_ticket(self.user.pk, path) if token is None else token
+        return WebsocketCommunicator(self.application, f'{path}?ticket={ticket}')
 
     @database_sync_to_async
     def standing(self, **fields):
@@ -77,6 +78,25 @@ class SocketSuspensionTests(TransactionTestCase):
         await get_channel_layer().group_send(f'user_{self.user.pk}', {'type': 'new_friend', 'username': 'peer'})
         self.assertEqual(await socket.receive_output(), {'type': 'websocket.close', 'code': 4001})
         await socket.disconnect()
+
+    async def test_account_deletion_stops_existing_and_new_sockets(self):
+        from django.contrib.auth.hashers import make_password
+        from users.deletion import request_deletion
+
+        sockets = [self.socket(path) for path in self.routes]
+        for socket in sockets:
+            self.assertTrue((await socket.connect())[0])
+        await self.standing(password=make_password('current'))
+        await database_sync_to_async(request_deletion)(self.user.pk, {'password': 'current'})
+        for socket in sockets:
+            await socket.send_json_to({'content': 'must not persist'})
+            self.assertEqual(await socket.receive_output(), {'type': 'websocket.close', 'code': 4001})
+            await socket.disconnect()
+        for path in self.routes:
+            socket = self.socket(path)
+            self.assertEqual(await socket.connect(), (False, 4001))
+            await socket.disconnect()
+        self.assertEqual(await database_sync_to_async(Message.objects.count)(), 0)
 
     async def test_suspension_during_moderation_prevents_persistence(self):
         from moderation.services import screen

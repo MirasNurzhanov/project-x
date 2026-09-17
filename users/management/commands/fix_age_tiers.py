@@ -24,9 +24,6 @@ class Command(BaseCommand):
             if user.age_tier != correct_tier:
                 user.age_tier = correct_tier
                 user.save(update_fields=['age_tier'])
-                self.stdout.write(f'  fixed  {user.username}: {age}y → {correct_tier}')
-            else:
-                self.stdout.write(f'  ok     {user.username}: {age}y ({correct_tier})')
             updated += 1
         self.stdout.write(self.style.SUCCESS(
             f'Done — {updated} users processed, {skipped} skipped (no date_of_birth).'

@@ -1,7 +1,9 @@
 import json
+import logging
 from core.websockets import SuspensionAwareConsumer, account_can_use_socket
 from channels.db import database_sync_to_async
 from django.db.models import Q
+logger = logging.getLogger(__name__)
 
 
 class UserNotificationConsumer(SuspensionAwareConsumer):
@@ -60,7 +62,13 @@ class ChatConsumer(SuspensionAwareConsumer):
 
     async def receive(self, text_data):
         try:
-            content = json.loads(text_data).get('content', '').strip()
+            payload = json.loads(text_data)
+            if not isinstance(payload, dict) or not isinstance(payload.get('content', ''), str):
+                raise ValueError()
+            if 'image_url' in payload:
+                await self._send_error('Upload images using the image file field. Legacy URLs are read-only.')
+                return
+            content = payload.get('content', '').strip()
         except (ValueError, TypeError):
             await self._send_error('Invalid JSON.')
             return
@@ -129,6 +137,8 @@ class ChatConsumer(SuspensionAwareConsumer):
     @database_sync_to_async
     def _are_connected(self, user_a, user_b):
         from .models import BlockedUser, HiRequest
+        if not account_can_use_socket(user_a.pk) or not account_can_use_socket(user_b.pk):
+            return False
         if BlockedUser.objects.filter(
             Q(blocker=user_a, blocked=user_b) | Q(blocker=user_b, blocked=user_a)
         ).exists():
@@ -147,16 +157,21 @@ class ChatConsumer(SuspensionAwareConsumer):
 
     @database_sync_to_async
     def _save_message(self, content):
+        from django.db import transaction
+        from .lifecycle import lock_writable_conversation
         from notifications.utils import notify_direct_message
         from .models import Message
         # Moderation may await an external service after the dispatch check.
         if not account_can_use_socket(self.user.pk):
             return None
-        message = Message.objects.create(
-            sender=self.user,
-            receiver=self.other,
-            content=content,
-        )
+        with transaction.atomic():
+            if not lock_writable_conversation(self.user.pk, self.other.pk):
+                return None
+            message = Message.objects.create(
+                sender=self.user,
+                receiver=self.other,
+                content=content,
+            )
         # The socket is the path the app actually sends on — the REST endpoint
         # is only a fallback and the route photos take. Pushing from there
         # alone meant a typed message reached nobody who did not already have
@@ -166,5 +181,5 @@ class ChatConsumer(SuspensionAwareConsumer):
         try:
             notify_direct_message(self.user, self.other, content)
         except Exception as exc:  # noqa: BLE001 — never drop a delivered message
-            print(f'[Push] dm alert failed: {exc}')
+            logger.warning('dm_alert_failed', extra={'error_type': type(exc).__name__})
         return message

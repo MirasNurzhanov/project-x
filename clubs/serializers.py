@@ -101,6 +101,12 @@ class PlaceSerializer(serializers.Serializer):
 
 
 class BasicUserSerializer(serializers.ModelSerializer):
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if instance.deletion_requested_at or instance.retired_account_id:
+            data.update(username='Deleted account', profile_picture=None)
+        return data
+
     class Meta:
         model = User
         fields = ('id', 'username', 'profile_picture')
@@ -262,6 +268,11 @@ class ClubMessageInputSerializer(serializers.Serializer):
         default=ClubMessage.MessageType.TEXT,
         error_messages={'invalid_choice': 'Unsupported message_type.'},
     )
+
+    def validate(self, attrs):
+        if 'image_url' in self.initial_data:
+            raise serializers.ValidationError({'image_url': 'Upload images using the image file field. Legacy URLs are read-only.'})
+        return attrs
 
 
 class ClubMessageCursorSerializer(serializers.Serializer):

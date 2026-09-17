@@ -11,6 +11,26 @@ SECRET_KEY = config('SECRET_KEY')
 
 DEBUG = config('DEBUG', default=False, cast=bool)
 
+# Socket tickets are credentials too: uvicorn logs the handshake URL, including
+# refused legacy JWT queries, independently of application logging.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'filters': {'credentials': {'()': 'core.credential_logging.CredentialRedactionFilter'}},
+    'formatters': {'json': {'()': 'core.structured_logging.JSONFormatter'}},
+    'handlers': {'server_stdout': {
+        'class': 'logging.StreamHandler', 'stream': 'ext://sys.stdout',
+        'filters': ['credentials'],
+        'formatter': 'json',
+    }},
+    'root': {'handlers': ['server_stdout'], 'level': 'INFO'},
+    'loggers': {
+        'django': {'handlers': ['server_stdout'], 'level': 'INFO', 'propagate': False},
+        'uvicorn.access': {'handlers': ['server_stdout'], 'level': 'INFO', 'propagate': False},
+        'uvicorn.error': {'handlers': ['server_stdout'], 'level': 'INFO', 'propagate': False},
+    },
+}
+
 
 def _csv_setting(name, default=''):
     return tuple(p.strip() for p in config(name, default=default).split(',') if p.strip())
@@ -27,6 +47,7 @@ if not DEBUG and '*' in ALLOWED_HOSTS:
     raise ImproperlyConfigured("ALLOWED_HOSTS must not contain '*' when DEBUG is off.")
 
 INSTALLED_APPS = [
+    'core.apps.CoreConfig',
     'daphne',
     "django.contrib.admin",
     "django.contrib.auth",
@@ -55,6 +76,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'core.request_logging.RequestLoggingMiddleware',
     "django.middleware.security.SecurityMiddleware",
     # Above everything that writes a body, so it compresses the finished
     # response. The map poll is ~25KB of JSON every ten seconds per client and
@@ -311,6 +333,8 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.ScopedRateThrottle',
     ),
     'DEFAULT_THROTTLE_RATES': {
+        'socket_ticket': '120/min',
+        'account_deletion': '5/min',
         'login': config('THROTTLE_LOGIN', default='10/min'),
         'register': config('THROTTLE_REGISTER', default='10/hour'),
         'refresh': config('THROTTLE_REFRESH', default='120/hour'),
@@ -441,6 +465,19 @@ CSRF_COOKIE_SAMESITE = 'Lax'
 R2_PUBLIC_URL = config('R2_PUBLIC_URL')
 
 STORAGES = {
+    'private_media': {
+        'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage',
+        'OPTIONS': {
+            'access_key': config('R2_ACCESS_KEY_ID'),
+            'secret_key': config('R2_SECRET_ACCESS_KEY'),
+            # Must be a separate bucket with no public domain or r2.dev access.
+            'bucket_name': config('R2_PRIVATE_BUCKET_NAME', default=''),
+            'endpoint_url': config('R2_ENDPOINT_URL'),
+            'region_name': 'auto', 'default_acl': None, 'custom_domain': None,
+            'querystring_auth': True, 'querystring_expire': 300,
+            'object_parameters': {'CacheControl': 'private, no-store', 'ContentDisposition': 'attachment'},
+        },
+    },
     'default': {
         'BACKEND': 'storages.backends.s3boto3.S3Boto3Storage',
         'OPTIONS': {
@@ -547,10 +584,8 @@ SWIFT_AI_AUDIO_MODERATION_ENABLED = config(
 #: that stops the worker rather than the one that stops the guard.
 MODERATION_WORKER_TOKEN = config('MODERATION_WORKER_TOKEN', default='')
 
-#: Set by `core.test_settings`. Stops the in-process worker thread from being
-#: started, so a test drives the pipeline synchronously and nothing outlives
-#: the case that spawned it — the same arrangement, and the same reason, as
-#: `PUSH_DISABLED` in `notifications.push`.
+#: Test-only inline execution; production leaves durable jobs to the worker.
+#: Never enable this on web services: inference must not hold requests open.
 SWIFT_AI_MODERATION_SYNC = config(
     'SWIFT_AI_MODERATION_SYNC', default=False, cast=bool)
 

@@ -237,7 +237,6 @@ func (s *Server) withLogging(next http.Handler) http.Handler {
 
 		s.log.Info("request",
 			"method", r.Method,
-			"path", r.URL.Path,
 			"status", rec.status,
 			"duration_ms", time.Since(start).Milliseconds())
 	})

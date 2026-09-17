@@ -4,18 +4,12 @@
     python manage.py moderate_swifts --loop     # keep going, for a worker dyno
     python manage.py moderate_swifts --status   # what is configured, no secrets
 
-Why this exists next to the in-process thread
----------------------------------------------
-`swifts.ai_moderation.enqueue` starts a daemon thread on commit, which finishes
-the common case in seconds. That thread is *latency*, not durability: a deploy,
-a crash or an OOM between the commit and the thread finishing leaves the job
-row `QUEUED` and the Swift `PENDING`, which is safe — nobody can see it — but
-permanent unless something comes back for it.
-
-This is the something. It is the only part of the design that makes the feature
-correct rather than merely fast, so a deployment that runs the web process and
-never runs this has a feature that mostly works and silently strands Swifts
-whenever a dyno restarts at the wrong moment.
+Why this worker is required
+---------------------------
+Web requests only persist QUEUED jobs. This process runs them sequentially,
+with no upload-created threads. Run a supervised worker whenever moderation
+is enabled; without one new Swifts remain safely PENDING but never finish.
+Queued jobs survive restarts; stale running jobs and due retries are recovered.
 
 Run it either way:
 
@@ -58,6 +52,8 @@ class Command(BaseCommand):
             help='Retry only failed jobs for these Swift IDs, then exit.')
 
     def handle(self, *args, **options):
+        if not 1 <= options['limit'] <= 1000 or not 1 <= options['interval'] <= 3600:
+            raise CommandError('Use --limit 1..1000 and --interval 1..3600 seconds.')
         swift_ids = options['retry_failed']
         if swift_ids is not None:
             if options['loop'] or options['status']:
@@ -103,8 +99,8 @@ class Command(BaseCommand):
         # second. `SWIFT_AI_MODERATION_ENABLED` is off by default, so that is
         # the worker's *default* behaviour rather than an edge case.
         #
-        # Idling instead means the switch can be turned on without the worker
-        # needing to be redeployed to notice, and a disabled feature costs one
+        # Idling means a dynamically overridden setting can change without
+        # restarting the worker, and a disabled feature costs one
         # settings read per interval instead of a restart.
         self.stdout.write(f'Sweeping every {options["interval"]}s. Ctrl-C to stop.')
         idle_logged = False
@@ -119,14 +115,21 @@ class Command(BaseCommand):
                     # bill and nothing else.
                     self.stdout.write(self.style.WARNING(
                         'SWIFT_AI_MODERATION_ENABLED is off - idling. '
-                        'Turn it on to start sweeping; no restart needed.'))
+                        'Enable it and restart after changing environment variables.'))
                     idle_logged = True
                 time.sleep(options['interval'])
         except KeyboardInterrupt:
             self.stdout.write('\nStopped.')
 
     def _pass(self, limit):
-        done = ai_moderation.sweep(limit=limit)
+        from django.db import connection, connections
+        try:
+            done = ai_moderation.sweep(limit=limit)
+        finally:
+            # An empty sweep still opened a connection; return it before idle.
+            # Do not close a transaction owned by an explicit synchronous caller.
+            if not connection.in_atomic_block:
+                connections.close_all()
         if done:
             self.stdout.write(self.style.SUCCESS(f'Ran {done} job(s).'))
 

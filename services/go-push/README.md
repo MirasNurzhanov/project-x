@@ -32,17 +32,15 @@ reach Expo**.
 
 ## Why this workload
 
-`notifications/push.py::_queue` currently does
-`threading.Thread(target=_post, daemon=True).start()` per batch. That is fine
-at your current volume, and its docstring is honest about the trade. What it
-cannot do:
+`notifications/push.py::_queue` uses a bounded fallback executor. Configuring
+this service adds provider rate limiting and retries in a separate process:
 
-| | thread-per-batch | approx-push |
+| | Django fallback | approx-push |
 |---|---|---|
-| Bound concurrency | no ceiling | fixed worker pool |
+| Bound concurrency | 2 threads, 32 admitted tasks | fixed worker pool |
 | Rate-limit Expo | no | token bucket |
 | Retry transient failures | no (`_post` swallows) | 3 attempts, backoff |
-| Shed load | no — grows until OOM | 503 + `Retry-After` |
+| Shed load | logs overflow and returns zero queued | 503 + `Retry-After` |
 | Survive worker recycling | tied to the gunicorn worker | separate process |
 
 ## Running it
@@ -95,13 +93,15 @@ read, where a Redis `LPUSH` always succeeds and quietly grows.
 Reach for Redis the day pushes become something you must not lose — see
 Trade-offs.
 
-### The dead-token loop, not implemented
+### Dead-token cleanup
 
-Expo reports `DeviceNotRegistered` for uninstalled apps. `ExpoClient.OnDeadToken`
-is the hook; nothing is wired to it. The natural completion is a small callback
-POSTing to Django to delete the `users.Device` row. Left undone deliberately —
-it needs an authenticated inbound endpoint on Django, which is a second
-security surface, and it is a good first change to make yourself.
+`ExpoClient.OnDeadToken` now calls Django's authenticated
+`/api/internal/push/dead-tokens/` endpoint. Set `PUSH_DEAD_TOKEN_URL` to its full
+HTTPS URL. Go's `PUSH_AUTH_TOKEN` must match Django's `PUSH_DISPATCHER_TOKEN`.
+The callback clears the token, never the Device row. It runs inside a bounded
+worker, rejects redirects and retries transient failures at most three times.
+Failed or unconfigured cleanup is logged without tokens. Delayed Expo receipt
+polling is not implemented. See `../../docs/codebase-review-fixes/M9.md`.
 
 ## Deploying it
 
@@ -175,8 +175,8 @@ The honest version, including the case against.
 
 ### The case against doing this at all
 
-At your current volume this is not needed. The daemon thread works; the
-failures it cannot handle are ones whose cost is a missed banner. What you are
+The bounded Django fallback is still available; delivery remains best-effort.
+What you are
 buying is a second language in the build, a second deployment, a second thing
 to page someone about — and a network hop that can fail, which is why
 `push_dispatcher.send` has a fallback.
@@ -188,9 +188,8 @@ something that matters, not because push is slow.
 
 If you want the second one, the stronger candidate in your codebase is the
 **Swift AI moderation sweeper** (`swifts/ai_moderation.py`). It already has a
-durable job table, an in-process daemon thread doing the work, and a management
-command that must be run for correctness. A Go consumer of that table would be
-a better fit than this one — the durability problem is already solved by the
+durable job table and a supervised management command consuming it. The existing
+`services/go-moderation` is an alternative consumer — recovery is backed by the
 `SwiftModerationJob` rows, and the workload (N concurrent Cloudflare calls per
 video, rate-limited, retried) is exactly what goroutines are for.
 

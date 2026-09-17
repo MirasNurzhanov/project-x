@@ -30,6 +30,8 @@ class SuspensionAwareJWTAuthentication(JWTAuthentication):
 
     def get_user(self, validated_token):
         user = super().get_user(validated_token)
+        if user.deletion_requested_at or user.retired_account_id:
+            raise AuthenticationFailed('This account is unavailable.', code='account_deleted')
         detail = user.suspension_detail()
         if detail is not None:
             # Strings only. DRF coerces every value in an exception payload to

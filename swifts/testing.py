@@ -81,13 +81,27 @@ def block(a, b):
     BlockedUser.objects.create(blocker=a, blocked=b)
 
 
-def fake_video(name='clip.mp4', content=b'not a real video, just enough bytes'):
+def fake_video(name='clip.mp4', content=None):
     """A file upload for `POST /api/swifts/`, which requires one since the R2
     migration — see `swifts.serializers.SwiftCreateSerializer.video`."""
+    if content is None:
+        import struct
+        def box(kind, payload):
+            return struct.pack('>I4s', len(payload) + 8, kind) + payload
+        # Minimal structural fixture, not a playable codec sample.
+        content = (box(b'ftyp', b'isom\x00\x00\x00\x00isom')
+                   + box(b'moov', box(b'trak', box(b'mdia', box(b'hdlr', b'\x00' * 8 + b'vide'))))
+                   + box(b'mdat', b'\x00'))
     return SimpleUploadedFile(name, content, content_type='video/mp4')
 
 
-def fake_image(name='cover.jpg', content=b'not a real jpeg either'):
+def fake_image(name='cover.jpg', content=None):
+    if content is None:
+        from io import BytesIO
+        from PIL import Image
+        output = BytesIO()
+        Image.new('RGB', (2, 2), 'red').save(output, format='JPEG')
+        content = output.getvalue()
     return SimpleUploadedFile(name, content, content_type='image/jpeg')
 
 

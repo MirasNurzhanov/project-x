@@ -53,7 +53,7 @@ class LoopTests(SimpleTestCase):
             if calls['n'] >= ticks:
                 raise KeyboardInterrupt
         with patch('swifts.management.commands.moderate_swifts.time.sleep', fake_sleep):
-            call_command('moderate_swifts', '--loop', '--interval', '0', stdout=out)
+            call_command('moderate_swifts', '--loop', '--interval', '1', stdout=out)
         return out.getvalue(), calls['n']
 
     @override_settings(SWIFT_AI_MODERATION_ENABLED=False)

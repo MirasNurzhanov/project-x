@@ -19,6 +19,8 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import path, include
 from proximity.urls import map_urlpatterns
+from .socket_tickets import SocketTicketView
+from notifications.dead_tokens import DeadPushTokensView
 
 # Admin branding. The wordmark itself is drawn by
 # templates/admin/base_site.html; these are the strings Django puts in the
@@ -28,6 +30,8 @@ admin.site.site_title = "Approx admin"
 admin.site.index_title = "Overview"
 
 urlpatterns = [
+    path('api/internal/push/dead-tokens/', DeadPushTokensView.as_view(), name='dead-push-tokens'),
+    path('api/socket-ticket/', SocketTicketView.as_view(), name='socket-ticket'),
     path("admin/", admin.site.urls),
     # HTML, not API: the Terms, Community Guidelines and Privacy pages the
     # app links from its sign-up gate. Served from here because Approx has no

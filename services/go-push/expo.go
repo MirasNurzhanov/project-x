@@ -154,7 +154,7 @@ func (c *ExpoClient) post(ctx context.Context, body []byte, messages []Message) 
 	if err != nil {
 		// Transport-level failures — DNS, connection refused, timeout — are
 		// exactly the transient class.
-		return fmt.Errorf("%w: %v", errRetryable, err)
+		return fmt.Errorf("%w: expo transport failed", errRetryable)
 	}
 	// Closing the body is not optional. An unclosed body leaks the connection
 	// back out of the pool, and the symptom is a service that gets slower over
@@ -178,7 +178,7 @@ func (c *ExpoClient) post(ctx context.Context, body []byte, messages []Message) 
 	case resp.StatusCode >= 400:
 		// 4xx means we sent something wrong. Sending it again unchanged gets
 		// the same answer, so this is deliberately not retryable.
-		return fmt.Errorf("expo returned %d: %s", resp.StatusCode, truncate(string(raw), 200))
+		return fmt.Errorf("expo returned %d", resp.StatusCode)
 	}
 
 	var decoded expoResponse
@@ -195,8 +195,12 @@ func (c *ExpoClient) post(ctx context.Context, body []byte, messages []Message) 
 
 // inspectTickets walks Expo's per-message results.
 func (c *ExpoClient) inspectTickets(resp expoResponse, sent []Message) {
-	for _, e := range resp.Errors {
-		c.log.Error("expo request-level error", "code", e.Code, "message", e.Message)
+	if len(resp.Errors) > 0 {
+		c.log.Error("expo request-level error", "count", len(resp.Errors))
+	}
+	if len(resp.Data) != len(sent) {
+		c.log.Warn("expo ticket count mismatch")
+		return
 	}
 	for i, ticket := range resp.Data {
 		if ticket.Status == "ok" {
@@ -206,22 +210,16 @@ func (c *ExpoClient) inspectTickets(resp expoResponse, sent []Message) {
 		// Guarded anyway: trusting a remote service to return exactly as many
 		// elements as you sent is how you get an index-out-of-range panic in
 		// production at 3am.
-		token := "unknown"
-		if i < len(sent) {
-			token = truncate(sent[i].To, 24)
-		}
-
-		if ticket.Details.Error == deviceNotRegistered {
+		if ticket.Status == "error" && ticket.Details.Error == deviceNotRegistered {
 			// Permanent. The app is gone from that device; the token is dead
-			// and Django should delete the row.
-			c.log.Info("device no longer registered", "token", token)
+			// and Django should clear the token, preserving the device identity.
+			c.log.Info("device no longer registered")
 			if c.onDead != nil && i < len(sent) {
 				c.onDead(sent[i].To)
 			}
 			continue
 		}
-		c.log.Warn("expo rejected a message",
-			"token", token, "error", ticket.Details.Error, "message", ticket.Message)
+		c.log.Warn("expo rejected a message", "index", i)
 	}
 }
 

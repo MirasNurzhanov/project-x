@@ -672,8 +672,10 @@ class ClubMessageListView(APIView):
         content = payload.validated_data['content']
         message_type = payload.validated_data['message_type']
         image = request.FILES.get('image')
-        image_url = (request.data.get('image_url') or '').strip()
-        if not content and not image and not image_url:
+        if image is not None:
+            from core.uploads import validate_image
+            image = validate_image(image)
+        if not content and not image:
             return Response({'detail': 'content or image is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # A club is semi-public - anyone who joins reads the whole history -
@@ -690,7 +692,6 @@ class ClubMessageListView(APIView):
             sender=request.user,
             content=content,
             image=image,
-            image_url=image_url,
             message_type=message_type,
             moderation=moderation_services.moderation_for(verdict),
         )
@@ -703,7 +704,7 @@ class ClubMessageListView(APIView):
         # announcement for the ones that come this way. `notify_club_message`
         # holds one cooldown per member per club, so a photo posted straight
         # after a line of text does not arrive as a second buzz.
-        notify_club_message(club, request.user, content, image=image or image_url)
+        notify_club_message(club, request.user, content, image=image)
 
         # Socket-sent messages are broadcast by the consumer; REST-sent ones
         # (photos) previously reached other members only on their next fetch.

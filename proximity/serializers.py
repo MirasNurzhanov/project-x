@@ -1,8 +1,10 @@
+import logging
 from django.utils.functional import cached_property
 from rest_framework import serializers
 from users import visibility
 from users.models import User
 from interests.serializers import InterestSerializer
+logger = logging.getLogger(__name__)
 
 
 class NotOnMap(Exception):
@@ -67,7 +69,7 @@ class _NearbyUserListSerializer(serializers.ListSerializer):
             try:
                 out.append(self.child.to_representation(item))
             except NotOnMap as exc:
-                print(f'[Map] dropped paused user {exc.args[0]} from a nearby payload')
+                logger.warning('map_paused_row_dropped')
         return out
 
 
@@ -157,7 +159,8 @@ class NearbyUserSerializer(serializers.Serializer):
             return data
 
         data['bio'] = obj.bio
-        data['date_of_birth'] = obj.date_of_birth
+        from users.ages import age_in_years
+        data['age'] = age_in_years(obj.date_of_birth)
         data['nationality'] = obj.nationality
         data['profession'] = obj.profession
 

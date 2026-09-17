@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from core.media_storage import protected_media
 
 
 class HiRequest(models.Model):
@@ -71,7 +72,7 @@ class Message(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='received_messages'
     )
     content = models.TextField(blank=True)
-    image = models.FileField(upload_to='chat_images/', null=True, blank=True)
+    image = models.FileField(upload_to='chat_images/', storage=protected_media, null=True, blank=True)
     # Legacy: set when the client uploaded straight to Cloudinary, before the
     # R2 migration retired that path — every upload now goes through Django as
     # `image`. Still takes precedence over `image` on rows from that era, since

@@ -1,4 +1,6 @@
 import math
+import logging
+logger = logging.getLogger(__name__)
 
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -373,15 +375,16 @@ class UpdateLocationView(APIView):
             serializer.validated_data['longitude'],
         )
         user.location_updated_at = timezone.now()
-        # Absent and -1 both mean "the phone did not say", which is not the same
-        # claim as "perfect", so neither is allowed to overwrite a real figure
-        # with a better-looking one.
-        accuracy = serializer.validated_data.get('accuracy')
-        user.location_accuracy_m = float(accuracy) if accuracy is not None and accuracy >= 0 else None
         fields = [
-            'latitude', 'longitude', 'location_updated_at', 'location_accuracy_m',
+            'latitude', 'longitude', 'location_updated_at',
             'updated_at',
         ]
+        # Older clients omit accuracy: that is not a request to clear it.
+        # Explicit null/-1 means the current fix has unknown accuracy.
+        if 'accuracy' in serializer.validated_data:
+            accuracy = serializer.validated_data['accuracy']
+            user.location_accuracy_m = float(accuracy) if accuracy is not None and accuracy >= 0 else None
+            fields.append('location_accuracy_m')
 
         motion = classify_speed(serializer.validated_data.get('speed'))
         if motion is not None:
@@ -407,14 +410,14 @@ class UpdateLocationView(APIView):
             # Same contract as the snapshot above: the position write is what
             # the map, the feed and the alerts all depend on, and a zone that
             # failed to move must not take it down.
-            print(f'[Zone] follow failed for user {user.pk}: {exc}')
+            logger.warning('zone_follow_failed', extra={'error_type': type(exc).__name__})
         _trigger_nearby_notifications(user)
         # Best-effort: a zone alert is a nice-to-have, and a failure inside it
         # must not fail the location write that every other feature depends on.
         try:
             _trigger_zone_music_alerts(user)
         except Exception as exc:  # noqa: BLE001
-            print(f'[Zone] music alert sweep failed: {exc}')
+            logger.warning('zone_music_sweep_failed', extra={'error_type': type(exc).__name__})
         return Response({'latitude': str(user.latitude), 'longitude': str(user.longitude)})
 
 

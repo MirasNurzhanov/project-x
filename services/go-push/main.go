@@ -38,20 +38,21 @@ import (
 // failure with a clear message, rather than a `KeyError` from inside a request
 // three hours later.
 type Config struct {
-	Addr        string
-	ExpoURL     string
-	Token       string
-	Workers     int
-	QueueSize   int
-	BatchSize   int
-	RatePerSec  int
-	RateBurst   int
-	Tries       int
-	HTTPTimeout time.Duration
-	DrainWait   time.Duration
-	MaxBody     int64
-	MaxBatch    int
-	Debug       bool
+	Addr         string
+	ExpoURL      string
+	Token        string
+	DeadTokenURL string
+	Workers      int
+	QueueSize    int
+	BatchSize    int
+	RatePerSec   int
+	RateBurst    int
+	Tries        int
+	HTTPTimeout  time.Duration
+	DrainWait    time.Duration
+	MaxBody      int64
+	MaxBatch     int
+	Debug        bool
 }
 
 func loadConfig() Config {
@@ -66,7 +67,8 @@ func loadConfig() Config {
 		// development and wrong everywhere else — main() warns loudly about it
 		// rather than inventing a secret that would be identical in every
 		// deployment.
-		Token: env("PUSH_AUTH_TOKEN", ""),
+		Token:        env("PUSH_AUTH_TOKEN", ""),
+		DeadTokenURL: env("PUSH_DEAD_TOKEN_URL", ""),
 
 		// 8 workers against one provider is a starting point, not a
 		// measurement. The number that actually matters is the rate limit
@@ -131,6 +133,19 @@ func main() {
 	defer limiter.Close()
 
 	expo := NewExpoClient(cfg.ExpoURL, cfg.HTTPTimeout, log, limiter, cfg.Tries)
+	if cfg.DeadTokenURL != "" && cfg.Token != "" {
+		cleanupClient := &http.Client{Timeout: 2 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		expo.OnDeadToken(func(token string) {
+			if err := reportDeadToken(ctx, cleanupClient, cfg.DeadTokenURL, cfg.Token, token); err != nil {
+				log.Warn("push_dead_token_cleanup_failed")
+			} else {
+				log.Info("push_dead_token_cleared")
+			}
+		})
+	} else {
+		log.Warn("push_dead_token_cleanup_not_configured")
+	}
 
 	dispatcher := NewDispatcher(expo, log, cfg.Workers, cfg.QueueSize, cfg.BatchSize)
 	dispatcher.Start(ctx)

@@ -1,25 +1,8 @@
-"""Handing push delivery to the Go dispatcher instead of a daemon thread.
+"""Handing push delivery to the optional Go dispatcher.
 
-`push._queue` currently starts `threading.Thread(target=_post).start()` for
-every send. That works, and its docstring is honest about why it is acceptable:
-nothing upstream can act on a failed push, so a dead Expo costs a log line.
-
-What it cannot do is any of the following, and each one is a thing you only
-want once volume makes it matter:
-
-  * **Bound anything.** A thread per batch has no ceiling. A fan-out to a large
-    club during an incident starts as many threads as there are batches, and
-    the first symptom is the web worker's memory rather than the push.
-  * **Rate-limit.** Every thread races the others to Expo independently, so the
-    request rate is whatever the traffic happens to produce. Expo throttling us
-    is invisible from here.
-  * **Retry.** `_post` swallows the exception. A five-second Expo blip drops
-    every push that overlapped it.
-  * **Survive the response cycle usefully.** The thread is tied to a gunicorn
-    worker that may be recycled underneath it.
-
-`approx-push` (../approx-push) does those four things. This module is the
-client for it, and it is deliberately the thinnest possible one: Django keeps
+Django's fallback executor is bounded. The dispatcher adds rate limiting,
+transient retries and execution independent of web-process recycling.
+This module is its client: Django keeps
 every decision about *who* gets a notification — preferences, blocks,
 cooldowns, all of `notifications.utils` — and hands over only the finished
 envelopes.
@@ -34,7 +17,7 @@ Off by default. `PUSH_DISPATCHER_URL` unset means `push._queue` behaves exactly
 as it does today, so this can land, be deployed, and be turned on later.
 """
 import json
-import threading
+import logging
 import urllib.error
 import urllib.request
 
@@ -45,6 +28,7 @@ from django.conf import settings
 #: anything beyond a second means it is saturated or gone, and in both cases
 #: falling back is better than waiting.
 TIMEOUT_SECONDS = 2.0
+logger = logging.getLogger(__name__)
 
 
 class DispatcherUnavailable(Exception):
@@ -84,7 +68,7 @@ def _request(messages):
     )
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
-            return json.loads(response.read() or b'{}')
+            return json.loads(response.read(1 << 20) or b'{}')
     except urllib.error.HTTPError as exc:
         # 503 is the dispatcher shedding load — its queue is full. That is a
         # real answer and the right response is to send it ourselves, not to
@@ -105,30 +89,27 @@ def send(messages) -> bool:
         return False
     try:
         result = _request(messages)
-    except DispatcherUnavailable as exc:
-        print(f'[Push] dispatcher unavailable, falling back in-process: {exc}')
+    except (DispatcherUnavailable, ValueError, TypeError) as exc:
+        logger.warning('push_dispatcher_unavailable', extra={'error_type': type(exc).__name__})
         return False
 
+    if not isinstance(result, dict) or not isinstance(result.get('queued'), int):
+        logger.warning('push_dispatcher_response_invalid')
+        return False
     rejected = result.get('rejected') or 0
     if rejected:
         # The dispatcher validated the tokens and refused some. Worth a line,
         # because a rising count here means `users.Device` is accumulating dead
         # rows that nothing is deleting.
-        print(f'[Push] dispatcher rejected {rejected}: {result.get("errors")}')
+        logger.warning('push_dispatcher_rejected', extra={'count': rejected})
     return True
 
 
 def send_async(messages) -> None:
-    """`send`, off the request cycle.
+    """Compatibility entry point using the bounded transport, never a new thread.
 
-    Still a thread — but a single short-lived one making a single sub-second
-    local call, rather than one per batch making HTTPS calls to a third party
-    with no ceiling on how many run at once. The unbounded part has moved into
-    the Go service, where it is a bounded queue with a rate limiter in front.
-
-    A cleaner version of this would not need a thread at all: Django 5 can
-    schedule work with `transaction.on_commit`, and if this ever moves onto an
-    async view `httpx.AsyncClient` removes the thread entirely. Left as a
-    thread here so the change to `push._queue` stays a one-line swap.
+    Dispatcher handoff can take up to TIMEOUT_SECONDS; fallback delivery runs
+    off-thread. The historical name is retained for existing callers.
     """
-    threading.Thread(target=send, args=(messages,), daemon=True).start()
+    from .push import _queue
+    _queue(messages)
