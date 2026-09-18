@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     'proximity',
     'regions',
     'clubs',
+    'venues',
     'encounters',
     'notifications',
     'friends',

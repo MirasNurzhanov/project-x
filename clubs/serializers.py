@@ -215,7 +215,7 @@ class ClubEventSerializer(NumericLatLngMixin, serializers.ModelSerializer):
         model = ClubEvent
         fields = (
             'id', 'club', 'created_by', 'title', 'description',
-            'location_name', 'latitude', 'longitude', 'event_datetime',
+            'location_name', 'latitude', 'longitude', 'event_datetime', 'venue', 'meeting_point',
             'status', 'approved_by', 'approved_at', 'expires_at', 'created_at',
         )
 
@@ -231,7 +231,7 @@ class ClubEventNearbySerializer(NumericLatLngMixin, serializers.ModelSerializer)
         fields = (
             'id', 'club', 'club_name', 'club_emblem', 'created_by',
             'title', 'description', 'location_name', 'latitude', 'longitude',
-            'event_datetime', 'status', 'approved_by', 'approved_at', 'expires_at', 'created_at',
+            'event_datetime', 'status', 'approved_by', 'approved_at', 'expires_at', 'created_at', 'venue', 'meeting_point',
         )
 
 

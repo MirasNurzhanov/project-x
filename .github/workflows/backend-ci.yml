@@ -84,6 +84,7 @@ jobs:
           users.test_account_deletion friends.test_connection_removal
           core.test_operations friends.test_chat_reliability
           notifications.test_push_delivery users.test_privacy_batch
+          venues
           --settings=core.ci_test_settings --noinput
 
   dependency-audit:

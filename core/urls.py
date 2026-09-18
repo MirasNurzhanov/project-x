@@ -46,6 +46,7 @@ urlpatterns = [
     path("api/notifications/", include("notifications.urls")),
     path("api/encounters/", include("encounters.urls")),
     path("api/clubs/", include("clubs.urls")),
+    path("api/venues/", include("venues.urls")),
     path("api/friends/", include("friends.urls")),
     path("api/stories/", include("stories.urls")),
     path("api/moderation/", include("moderation.urls")),

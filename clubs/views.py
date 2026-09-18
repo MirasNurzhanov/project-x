@@ -8,7 +8,7 @@ from django.utils import timezone
 from moderation import services as moderation_services
 from moderation.models import ContentReport
 from moderation.reasons import VISIBLE_STATES
-from rest_framework import permissions, status
+from rest_framework import permissions, serializers, status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -19,6 +19,7 @@ from notifications.utils import (
 )
 from regions import upstream
 from users import visibility as user_visibility
+from venues.models import Venue
 from . import visibility
 from .models import Club, ClubEvent, ClubInvitation, ClubMember, ClubMessage
 from .serializers import (
@@ -470,6 +471,11 @@ class ClubMembersView(APIView):
         return Response(ClubMemberSerializer(members, many=True).data)
 
 
+class VenueProposalInput(serializers.Serializer):
+    venue_id = serializers.IntegerField(min_value=1, required=False)
+    meeting_point = serializers.CharField(max_length=200, allow_blank=True, required=False, default='')
+
+
 class ClubEventListCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -504,14 +510,22 @@ class ClubEventListCreateView(APIView):
             return Response({'detail': 'event_datetime is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
         with transaction.atomic():
+            # Only the venue id is accepted as authority for a managed place.
+            # Lock while creating the proposal so deactivation cannot interleave.
+            venue_input = VenueProposalInput(data=request.data)
+            venue_input.is_valid(raise_exception=True)
+            venue_id = venue_input.validated_data.get('venue_id')
+            venue = get_object_or_404(Venue.objects.select_for_update(), pk=venue_id, is_active=True) if venue_id else None
             event = ClubEvent.objects.create(
                 club=club,
                 created_by=request.user,
                 title=title,
                 description=request.data.get('description', '').strip(),
-                location_name=request.data.get('location_name', '').strip(),
-                latitude=request.data.get('latitude') or None,
-                longitude=request.data.get('longitude') or None,
+                venue=venue,
+                meeting_point=venue_input.validated_data['meeting_point'],
+                location_name=venue.name if venue else request.data.get('location_name', '').strip(),
+                latitude=venue.latitude if venue else request.data.get('latitude') or None,
+                longitude=venue.longitude if venue else request.data.get('longitude') or None,
                 event_datetime=event_datetime,
                 status=ClubEvent.Status.PENDING,
             )

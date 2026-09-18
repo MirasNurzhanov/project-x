@@ -203,6 +203,11 @@ class ClubInvitation(models.Model):
 
 
 class ClubEvent(models.Model):
+    # Keep the event's location snapshot if an editorial venue is later removed.
+    venue = models.ForeignKey('venues.Venue', null=True, blank=True,
+                              on_delete=models.SET_NULL, related_name='meetups')
+    meeting_point = models.CharField(max_length=200, blank=True)
+
     class Status(models.TextChoices):
         PENDING = 'pending', 'Pending'
         APPROVED = 'approved', 'Approved'
