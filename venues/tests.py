@@ -32,15 +32,62 @@ class VenueTests(TestCase):
             **overrides,
         }, format='json')
 
-    def test_seed_only_dostyk_and_numeric_coordinates(self):
+    def test_seeded_venues_and_numeric_coordinates(self):
         response = self.client.get('/api/venues/')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['count'], 1)
+        self.assertEqual(response.data['count'], 3)
         row = response.data['results'][0]
         self.assertEqual(row['name'], 'Dostyk Plaza')
         self.assertEqual(row['latitude'], 43.233139)
         self.assertEqual(row['longitude'], 76.956562)
         self.assertNotIn('google_place_id', row)
+        esentai = response.data['results'][1]
+        self.assertEqual(esentai['name'], 'Esentai Mall')
+        self.assertEqual(esentai['latitude'], 43.218593)
+        self.assertEqual(esentai['longitude'], 76.928083)
+        six = response.data['results'][2]
+        self.assertEqual(six['name'], 'Six Coffee+Wine')
+        self.assertEqual(six['address'], 'Abay Avenue, 17, Almaty')
+        self.assertEqual(six['latitude'], 43.24326)
+        self.assertEqual(six['longitude'], 76.953786)
+
+    def test_six_seed_preserves_edits_and_meetup_links_to_abay_branch(self):
+        venue = Venue.objects.get(slug='six-coffee-wine-abay')
+        venue.description = 'Staff description'
+        venue.save()
+        import_module('venues.migrations.0004_seed_six_coffee_wine').seed_six(
+            apps, type('Editor', (), {'connection': connection})())
+        venue.refresh_from_db()
+        self.assertEqual(venue.description, 'Staff description')
+        self.assertEqual(Venue.objects.filter(slug='six-coffee-wine-abay').count(), 1)
+        self.assertEqual(self.propose(venue_id=venue.pk).status_code, 201)
+        event = ClubEvent.objects.get()
+        self.assertEqual(event.venue_id, venue.pk)
+        self.assertEqual(event.location_name, 'Six Coffee+Wine')
+        self.assertEqual(event.latitude, venue.latitude)
+        self.assertEqual(event.longitude, venue.longitude)
+
+    def test_esentai_seed_preserves_admin_changes(self):
+        venue = Venue.objects.get(slug='esentai-mall')
+        venue.is_active = False
+        venue.description = 'Staff edit'
+        venue.save()
+        import_module('venues.migrations.0003_seed_esentai_mall').seed_esentai(
+            apps, type('Editor', (), {'connection': connection})())
+        venue.refresh_from_db()
+        self.assertFalse(venue.is_active)
+        self.assertEqual(venue.description, 'Staff edit')
+        self.assertEqual(Venue.objects.filter(slug='esentai-mall').count(), 1)
+
+    def test_esentai_meetup_uses_the_selected_venue(self):
+        venue = Venue.objects.get(slug='esentai-mall')
+        response = self.propose(venue_id=venue.pk)
+        self.assertEqual(response.status_code, 201)
+        event = ClubEvent.objects.get()
+        self.assertEqual(event.venue_id, venue.pk)
+        self.assertEqual(event.location_name, 'Esentai Mall')
+        self.assertEqual(event.latitude, venue.latitude)
+        self.assertEqual(event.longitude, venue.longitude)
 
     def test_seed_is_repeatable_without_overwriting_admin_edits(self):
         self.venue.description = 'Edited by staff'
@@ -49,7 +96,7 @@ class VenueTests(TestCase):
             apps, type('Editor', (), {'connection': connection})())
         self.venue.refresh_from_db()
         self.assertEqual(self.venue.description, 'Edited by staff')
-        self.assertEqual(Venue.objects.count(), 1)
+        self.assertEqual(Venue.objects.count(), 3)
 
     def test_api_is_authenticated_and_read_only(self):
         self.client.force_authenticate(None)
@@ -63,7 +110,8 @@ class VenueTests(TestCase):
     def test_inactive_venue_hidden_and_cannot_be_used(self):
         self.venue.is_active = False
         self.venue.save()
-        self.assertEqual(self.client.get('/api/venues/').data['count'], 0)
+        rows = self.client.get('/api/venues/').data['results']
+        self.assertNotIn(self.venue.pk, [row['id'] for row in rows])
         self.assertEqual(self.client.get(f'/api/venues/{self.venue.pk}/').status_code, 404)
         self.assertEqual(self.propose().status_code, 404)
         self.assertFalse(ClubEvent.objects.exists())
@@ -129,4 +177,4 @@ class VenueTests(TestCase):
         response = self.client.get('/api/venues/')
         self.assertEqual(len(response.data['results']), 100)
         self.assertIsNotNone(response.data['next'])
-        self.assertEqual(len(self.client.get('/api/venues/?page=2').data['results']), 2)
+        self.assertEqual(len(self.client.get('/api/venues/?page=2').data['results']), 4)

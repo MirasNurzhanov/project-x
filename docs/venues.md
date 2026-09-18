@@ -1,6 +1,6 @@
 # Venue meetup foundation
 
-Only Dostyk Plaza is seeded as an active venue. This is an editorial demo place,
+Dostyk Plaza, Esentai Mall and Six Coffee+Wine (Abay Avenue 17) are seeded as active venues. These are editorial places,
 not a claim of partnership and not a reservation system. No Google Places calls
 or new client API keys/native modules are required.
 
@@ -20,7 +20,15 @@ rollback can still remove the new tables/columns; back up first if data matters.
 
 In Django admin, **Venues** controls the title, address, category, description,
 coordinates, optional authorized image URL, and active status. New entries
-default inactive. Leave other entries inactive for this single-venue preview.
+default inactive. Activate only the venues intended for this curated preview.
+Esentai Mall is added by `venues.0003` at Al-Farabi Avenue 77/8. Its building
+coordinates (43.218593, 76.928083) were cross-checked with the map listing because
+the official website's JSON-LD location points elsewhere. `venues.0004` adds the
+user-confirmed Six Coffee+Wine branch on Abay Avenue 17 (43.243260, 76.953786),
+not the Tulebayev branch. Address verified against its online menu and pin against
+https://yandex.com/maps/org/six_coffee_wine/12299495096/ on 2026-09-18.
+Both new seeds preserve staff edits and deactivation when re-run.
+
 There is an optional Google Place ID field for future integration, not a Places
 content cache. Deactivate instead of deleting to preserve the venue relationship.
 If a venue is deleted, existing events keep their location snapshot.
