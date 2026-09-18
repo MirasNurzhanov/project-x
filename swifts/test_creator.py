@@ -36,6 +36,38 @@ class CreatorGalleryTests(SwiftTestCase):
         self.assertEqual(response['Cache-Control'], 'no-store')
         self.assertEqual(find_forbidden(response.data), [])
 
+    def test_watching_and_saving_somebody_else_s_swift_keeps_it_off_your_own_gallery(self):
+        """A profile gallery is one person's uploads — not what they have watched.
+
+        Watching writes a `SwiftView` and saving writes a `SavedSwift`; neither
+        is authorship, and neither may put another creator's video on the
+        viewer's own profile.
+        """
+        self.client.force_authenticate(self.viewer)
+        theirs = make_swift(self.owner)
+        mine = make_swift(self.viewer)
+
+        self.assertEqual(self.client.post(f'/api/swifts/{theirs.pk}/view/').status_code, 201)
+        self.assertEqual(self.client.post(f'/api/swifts/{theirs.pk}/save/').status_code, 201)
+
+        response = self.client.get(f'/api/swifts/creator/{self.viewer.pk}/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([s['id'] for s in response.data['results']], [mine.pk])
+        self.assertEqual(response.data['count'], 1)
+        # The saved one is still on the private shortlist, which is a different list.
+        saved = self.client.get('/api/swifts/saved/')
+        self.assertEqual([s['id'] for s in saved.data['results']], [theirs.pk])
+
+    def test_a_gallery_only_ever_carries_one_author(self):
+        self.client.force_authenticate(self.viewer)
+        theirs = make_swift(self.owner)
+        make_swift(self.viewer)
+        response = self.client.get(self.url)
+        self.assertEqual([s['id'] for s in response.data['results']], [theirs.pk])
+        self.assertEqual(
+            {s['author']['id'] for s in response.data['results']}, {self.owner.pk},
+        )
+
     def test_other_viewers_only_receive_publishable_audience_allowed_swifts(self):
         self.client.force_authenticate(self.viewer)
         public = make_swift(self.owner)
