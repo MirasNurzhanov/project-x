@@ -20,7 +20,12 @@ module says, and the app opens what it is given.
 from django.conf import settings
 
 #: Bump when the substance of the agreement changes. ISO date of publication.
-CURRENT_VERSION = '2026-09-04'
+#:
+#: 2026-09-19 changed how long a position keeps being published: fifteen
+#: minutes for everybody became fifteen minutes for everybody but friends, and
+#: a day for friends. That is a data-handling term rather than wording, so it
+#: re-prompts — see the location section of each document.
+CURRENT_VERSION = '2026-09-19'
 
 #: Where the documents live. This backend serves them itself at /legal/ - see
 #: moderation/legal_views.py for why - so the default is its own origin, and
