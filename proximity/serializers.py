@@ -35,6 +35,16 @@ class LocationUpdateSerializer(serializers.Serializer):
     #: with a two-kilometre radius cannot place anyone in a district.
     #: expo-location reports -1 when it has no estimate.
     accuracy = serializers.FloatField(required=False, allow_null=True, min_value=-1)
+    measured_at = serializers.DateTimeField(required=False)
+
+    def validate_measured_at(self, value):
+        from django.utils import timezone
+
+        now = timezone.now()
+        age = (now - value).total_seconds()
+        if age > 120 or age < -5:
+            raise serializers.ValidationError('A recent location fix is required.')
+        return min(value, now)
 
 
 class NearbyQuerySerializer(serializers.Serializer):

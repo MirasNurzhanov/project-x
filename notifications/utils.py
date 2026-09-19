@@ -1,4 +1,5 @@
 import logging
+import math
 from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
@@ -168,6 +169,29 @@ def notify_zone_music_entry(visitor, owner, distance_m: float):
     from users.visibility import blocked_ids_for, can_view
 
     if visitor.pk == owner.pk:
+        return
+    # Map pins can outlive a GPS fix (especially friends' last-known pins).
+    # Only recent, measured positions with enough precision justify an alert.
+    from proximity.utils import haversine
+
+    now = timezone.now()
+    uncertainty = 0.0
+    for person in (visitor, owner):
+        measured_at = person.location_updated_at
+        accuracy = person.location_accuracy_m
+        if not person.is_on_map() or measured_at is None:
+            return
+        if not 0 <= (now - measured_at).total_seconds() <= 120:
+            return
+        if accuracy is None or not math.isfinite(accuracy) or accuracy < 0:
+            return
+        uncertainty += accuracy
+    # Never trust a rounded/fuzzed distance supplied by a map caller.
+    distance_m = haversine(
+        float(visitor.latitude), float(visitor.longitude),
+        float(owner.latitude), float(owner.longitude),
+    ) * 1000
+    if not math.isfinite(distance_m) or distance_m + uncertainty > owner.music_zone_radius:
         return
     # A track, and a music zone switched on to play it through. Still not
     # `zone_active`: that governs whether the *map* zone is drawn around

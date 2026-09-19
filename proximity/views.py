@@ -374,17 +374,15 @@ class UpdateLocationView(APIView):
             serializer.validated_data['latitude'],
             serializer.validated_data['longitude'],
         )
-        user.location_updated_at = timezone.now()
+        user.location_updated_at = serializer.validated_data.get('measured_at', timezone.now())
         fields = [
             'latitude', 'longitude', 'location_updated_at',
             'updated_at',
         ]
-        # Older clients omit accuracy: that is not a request to clear it.
-        # Explicit null/-1 means the current fix has unknown accuracy.
-        if 'accuracy' in serializer.validated_data:
-            accuracy = serializer.validated_data['accuracy']
-            user.location_accuracy_m = float(accuracy) if accuracy is not None and accuracy >= 0 else None
-            fields.append('location_accuracy_m')
+        # Accuracy belongs to this fix; never reuse a previous fix's confidence.
+        accuracy = serializer.validated_data.get('accuracy')
+        user.location_accuracy_m = float(accuracy) if accuracy is not None and math.isfinite(accuracy) and accuracy >= 0 else None
+        fields.append('location_accuracy_m')
 
         motion = classify_speed(serializer.validated_data.get('speed'))
         if motion is not None:
