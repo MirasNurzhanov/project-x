@@ -163,6 +163,7 @@ class ZoneSwitchScopeTests(TestCase):
     def setUp(self):
         self.owner = User.objects.create_user(
             username='owner', email='owner@example.com', password='testpass-123',
+            location_accuracy_m=5,
             latitude='10.0', longitude='10.0',
             zone_apple_preview_url=TEST_TRACK_URL,
             zone_active=False,          # circle removed from the map
@@ -171,6 +172,7 @@ class ZoneSwitchScopeTests(TestCase):
         )
         self.visitor = User.objects.create_user(
             username='visitor', email='visitor@example.com', password='testpass-123',
+            location_accuracy_m=5,
             latitude='10.001', longitude='10.001',
         )
         FriendRequest.objects.create(
@@ -246,6 +248,7 @@ class MusicZoneSwitchTests(TestCase):
     def setUp(self):
         self.owner = User.objects.create_user(
             username='mute-owner', email='mute-owner@example.com', password='testpass-123',
+            location_accuracy_m=5,
             latitude='10.0', longitude='10.0',
             zone_apple_preview_url=TEST_TRACK_URL,
             zone_active=True,           # circle very much on the map
@@ -255,6 +258,7 @@ class MusicZoneSwitchTests(TestCase):
         )
         self.visitor = User.objects.create_user(
             username='mute-visitor', email='mute-visitor@example.com', password='testpass-123',
+            location_accuracy_m=5,
             latitude='10.001', longitude='10.001',
         )
         FriendRequest.objects.create(

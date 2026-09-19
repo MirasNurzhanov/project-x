@@ -16,7 +16,10 @@ the file still says, from every direction, exactly who is visible and why.
 precise point and everybody else a ~500m cell, which
 `proximity.test_compliance.PrecisionFollowsTheRelationshipTests` owns.
 """
+from datetime import timedelta
+
 from django.test import TestCase, TransactionTestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from encounters.models import Encounter
@@ -159,14 +162,56 @@ class MapVisibilityTests(TestCase):
         """Friends are exempt from the distance limits, not from the off
         switch. Precision is the thing friendship changes — see
         `proximity.test_compliance.PrecisionFollowsTheRelationshipTests`."""
-        FriendRequest.objects.create(
-            sender=self.me, receiver=self.other,
-            status=FriendRequest.Status.ACCEPTED,
-        )
+        self.befriend()
         share_location(self.other)
         self.assertIn(self.other.pk, self.ids())
 
         self.ghost(self.other)
+        self.assertNotIn(self.other.pk, self.ids())
+
+    def test_a_stale_stranger_is_absent(self):
+        """The freshness cutoff, unweakened for anyone who is not a friend.
+
+        A stranger whose phone stopped reporting twenty minutes ago is not on
+        the map — publishing that position would claim they are standing
+        somewhere they were a third of an hour ago, to someone with no other
+        way to know it is stale.
+        """
+        share_location(self.other, reported_at=timezone.now() - timedelta(minutes=20))
+        self.assertNotIn(self.other.pk, self.ids())
+
+    def befriend(self):
+        FriendRequest.objects.create(
+            sender=self.me, receiver=self.other,
+            status=FriendRequest.Status.ACCEPTED,
+        )
+
+    def test_a_friend_survives_a_stale_position(self):
+        """A friend's dot stays at the last point instead of disappearing.
+
+        Background location reliably lapses — the task gets killed, the phone
+        loses signal, Android drops it the moment the app backgrounds — and a
+        friend has another way to know the dot might be stale: their profile's
+        own last-seen stamp. So the fifteen-minute cutoff does not apply to a
+        friend; the day-long one does. See `users.visibility.on_map_q`.
+        """
+        self.befriend()
+        share_location(self.other, reported_at=timezone.now() - timedelta(minutes=20))
+        self.assertIn(self.other.pk, self.ids())
+
+        self.ghost(self.other)
+        self.assertNotIn(self.other.pk, self.ids())
+
+    def test_a_friend_drops_off_after_a_day(self):
+        """The outer bound, which is the thing that makes the exemption safe.
+
+        Nothing tells the server that an app was deleted or a phone lost, so
+        without this a friend's pin would stand on the map forever. A day is
+        long enough to cover every lapse the exemption is for and short enough
+        that an abandoned account retires itself.
+        """
+        self.befriend()
+        share_location(self.other, reported_at=timezone.now() - timedelta(hours=25))
         self.assertNotIn(self.other.pk, self.ids())
 
 

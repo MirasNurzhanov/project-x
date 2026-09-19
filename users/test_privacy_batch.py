@@ -38,10 +38,10 @@ class AgeAndAccuracyTests(TestCase):
         self.assertNotIn('date_of_birth', response.data)
         self.assertNotIn('1995-06-15', response.content.decode())
 
-    def test_omitted_accuracy_preserves_value_and_explicit_unknown_clears(self):
+    def test_new_fix_does_not_inherit_previous_accuracy(self):
         self.subject.location_accuracy_m = 17
         self.subject.save(update_fields=['location_accuracy_m'])
-        for payload, expected in [({}, 17), ({'accuracy': 6}, 6), ({'accuracy': 0}, 0),
+        for payload, expected in [({}, None), ({'accuracy': 6}, 6), ({'accuracy': 0}, 0),
                                   ({'accuracy': None}, None), ({'accuracy': -1}, None)]:
             response = self.client.patch('/api/proximity/location/', {
                 'latitude': 10, 'longitude': 20, **payload,

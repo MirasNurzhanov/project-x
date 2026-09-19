@@ -35,6 +35,16 @@ class LocationUpdateSerializer(serializers.Serializer):
     #: with a two-kilometre radius cannot place anyone in a district.
     #: expo-location reports -1 when it has no estimate.
     accuracy = serializers.FloatField(required=False, allow_null=True, min_value=-1)
+    measured_at = serializers.DateTimeField(required=False)
+
+    def validate_measured_at(self, value):
+        from django.utils import timezone
+
+        now = timezone.now()
+        age = (now - value).total_seconds()
+        if age > 120 or age < -5:
+            raise serializers.ValidationError('A recent location fix is required.')
+        return min(value, now)
 
 
 class NearbyQuerySerializer(serializers.Serializer):
@@ -111,6 +121,12 @@ class NearbyUserSerializer(serializers.Serializer):
         me = self.context['request'].user
         rel = self.context.get('relationships', {}).get(obj.pk, visibility.STRANGER)
 
+        # Precision is the viewer's relationship to this row, not a setting on
+        # it. `friend_ids` comes down in the context already built by the view;
+        # without it this would be a query per person on the map.
+        friend_ids = self.context.get('friend_ids')
+        precise = visibility.is_friend(me, obj, friend_ids)
+
         # The querysets feeding this serializer all go through
         # `visible_users(on_map=True)`, so no ghost should ever reach here.
         # Checked rather than assumed: this is the last line before coordinates
@@ -118,15 +134,15 @@ class NearbyUserSerializer(serializers.Serializer):
         # exactly the mistake that would put someone back on the map without
         # their say-so. Raising would take the whole map down for one bad row,
         # so the row is dropped instead — see `_NearbyUserListSerializer`.
-        if me.ghost_mode or not obj.is_on_map():
+        #
+        # Friends are measured against the day-long window rather than fifteen
+        # minutes: their dot stays at the last point we heard rather than
+        # disappearing — see `on_map_q`. Everyone else still needs a position
+        # we are willing to stand behind right now.
+        if me.ghost_mode or not obj.is_on_map(for_friend=precise):
             raise NotOnMap(obj.pk)
 
-        # Precision is the viewer's relationship to this row, not a setting on
-        # it. `friend_ids` comes down in the context already built by the view;
-        # without it this would be a query per person on the map.
-        friend_ids = self.context.get('friend_ids')
         latitude, longitude = visibility.coordinates_for(me, obj, friend_ids)
-        precise = visibility.is_friend(me, obj, friend_ids)
 
         data = {
             'id': obj.id,
