@@ -326,9 +326,15 @@ class QueryBudgetTests(TestCase):
         with CaptureQueriesContext(connection) as warm:
             second = self.client.get(f'/api/swifts/feed/?limit=3&cursor={cursor}')
         self.assertEqual(second.status_code, 200)
+        # Ten, not eight: the tag payload added two. They are a `select_related`
+        # for the track and a `prefetch_related` for the hashtag and mention
+        # lists — see `swifts.views._payload_qs` — and the number that matters
+        # is that both are *per page* rather than per Swift. Serving the same
+        # payload without them would be three queries per row, so this budget
+        # went up by two in order not to go up by 3N.
         self.assertLessEqual(
-            len(warm), 8,
-            f'a continued page ran {len(warm)} queries, budget is 8 — the '
+            len(warm), 10,
+            f'a continued page ran {len(warm)} queries, budget is 10 — the '
             'session cache is what keeps this cheap, so this failing means '
             'every swipe is now re-ranking',
         )

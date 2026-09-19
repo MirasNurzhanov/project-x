@@ -70,6 +70,26 @@ def _blocked_ids_for(user):
     return visibility.blocked_ids_for(user)
 
 
+def _shareable_ids(viewer, messages):
+    """Which Swifts shared on this page `viewer` is still allowed to watch.
+
+    One query for the whole page rather than one per message — see
+    `MessageSerializer.get_swift`, which consumes this. An empty set is the
+    correct answer for a page with no shares and costs nothing, because the
+    `if not ids` guard skips the query entirely.
+    """
+    from swifts import visibility as swift_visibility
+
+    ids = {m.swift_id for m in messages if m.swift_id}
+    if not ids:
+        return set()
+    return set(
+        swift_visibility.watchable(viewer)
+        .filter(pk__in=ids)
+        .values_list('pk', flat=True)
+    )
+
+
 def _are_connected(user_a, user_b):
     if not user_a.is_active or not user_b.is_active:
         return False
@@ -275,7 +295,7 @@ class MessagesView(APIView):
         ).exclude(
             Q(sender=request.user, deleted_for_sender=True) |
             Q(receiver=request.user, deleted_for_receiver=True)
-        ).select_related('sender').order_by('-id')
+        ).select_related('sender', 'swift', 'swift__author').order_by('-id')
         connected = _are_connected(request.user, other)
         if not connected and not messages.exists():
             return Response({'detail': 'No retained conversation.'}, status=status.HTTP_403_FORBIDDEN)
@@ -289,7 +309,10 @@ class MessagesView(APIView):
         has_more = len(page) > limit
         page = page[:limit]
         return Response({
-            'results': MessageSerializer(list(reversed(page)), many=True).data,
+            'results': MessageSerializer(
+                list(reversed(page)), many=True,
+                context={'shareable_ids': _shareable_ids(request.user, page)},
+            ).data,
             'next_before': page[-1].id if has_more else None,
             'has_more': has_more,
             'can_send': connected,

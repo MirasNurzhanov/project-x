@@ -16,15 +16,21 @@ cannot stand in for that transformation service — only for the "store the
 bytes, serve the bytes" half of what Cloudinary was doing. Moving to it means
 the composite has to stop being a server-side render:
 
-* **Trim and the original-audio volume** are applied by the player, at
-  playback, the same way the editor already previewed them — the file on disk
-  is never touched.
-* **The music bed is gone.** Mixing a second audio track into a video is a
-  real encode, not a parameter; there is nowhere left to run it. `SwiftVideo`
-  still carries `track`/`music_volume` for a Swift that predates this, but
-  nothing attaches one to a new post — see `swifts.serializers`.
-* **The text overlay is drawn as a layer over the video by the client**,
-  rather than burned into the file — which is exactly how the editor already
+* **Trim, speed, rotation, the colour effect and the original-audio volume**
+  are applied by the player, at playback, the same way the editor already
+  previewed them — the file on disk is never touched. See `swifts.capture` for
+  the settings and for the one place this gets subtle, which is how speed
+  interacts with the sixty-second ceiling.
+* **The music bed is a second audio stream, not a mix.** Mixing a track into
+  the video file is a real encode and there is nowhere left to run it — so the
+  player opens the track alongside the video and plays both, exactly as it
+  already applies trim and volume. `track`, `music_volume` and
+  `music_start_ms` are the parameters that describes; the phone does the rest.
+  What this costs, and it is worth stating plainly: the audio is only mixed on
+  a device playing it through Approx. A Swift downloaded as a file is the
+  silent-or-original-sound recording, because that is what the file is.
+* **The text overlay and the stickers are drawn as layers over the video by
+  the client**, rather than burned into the file — which is exactly how the editor already
   rendered its own preview, so this is the first time the "preview" and the
   real thing are the same code path.
 * **The poster frame is captured on the phone** at export time and uploaded

@@ -35,9 +35,11 @@ from notifications.utils import (
     notify_swift_comment, notify_swift_like, notify_swift_repost,
 )
 from users import visibility as user_visibility
+from users.models import User
 
 from . import ai_moderation
 from . import counters
+from . import tagging
 from . import visibility as swift_visibility
 from .models import (
     SavedSwift, SwiftComment, SwiftLike, SwiftLocationReveal, SwiftReport,
@@ -140,6 +142,32 @@ def _position_for(user, validated):
     }
 
 
+#: Everything `SwiftSerializer` reaches for beyond the Swift's own columns.
+#:
+#: `track` because the music credit carries the bed's audio url, which comes
+#: off the relation rather than the flat attribution columns;
+#: `hashtags__hashtag` and `mentions` because both are serialized as lists.
+#:
+#: Without these a feed page costs three extra queries *per Swift* — the same
+#: N+1 shape `_viewer_context` below was written to avoid for the viewer flags,
+#: and the one `core/test_query_budgets.py` exists to catch.
+SWIFT_JOINS = ('author', 'track')
+SWIFT_PREFETCH = ('hashtags__hashtag', 'mentions')
+
+
+def _payload_qs(qs, prefix=''):
+    """`qs`, with everything `SwiftSerializer` will ask for already loaded.
+
+    `prefix` is for querysets whose rows are not Swifts themselves — the saved
+    shortlist walks `SavedSwift`, so it passes `'swift__'`.
+    """
+    return (
+        qs
+        .select_related(*[prefix + name for name in SWIFT_JOINS])
+        .prefetch_related(*[prefix + name for name in SWIFT_PREFETCH])
+    )
+
+
 def _visible_swift(viewer, pk):
     """A Swift `viewer` may watch and act on, or None.
 
@@ -149,9 +177,8 @@ def _visible_swift(viewer, pk):
     something about them.
     """
     return (
-        swift_visibility.watchable(viewer)
+        _payload_qs(swift_visibility.watchable(viewer))
         .filter(pk=pk)
-        .select_related('author')
         .first()
     )
 
@@ -176,11 +203,10 @@ def _own_or_visible_swift(viewer, pk):
     if swift is not None:
         return swift
     return (
-        SwiftVideo.objects.filter(
+        _payload_qs(SwiftVideo.objects.filter(
             pk=pk, author=viewer, deleted_at__isnull=True,
-        )
+        ))
         .exclude(moderation=SwiftVideo.Moderation.REMOVED)
-        .select_related('author')
         .first()
     )
 
@@ -281,9 +307,8 @@ class SwiftFeedView(APIView):
             # any of that happened. Re-applying `watchable` checks current
             # relationships in the row query and keeps the session a hint
             # about *order* rather than a standing grant.
-            for row in swift_visibility.watchable(request.user)
+            for row in _payload_qs(swift_visibility.watchable(request.user))
             .filter(id__in=page_result.swift_ids)
-            .select_related('author')
         }
         # Re-imposed in the recommender's order: `filter(id__in=...)` returns
         # whatever order the database likes, and losing the ranking at the last
@@ -308,8 +333,7 @@ class SwiftFeedView(APIView):
 
     def _chronological(self, request, limit, offset):
         qs = (
-            swift_visibility.watchable(request.user)
-            .select_related('author')
+            _payload_qs(swift_visibility.watchable(request.user))
             .order_by('-created_at')
         )
         count = qs.count()
@@ -339,9 +363,10 @@ class SwiftMineView(APIView):
     def get(self, request):
         limit, offset = _page_params(request)
         qs = (
-            SwiftVideo.objects.filter(author=request.user, deleted_at__isnull=True)
+            _payload_qs(
+                SwiftVideo.objects.filter(author=request.user, deleted_at__isnull=True)
+            )
             .exclude(moderation=SwiftVideo.Moderation.REMOVED)
-            .select_related('author')
             .order_by('-created_at')
         )
         count = qs.count()
@@ -402,6 +427,13 @@ class SwiftListCreateView(APIView):
                 moderation=ai_moderation.initial_moderation(verdict),
                 **_position_for(request.user, serializer.validated_data),
             )
+            # Inside the transaction: a Swift that stored but lost its tags
+            # would show a caption full of hashtags belonging to nothing, and
+            # there is no second pass that would notice. The *alerts* those
+            # mentions owe are not sent here — see below.
+            tagging.apply(
+                swift, serializer.hashtag_names, serializer.mention_handles,
+            )
             # Inside the transaction, so the durable job record commits with
             # the row it is about. The *work* is not inside it — `enqueue`
             # defers that to `on_commit` — so the phone is not waiting on
@@ -415,6 +447,19 @@ class SwiftListCreateView(APIView):
         # *AI* quarantine does file one — see `ai_moderation.record_ai_report`
         # — because that one has evidence attached that the column alone
         # cannot carry.
+        # Only once the Swift is genuinely watchable. With AI moderation on it
+        # is PENDING right now and `swifts.ai_moderation._approve` will send
+        # these the moment that clears; an alert saying "you were mentioned"
+        # that opens a 404 is worse than one that arrives a minute later.
+        # Outside the transaction either way: a push that times out must not
+        # roll back a Swift that is already stored.
+        if swift.moderation == SwiftVideo.Moderation.OK:
+            tagging.notify_pending(swift)
+
+        # Re-read so the response carries the rows just attached. One query for
+        # a payload the composer navigates straight into, rather than a 201
+        # whose `hashtags` is empty until the next fetch.
+        swift = _payload_qs(SwiftVideo.objects.filter(pk=swift.pk)).first() or swift
         return Response(
             SwiftSerializer(swift, context=_verified(request)).data,
             status=status.HTTP_201_CREATED,
@@ -457,8 +502,30 @@ class SwiftDetailView(APIView):
         serializer = SwiftUpdateSerializer(swift, data=request.data, partial=True)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        caption_before = swift.caption
         serializer.save()
         swift.refresh_from_db()
+
+        # A caption is half of what a Swift is tagged with, so an edit to it
+        # has to be re-read — otherwise adding `#astana` would show the tag in
+        # the text and attach it to nothing, and removing one would leave the
+        # Swift listed under a tag it no longer carries. Only when something
+        # actually changed: `retag` is a handful of queries and a PATCH that
+        # only flips `allow_comments` has no reason to pay them.
+        retagged = (
+            swift.caption != caption_before
+            or serializer.hashtag_names
+            or serializer.mention_handles
+        )
+        if retagged:
+            tagging.retag(swift, serializer.hashtag_names, serializer.mention_handles)
+            # Anyone newly named is told, on the same condition publishing
+            # applies: only once the Swift is actually watchable.
+            if swift.moderation == SwiftVideo.Moderation.OK:
+                tagging.notify_pending(swift)
+            swift = _payload_qs(SwiftVideo.objects.filter(pk=swift.pk)).first() or swift
+
         return Response(SwiftSerializer(swift, context=_verified(request)).data)
 
     def delete(self, request, pk):
@@ -472,6 +539,10 @@ class SwiftDetailView(APIView):
         swift = self._own_swift(request, pk)
         if swift is None:
             return user_visibility.not_found()
+        # Before the row is marked: `_own_swift` already filtered
+        # `deleted_at__isnull=True`, so reaching here *is* the transition, and
+        # `tagging.release` may only be called on one — see its note.
+        tagging.release(swift)
         swift.deleted_at = timezone.now()
         swift.save(update_fields=['deleted_at', 'updated_at'])
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -829,10 +900,12 @@ class SwiftSavedView(APIView):
         # `watchable`. One `LIMIT`/`OFFSET` in SQL, and the page is the only
         # thing that comes back.
         qs = (
-            SavedSwift.objects
-            .filter(user=request.user)
-            .filter(swift__in=swift_visibility.watchable(request.user))
-            .select_related('swift', 'swift__author')
+            _payload_qs(
+                SavedSwift.objects
+                .filter(user=request.user)
+                .filter(swift__in=swift_visibility.watchable(request.user)),
+                prefix='swift__',
+            )
             .order_by('-created_at')
         )
         count = qs.count()
@@ -1065,6 +1138,176 @@ class SwiftTrackListView(APIView):
             'count': count,
             'results': SwiftTrackSerializer(page, many=True).data,
         })
+
+
+class SwiftHashtagSuggestView(APIView):
+    """Tag suggestions for the composer.
+
+    `?q=` prefix-matches; without one this answers with what is busiest, which
+    is what an empty tag field should offer. Blocked tags are excluded from
+    both — a tag a moderator has switched off must not be suggested back to the
+    next person who opens the field.
+
+    Prefix rather than substring, deliberately: somebody typing "ast" means
+    tags that *start* that way, and `icontains` would put `#breakfast` above
+    `#astana` for no reason a person would recognise. Ordering is by use, so
+    the tag most people meant is first.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from .models import Hashtag
+
+        qs = Hashtag.objects.filter(is_blocked=False)
+        query = tagging.normalise_tag(request.query_params.get('q') or '')
+        if query:
+            qs = qs.filter(name__startswith=query)
+        else:
+            # Nothing typed yet: trending only means tags anybody actually
+            # used. A brand-new tag with one Swift is not a suggestion.
+            qs = qs.filter(swift_count__gt=0)
+
+        limit, _ = _page_params(request, default_limit=20)
+        return Response({
+            'results': [
+                {'name': tag.name, 'display': tag.display, 'swift_count': tag.swift_count}
+                for tag in qs.order_by('-swift_count', 'name')[:limit]
+            ],
+        })
+
+
+class SwiftHashtagFeedView(APIView):
+    """Everything under one tag, newest first.
+
+    What makes a hashtag worth having. Without this, a tag is decoration: it
+    attaches, it is suggested back, and tapping it goes nowhere.
+
+    ## The audience gate is the same one the feed uses
+
+    `visibility.watchable(viewer)` and nothing else. A tag page is a *view of
+    the feed*, not a search index with its own rules — so a friends-only Swift
+    appears here for the author's friends and for nobody else, exactly as it
+    does everywhere. Reimplementing the gate for this one surface is how the
+    two would eventually disagree, and the disagreement would be a leak.
+
+    The count is the number this viewer can actually see rather than
+    `Hashtag.swift_count`, which counts every live Swift under the tag
+    regardless of audience. Publishing the denormalised figure would tell
+    somebody how many posts they are being kept out of.
+
+    A blocked tag answers 404 rather than an empty list: it is switched off,
+    and "no Swifts here" would invite the creator to try posting one.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, name):
+        from .models import Hashtag
+
+        key = tagging.normalise_tag(name)
+        if not key:
+            return user_visibility.not_found()
+        tag = Hashtag.objects.filter(name=key, is_blocked=False).first()
+        if tag is None:
+            return user_visibility.not_found()
+
+        limit, offset = _page_params(request, default_limit=24)
+        queryset = (
+            _payload_qs(swift_visibility.watchable(request.user))
+            .filter(hashtags__hashtag=tag)
+            .order_by('-created_at', '-pk')
+        )
+        count = queryset.count()
+        page = list(queryset[offset:offset + limit])
+        return Response({
+            'tag': {'name': tag.name, 'display': tag.display},
+            'count': count,
+            'results': SwiftSerializer(
+                page, many=True, context=_viewer_context(request, page),
+            ).data,
+        })
+
+
+class SwiftSendView(APIView):
+    """Send one Swift to people privately, as direct messages.
+
+    A share is a DM carrying a Swift, so `friends.sharing` owns every rule
+    about whether it may be sent and this view owns only two things: that the
+    sender can watch what they are forwarding, and that a partial failure is
+    reported rather than swallowed.
+
+    **Partial success is the normal outcome and is answered as one.** Sending
+    to five friends where one has since blocked you must reach the other four;
+    a 400 for the whole call would be both wrong and impossible to act on. So
+    the response lists what was sent and what was refused, with a reason each,
+    and the status is 201 whenever anything went out.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    #: Same scope as posting. Forwarding is cheap per send but it is a
+    #: fan-out, and an unthrottled one is a spam primitive.
+    throttle_scope = 'swift_create'
+
+    #: How many people one call may reach. A share sheet is a handful of
+    #: friends; anything past this is a broadcast wearing a DM's clothes.
+    MAX_RECIPIENTS = 20
+
+    def post(self, request, pk):
+        from friends import sharing
+
+        # The sender's own right to watch it, first and on the ordinary gate:
+        # a Swift they cannot see is a 404 here exactly as it is everywhere
+        # else.
+        swift = _visible_swift(request.user, pk)
+        if swift is None:
+            return user_visibility.not_found()
+
+        ids = request.data.get('user_ids')
+        if not isinstance(ids, (list, tuple)) or not ids:
+            return Response(
+                {'user_ids': ['Name at least one person to send this to.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(ids) > self.MAX_RECIPIENTS:
+            return Response(
+                {'user_ids': [f'At most {self.MAX_RECIPIENTS} people at a time.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        field = serializers.IntegerField(min_value=1)
+        try:
+            # dict.fromkeys rather than set(): the same person named twice is
+            # one send, and the order the client asked in is worth keeping so
+            # the results line up with the sheet they were picked from.
+            wanted = list(dict.fromkeys(field.run_validation(i) for i in ids))
+        except serializers.ValidationError:
+            return Response(
+                {'user_ids': ['Not a list of user ids.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        people = {u.pk: u for u in User.objects.filter(pk__in=wanted)}
+        sent, refused = [], []
+        for user_id in wanted:
+            recipient = people.get(user_id)
+            if recipient is None:
+                # Same wording as a refusal rather than "no such user": whether
+                # an id belongs to an account is not something this endpoint
+                # should confirm to somebody guessing.
+                refused.append({'user_id': user_id, 'reason': 'Could not send to this person.'})
+                continue
+            try:
+                message = sharing.share(request.user, recipient, swift)
+            except sharing.ShareRefused as exc:
+                refused.append({'user_id': user_id, 'reason': exc.reason})
+                continue
+            sent.append({'user_id': user_id, 'message_id': message.pk})
+
+        return Response(
+            {'sent': sent, 'refused': refused},
+            status=status.HTTP_201_CREATED if sent else status.HTTP_400_BAD_REQUEST,
+        )
 
 
 class SwiftTrackGenresView(APIView):

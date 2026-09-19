@@ -20,8 +20,8 @@ cannot be widened by `fields = '__all__'`, and is imported by exactly one view.
 from moderation.drf import ScreenedTextMixin
 from rest_framework import serializers
 
-from . import visibility as swift_visibility
-from .models import SwiftComment, SwiftVideo
+from . import capture, tagging, visibility as swift_visibility
+from .models import SwiftComment, SwiftTrack, SwiftVideo
 
 
 def _author_payload(user):
@@ -36,6 +36,23 @@ def _author_payload(user):
         'username': user.username,
         'profile_picture': user.profile_picture.url if user.profile_picture else None,
     }
+
+
+def _clamped(value, low, high, fallback):
+    """A float inside [low, high], or `fallback` if it was not a number at all.
+
+    Used by the sticker validator. Clamping rather than refusing is deliberate
+    there — see `SwiftCreateSerializer.validate_stickers` — but a value that is
+    not a number is not a near-miss to be rescued, so it falls back rather than
+    clamping something meaningless.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if number != number:  # NaN: fails every comparison, so clamping misses it
+        return fallback
+    return round(min(high, max(low, number)), 4)
 
 
 #: What `SwiftSerializer.review_state` can say. Strings rather than the
@@ -100,6 +117,8 @@ class SwiftSerializer(serializers.ModelSerializer):
     viewer_viewed = serializers.SerializerMethodField()
     is_mine = serializers.SerializerMethodField()
     review_state = serializers.SerializerMethodField()
+    hashtags = serializers.SerializerMethodField()
+    mentions = serializers.SerializerMethodField()
 
     class Meta:
         model = SwiftVideo
@@ -110,8 +129,12 @@ class SwiftSerializer(serializers.ModelSerializer):
             'status', 'review_state',
             'audio_title', 'audio_artist', 'audio_artwork_url',
             'audio_preview_url', 'uses_original_audio',
-            'track',
+            'track', 'music_volume', 'music_start_ms',
             'trim_start_ms', 'trim_end_ms', 'overlay_text', 'overlay_position',
+            'original_volume',
+            'speed_percent', 'rotation_deg', 'effect', 'effect_intensity',
+            'stickers',
+            'hashtags', 'mentions',
             'visibility', 'allow_comments', 'allow_reposts',
             'like_count', 'comment_count', 'repost_count', 'view_count',
             'viewer_liked', 'viewer_reposted', 'viewer_saved', 'viewer_viewed',
@@ -186,7 +209,35 @@ class SwiftSerializer(serializers.ModelSerializer):
             'title': obj.audio_title,
             'artist': obj.audio_artist,
             'artwork_url': obj.audio_artwork_url,
+            'audio_url': obj.track.audio_url if obj.track_id and obj.track else '',
+            'duration_ms': obj.track.duration_ms if obj.track_id and obj.track else 0,
         }
+
+    def get_hashtags(self, obj):
+        """This Swift's tags, in the order they were written.
+
+        Reads the prefetched relation rather than querying: every list view
+        that reaches this serializer prefetches `hashtags__hashtag`, and one
+        that forgets pays a query per row — the N+1 shape
+        `core/test_query_budgets.py` exists to catch.
+        """
+        return [
+            {'name': link.hashtag.name, 'display': link.hashtag.display}
+            for link in obj.hashtags.all()
+        ]
+
+    def get_mentions(self, obj):
+        """Who this Swift names.
+
+        `username` comes off the mention row, not off the related user: it is
+        what the caption actually says, and a client highlighting the span in
+        the text needs the written form rather than the current one. `user_id`
+        is what a tap opens, and that one does follow a rename.
+        """
+        return [
+            {'user_id': mention.user_id, 'username': mention.username}
+            for mention in obj.mentions.all()
+        ]
 
     def get_author(self, obj):
         return _author_payload(obj.author)
@@ -275,6 +326,32 @@ class SwiftCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
     #: see `SwiftVideo.moderation` and the note in `swifts/media.py`.
     screened_fields = ('caption', 'place_name')
 
+    #: The music bed, by catalogue id.
+    #:
+    #: Only ever an *active* track. The queryset is the enforcement: a
+    #: withdrawn or unvetted row cannot be attached however the id was
+    #: obtained, and DRF answers "invalid pk" rather than this module having to
+    #: remember to check.
+    track = serializers.PrimaryKeyRelatedField(
+        queryset=SwiftTrack.objects.filter(is_active=True),
+        required=False, allow_null=True,
+    )
+
+    #: Tags and mentions the creator added *outside* the caption.
+    #:
+    #: Write-only and merged with whatever the caption itself says — see
+    #: `swifts.tagging`, which does the parsing and owns the merge order. They
+    #: are popped in `create()` rather than passed to the model: neither is a
+    #: column, both are rows that can only be written once the Swift has a pk.
+    hashtags = serializers.ListField(
+        child=serializers.CharField(max_length=tagging.MAX_HASHTAG_CHARS + 1),
+        required=False, write_only=True, max_length=tagging.MAX_HASHTAGS,
+    )
+    mentions = serializers.ListField(
+        child=serializers.CharField(max_length=151),
+        required=False, write_only=True, max_length=tagging.MAX_MENTIONS,
+    )
+
     class Meta:
         model = SwiftVideo
         fields = [
@@ -287,11 +364,92 @@ class SwiftCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
             'trim_start_ms', 'trim_end_ms',
             'original_volume',
             'overlay_text', 'overlay_position',
+            'stickers',
+            'speed_percent', 'rotation_deg', 'effect', 'effect_intensity',
+            'track', 'music_volume', 'music_start_ms',
+            'hashtags', 'mentions',
         ]
 
     def validate_video(self, value):
         from core.uploads import validate_video
         return validate_video(value)
+
+    def validate_effect(self, value):
+        """Only a treatment some player actually knows how to draw.
+
+        A Swift stored with a typo'd key would play unfiltered for everybody,
+        silently, and the creator would never be told — which is why an unknown
+        key is a 400 rather than something to ignore. Blank is the ordinary
+        case and means untouched.
+        """
+        value = (value or '').strip()
+        if value and value not in capture.EFFECT_KEYS:
+            raise serializers.ValidationError('Unknown effect.')
+        return value
+
+    def validate_stickers(self, value):
+        """Rebuild the list from scratch, keeping only what a player reads.
+
+        Rebuilt rather than checked-and-passed-through, and that is the point:
+        `stickers` is a JSON column with no schema of its own, so anything this
+        method lets past is stored verbatim and handed to every viewer. Copying
+        five known keys out of each entry means a payload carrying a sixth —
+        whatever it is — cannot reach the database at all.
+
+        Positions are fractions of the frame rather than pixels, so the same
+        arrangement lands in the same place on a phone that is not the one it
+        was made on. Out-of-range numbers are clamped rather than refused: a
+        sticker dragged a hair past the edge is a normal thing to do and losing
+        the publish over it would be absurd.
+        """
+        if not isinstance(value, list):
+            raise serializers.ValidationError('Stickers must be a list.')
+        if len(value) > capture.MAX_STICKERS:
+            raise serializers.ValidationError(
+                f'At most {capture.MAX_STICKERS} stickers.')
+
+        cleaned = []
+        for entry in value:
+            if not isinstance(entry, dict):
+                raise serializers.ValidationError('Each sticker must be an object.')
+            emoji = str(entry.get('emoji') or '')
+            if not emoji:
+                raise serializers.ValidationError('A sticker needs an emoji.')
+            if len(emoji) > capture.MAX_STICKER_CHARS:
+                # Long enough for any ZWJ sequence; past that it is text being
+                # smuggled into a field the client draws at 40pt.
+                raise serializers.ValidationError('That is not an emoji.')
+            cleaned.append({
+                'emoji': emoji,
+                'x': _clamped(entry.get('x'), 0.0, 1.0, 0.5),
+                'y': _clamped(entry.get('y'), 0.0, 1.0, 0.5),
+                'scale': _clamped(entry.get('scale'), 0.2, 5.0, 1.0),
+                'rotation': _clamped(entry.get('rotation'), -180.0, 180.0, 0.0),
+            })
+        return cleaned
+
+    def create(self, validated_data):
+        """Save the row, holding back the two lists that are not columns.
+
+        `hashtags` and `mentions` describe rows that cannot exist until the
+        Swift has a primary key, so they are lifted off here and left on the
+        serializer for the view to apply once the transaction has a Swift to
+        attach them to — see `SwiftListCreateView._create`.
+
+        The music credit is flattened at the same moment and for the reason
+        `SwiftVideo.track` documents: the FK says which row, the strings say
+        what this Swift claims, and a track later withdrawn from the catalogue
+        must not strip the credit from everything that used it.
+        """
+        self.hashtag_names = validated_data.pop('hashtags', [])
+        self.mention_handles = validated_data.pop('mentions', [])
+
+        track = validated_data.get('track')
+        if track is not None:
+            validated_data.setdefault('audio_title', track.title)
+            validated_data.setdefault('audio_artist', track.artist)
+            validated_data.setdefault('audio_artwork_url', track.artwork_url)
+        return super().create(validated_data)
 
     def validate_thumbnail(self, value):
         from core.uploads import validate_image
@@ -356,7 +514,14 @@ class SwiftCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
         if end is not None:
             from .media import MAX_DURATION_MS, MIN_DURATION_MS
 
-            kept = end - start
+            # The ceiling applies to what a viewer *watches*, not to how much
+            # source was kept, and those stop being the same number the moment
+            # a speed is set. A 90-second trim at 150% is a 60-second Swift and
+            # is fine; a 45-second trim at 50% is a 90-second Swift and is not.
+            # `duration_ms` is already the played length — the client sends it
+            # that way — so this is the one place the source length has to be
+            # converted before it can be compared.
+            kept = capture.played_ms(end - start, attrs.get('speed_percent', 100))
             if kept > MAX_DURATION_MS:
                 raise serializers.ValidationError({
                     'trim_end_ms':
@@ -366,6 +531,16 @@ class SwiftCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     'trim_end_ms': 'That trim is too short.',
                 })
+
+        # A track and no volume for it is a silent bed nobody asked for, and a
+        # bed starting past the end of its own track is silence too. Neither is
+        # worth refusing a publish over, so both are corrected rather than
+        # rejected — but a `music_start_ms` with no track at all is a client
+        # bug worth surfacing while it is still cheap to find.
+        if attrs.get('track') is None and attrs.get('music_start_ms'):
+            raise serializers.ValidationError({
+                'music_start_ms': 'There is no track for this to be an offset into.',
+            })
         return attrs
 
 
@@ -383,12 +558,37 @@ class SwiftUpdateSerializer(serializers.ModelSerializer):
     `SwiftCreateSerializer.validate`.
     """
 
+    #: The same two write-only lists `SwiftCreateSerializer` takes, for the
+    #: same reason: a caption edit changes half of what the Swift is tagged
+    #: with, and the creator may also want to change the other half. Without
+    #: them an edit could only ever *add* what the new caption says and never
+    #: remove a tag added through the field.
+    hashtags = serializers.ListField(
+        child=serializers.CharField(max_length=tagging.MAX_HASHTAG_CHARS + 1),
+        required=False, write_only=True, max_length=tagging.MAX_HASHTAGS,
+    )
+    mentions = serializers.ListField(
+        child=serializers.CharField(max_length=151),
+        required=False, write_only=True, max_length=tagging.MAX_MENTIONS,
+    )
+
     class Meta:
         model = SwiftVideo
         fields = [
             'caption', 'visibility', 'allow_comments', 'allow_reposts',
             'location_shared',
+            'hashtags', 'mentions',
         ]
+
+    def update(self, instance, validated_data):
+        """Save the row, holding back the two lists that are not columns.
+
+        Same split as `SwiftCreateSerializer.create`, and the view applies them
+        the same way — see `SwiftDetailView.patch`.
+        """
+        self.hashtag_names = validated_data.pop('hashtags', [])
+        self.mention_handles = validated_data.pop('mentions', [])
+        return super().update(instance, validated_data)
 
     def validate_location_shared(self, value):
         if value and not self.instance.has_location:

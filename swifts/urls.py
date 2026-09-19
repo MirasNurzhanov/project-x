@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import path, re_path
 from .creator import SwiftAnalyticsView, SwiftCreatorView
 
 from .views import (
@@ -16,7 +16,10 @@ from .views import (
     SwiftRepostView,
     SwiftSavedView,
     SwiftSaveView,
+    SwiftHashtagFeedView,
+    SwiftHashtagSuggestView,
     SwiftMusicProviderStatusView,
+    SwiftSendView,
     SwiftTrackGenresView,
     SwiftTrackListView,
 )
@@ -34,6 +37,14 @@ urlpatterns = [
     path('tracks/genres/', SwiftTrackGenresView.as_view(), name='swift-track-genres'),
     path('tracks/providers/', SwiftMusicProviderStatusView.as_view(),
          name='swift-music-providers'),
+    # Tag suggestions for the publishing step. Above `<int:pk>/` for the same
+    # reason every other composer route is.
+    path('hashtags/', SwiftHashtagSuggestView.as_view(), name='swift-hashtags'),
+    # A tag's own page. `[^/]+` rather than `<str:name>` so a tag containing a
+    # dot or a hyphen still resolves — `str` matches neither reliably once the
+    # tag is URL-encoded.
+    re_path(r'^hashtags/(?P<name>[^/]+)/$', SwiftHashtagFeedView.as_view(),
+            name='swift-hashtag-feed'),
     path('mine/', SwiftMineView.as_view(), name='swift-mine'),
     # The viewer's own shortlist. Above `<int:pk>/` so "saved" is not read
     # as a Swift id, same reason as `mine/` and `tracks/`.
@@ -53,6 +64,10 @@ urlpatterns = [
     path('<int:pk>/comments/', SwiftCommentsView.as_view(), name='swift-comments'),
     path('<int:pk>/view/', RecordSwiftViewView.as_view(), name='swift-view'),
     path('<int:pk>/report/', SwiftReportView.as_view(), name='swift-report'),
+    # Forwarding: a Swift into somebody's DMs. Lives here rather than under
+    # `friends/` because the gate that matters is the Swift's audience, and
+    # this is where that gate is.
+    path('<int:pk>/send/', SwiftSendView.as_view(), name='swift-send'),
 
     # The whole location surface. `reveal-location/` is the only route in the
     # project that can answer with a Swift's coordinate; `reveals/` is the

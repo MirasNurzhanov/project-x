@@ -613,6 +613,70 @@ def notify_swift_repost(swift, sender):
     )
 
 
+def notify_swift_mention(swift, recipient):
+    """Tell somebody they were named in a Swift.
+
+    Not `_swift_alert`: every other Swift alert is addressed to the author
+    about their own post, and this one is addressed to a third party about
+    somebody else's, so the recipient is a parameter rather than
+    `swift.author`.
+
+    The three rules that do carry over, and why each still applies:
+
+    * **Never yourself.** An author who writes their own handle into a caption
+      is not news to themselves.
+    * **Blocks hide both directions.** Checked against the *recipient's* block
+      list — the question is whether this reader has shut the author out, and a
+      mention is a way to reach someone who has said they do not want to be
+      reached.
+    * **Once per Swift, ever.** Not once per publication — the check below is
+      against every alert of this kind for this pair, read or not.
+
+      The difference matters because a caption is editable. `SwiftMention`'s
+      unique constraint stops a duplicate row, but removing a handle from a
+      caption deletes the row, so re-adding it would make a *new* one with
+      `notified=False` and send a second alert. A creator could then ping
+      somebody as many times as they cared to retype their name, which is
+      exactly the loop a mention has to not offer. The row is a claim about
+      what the Swift says now; the alert is a fact about having been named,
+      and being named twice in one Swift is one piece of news.
+    """
+    from users.visibility import blocked_ids_for
+
+    author = swift.author
+    if recipient.pk == author.pk:
+        return None
+    if author.pk in blocked_ids_for(recipient):
+        return None
+    already = Notification.objects.filter(
+        recipient=recipient, swift=swift,
+        notification_type=Notification.Type.SWIFT_MENTION,
+    ).exists()
+    if already:
+        return None
+
+    notification = Notification.objects.create(
+        recipient=recipient, sender=author, swift=swift,
+        notification_type=Notification.Type.SWIFT_MENTION,
+        message=f'@{author.username} mentioned you in a Swift',
+    )
+    try:
+        send_push_notification(
+            recipient, '💬 Mentioned you',
+            f'@{author.username} mentioned you in a Swift',
+            data={
+                'type': 'swift',
+                'swift_id': swift.pk,
+                'user_id': author.pk,
+                'username': author.username,
+            },
+            category='swift',
+        )
+    except Exception as exc:  # noqa: BLE001 — push is never worth a 500
+        logger.warning('swift_mention_failed', extra={'error_type': type(exc).__name__})
+    return notification
+
+
 def notify_new_device(device):
     """This account was just signed in to on a device it had not been seen on.
 

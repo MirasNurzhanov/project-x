@@ -24,9 +24,11 @@ Three things about this module are load-bearing and are argued where they live:
     race; a constraint is not.
 """
 from django.conf import settings
-from django.core.validators import MaxValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from core.media_storage import protected_media
+
+from .capture import MAX_SPEED_PERCENT, MIN_SPEED_PERCENT
 
 from moderation.reasons import (
     Action as SharedAction,
@@ -140,12 +142,12 @@ class SwiftVideo(models.Model):
     #: credit either if the row is later edited. The FK says "which row"; the
     #: strings say "what this Swift claims", and only the first can go stale.
     #:
-    #: Not attachable to a new Swift any more: mixing a track into the video
-    #: was Cloudinary's job (see `swifts.media`), and there is nowhere for that
-    #: mix to happen against R2. Left on the model, unused by
-    #: `SwiftCreateSerializer`, rather than dropped — a Swift created before
-    #: this change may still carry one, and `get_track`'s attribution-survives
-    #: -withdrawal behaviour still depends on the column existing.
+    #: Attachable again, by a different mechanism than the one that was
+    #: retired. Mixing a track into the video file was Cloudinary's job and
+    #: there is nowhere for that mix to happen against R2 — so the bed is not
+    #: mixed at all: the player opens the track alongside the video and plays
+    #: both, the same way it already applies trim and volume. See
+    #: `swifts.media`.
     track = models.ForeignKey(
         'swifts.SwiftTrack', on_delete=models.SET_NULL,
         null=True, blank=True, related_name='swifts',
@@ -174,11 +176,18 @@ class SwiftVideo(models.Model):
     original_volume = models.PositiveSmallIntegerField(
         default=100, validators=[MaxValueValidator(100)],
     )
-    #: Unused since a music bed can no longer be mixed in (see `track` above).
-    #: Left in place for the same reason.
+    #: 0–100. How loud the attached track plays, against `original_volume`
+    #: for the recording's own sound. Both are the player's, not a mix — see
+    #: `track` above.
     music_volume = models.PositiveSmallIntegerField(
         default=70, validators=[MaxValueValidator(100)],
     )
+    #: Where in the track the bed starts, in milliseconds from its beginning.
+    #:
+    #: A creator attaching a 3-minute song to an 8-second Swift is almost never
+    #: choosing the first 8 seconds of it, so the picker lets them scrub to the
+    #: part they want and this is where that lands.
+    music_start_ms = models.PositiveIntegerField(default=0)
     #: A single line drawn over the video at playback. Kept deliberately small
     #: — one string and a vertical position, not a layer system. A general
     #: overlay editor is a different feature and would need its own model.
@@ -191,6 +200,73 @@ class SwiftVideo(models.Model):
 
     overlay_position = models.CharField(
         max_length=6, choices=OverlayPosition.choices, default=OverlayPosition.MIDDLE,
+    )
+
+    #: Emoji placed over the video, as the creator arranged them.
+    #:
+    #: A JSON list rather than a `SwiftSticker` table, and the reasoning is the
+    #: same one that keeps `overlay_text` a single column: these are *render
+    #: parameters*, never queried across Swifts, never joined to, and only ever
+    #: read as a whole alongside the row that owns them. A table would buy
+    #: nothing and cost a join on every feed page.
+    #:
+    #: Each entry is ``{"emoji": str, "x": float, "y": float, "scale": float,
+    #: "rotation": float}`` — ``x``/``y`` are fractions of the video's width and
+    #: height (0–1, the sticker's centre) so the same arrangement lands in the
+    #: same place on any screen. Validated in `swifts.serializers`; see
+    #: `MAX_STICKERS`.
+    stickers = models.JSONField(default=list, blank=True)
+
+    # ── Capture settings ──────────────────────────────────────────────────────
+    # Like the edit parameters above, these describe how the recording is
+    # *played*, not how it was written — nothing on the phone or the server
+    # re-encodes. See `swifts/media.py`.
+
+    #: Playback speed as a percentage: 50 is half speed, 200 is double.
+    #:
+    #: An integer percent rather than a float, so that a speed round-trips
+    #: through JSON, a form field and a column without a binary-fraction drift
+    #: that would eventually show up as a clip whose length disagrees with
+    #: `duration_ms`.
+    #:
+    #: Note which duration this scales: `duration_ms` is the **played** length,
+    #: the one the 60-second ceiling applies to, so a clip recorded for 90
+    #: seconds at 150% stores 60000 and is publishable. `swifts.serializers`
+    #: is where that is enforced.
+    speed_percent = models.PositiveSmallIntegerField(
+        default=100,
+        validators=[MinValueValidator(MIN_SPEED_PERCENT),
+                    MaxValueValidator(MAX_SPEED_PERCENT)],
+    )
+
+    class Rotation(models.IntegerChoices):
+        NONE = 0, '0°'
+        QUARTER = 90, '90°'
+        HALF = 180, '180°'
+        THREE_QUARTER = 270, '270°'
+
+    #: How far to rotate the video clockwise at playback.
+    #:
+    #: Needed because a phone's recorded orientation and the orientation the
+    #: creator was holding it in are not always the same thing — a clip filmed
+    #: on a tripod, or one imported from a library that wrote its rotation into
+    #: a container flag some decoders ignore, arrives sideways. Storing the
+    #: correction beats asking every viewer's player to guess consistently.
+    rotation_deg = models.PositiveSmallIntegerField(
+        default=Rotation.NONE, choices=Rotation.choices,
+    )
+
+    #: Which colour treatment the video plays under; blank is untouched.
+    #:
+    #: A key into the client's effect catalogue rather than a set of colour
+    #: channels. The server's interest in this field begins and ends with
+    #: storing it — but an unknown key must not reach a player, so the choices
+    #: are validated against `swifts.effects.EFFECT_KEYS`, which is the list the
+    #: app ships.
+    effect = models.CharField(max_length=20, blank=True, db_index=False)
+    #: 0–100. How strongly `effect` is applied; meaningless when it is blank.
+    effect_intensity = models.PositiveSmallIntegerField(
+        default=100, validators=[MaxValueValidator(100)],
     )
 
     # ── Location ──────────────────────────────────────────────────────────────
@@ -886,3 +962,139 @@ class SwiftModerationJob(models.Model):
     def sampled_timestamps(self):
         """`sampled_ms` as a list of ints, for the admin and the tests."""
         return [int(x) for x in self.sampled_ms.split(',') if x.strip().isdigit()]
+
+
+# ── Tagging ───────────────────────────────────────────────────────────────────
+# Two tables rather than two JSON columns, unlike `stickers` above, and the
+# difference is what each is *for*. A sticker is only ever read back with the
+# Swift that owns it. A hashtag's whole purpose is to be read across Swifts —
+# "what else is tagged this", "what is busy right now" — and a mention has to
+# reach a notification and survive a username change. Both are joins, so both
+# are rows.
+
+
+class Hashtag(models.Model):
+    """One tag, once, however many Swifts use it.
+
+    ## Why `name` is normalised and `display` is not
+
+    `#Astana`, `#astana` and `#ASTANA` are one tag to everybody who types them
+    and would be three rows under a plain unique constraint — three feeds, each
+    a third as useful, and no way for a creator to tell which one they landed
+    in. So `name` is casefolded and is what the unique index covers, and
+    `display` keeps the capitalisation of whoever got there first, purely so the
+    tag can be shown back the way a person would write it.
+
+    Casefold rather than lower: `lower()` leaves the German ß alone while
+    `casefold()` maps it to `ss`, which is what a reader comparing the two
+    strings would expect. The difference only matters for a handful of scripts
+    and costs nothing.
+    """
+
+    #: The identity of the tag: casefolded, no leading '#'. See the class note.
+    name = models.CharField(max_length=64, unique=True)
+    #: The same tag as first written, for display only. Never compared.
+    display = models.CharField(max_length=64)
+
+    #: Live Swifts carrying this tag. Denormalised for the same reason every
+    #: other counter in this module is — see `swifts/counters.py`, which is also
+    #: what moves it. A tag page's header cannot afford a COUNT over a table
+    #: that grows with every post.
+    swift_count = models.PositiveIntegerField(default=0)
+
+    #: Blocks the tag everywhere: it stops being suggested, stops trending, and
+    #: `swifts.tagging` refuses to attach it. The rows already attached are left
+    #: alone deliberately — un-tagging published Swifts would edit other
+    #: people's posts, and hiding the tag achieves what a moderator is asking
+    #: for.
+    is_blocked = models.BooleanField(default=False, db_index=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-swift_count', 'name']
+        indexes = [
+            # Trending: the busiest live tags, which is the only ordering the
+            # suggestion endpoint reads.
+            models.Index(fields=['is_blocked', '-swift_count'], name='hashtag_trending_idx'),
+        ]
+
+    def __str__(self):
+        return f'#{self.display}'
+
+
+class SwiftHashtag(models.Model):
+    """A hashtag on a Swift.
+
+    An explicit through-model rather than a bare `ManyToManyField`, for
+    `position`: the order a creator typed their tags in is part of what they
+    wrote, and an implicit join table has no column to keep it in — the tags
+    would come back in whatever order the database found them, which changes
+    between pages.
+    """
+
+    swift = models.ForeignKey(SwiftVideo, on_delete=models.CASCADE, related_name='hashtags')
+    hashtag = models.ForeignKey(Hashtag, on_delete=models.CASCADE, related_name='swifts')
+    #: Where this tag came in the creator's list, from zero.
+    position = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['position', 'id']
+        constraints = [
+            # The same tag twice on one Swift is a typo, not a stronger tag.
+            models.UniqueConstraint(fields=['swift', 'hashtag'], name='unique_swift_hashtag'),
+        ]
+        indexes = [
+            # A tag's feed: every Swift under this tag, newest first.
+            models.Index(fields=['hashtag', '-created_at'], name='swift_hashtag_feed_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.hashtag} on swift {self.swift_id}'
+
+
+class SwiftMention(models.Model):
+    """Somebody named in a Swift's caption.
+
+    ## Why this is a foreign key and not just the text in the caption
+
+    A caption saying `@aisha` is a string. This row is a *person*, resolved once
+    at publication by `swifts.tagging`, and that is what lets the app do the two
+    things a mention is for: notify them at the moment it happens, and keep
+    linking to the right profile after they change their username — which the
+    raw caption text cannot survive.
+
+    ## Why the username is stored anyway
+
+    `username` is what the caption actually says, kept so a client can find the
+    span to highlight without re-deriving it, and so a mention still reads
+    correctly after a rename. Same argument as `SwiftVideo.audio_title` next to
+    `SwiftVideo.track`: the FK says *who*, the string says *what was written*,
+    and only the first should follow the person.
+    """
+
+    swift = models.ForeignKey(SwiftVideo, on_delete=models.CASCADE, related_name='mentions')
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='swift_mentions',
+    )
+    #: The username as written when the Swift published. Display only.
+    username = models.CharField(max_length=150)
+    position = models.PositiveSmallIntegerField(default=0)
+    #: Whether the mentioned person has been told. Set by `swifts.tagging`
+    #: after the notification is filed, so a retry cannot notify twice.
+    notified = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['position', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['swift', 'user'], name='unique_swift_mention'),
+        ]
+        indexes = [
+            # "Swifts that mention me", which is the notification's landing list.
+            models.Index(fields=['user', '-created_at'], name='swift_mention_user_idx'),
+        ]
+
+    def __str__(self):
+        return f'@{self.username} in swift {self.swift_id}'

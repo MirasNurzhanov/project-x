@@ -28,6 +28,12 @@ class Notification(models.Model):
         SWIFT_LIKE = 'swift_like', 'Swift Like'
         SWIFT_COMMENT = 'swift_comment', 'Swift Comment'
         SWIFT_REPOST = 'swift_repost', 'Swift Repost'
+        # Being named in someone else's Swift. The odd one out among the Swift
+        # alerts: the other three go to the *author* about their own post, and
+        # this one goes to a third party about somebody else's. That is why it
+        # has its own helper in `notifications.utils` rather than reusing
+        # `_swift_alert`, whose recipient is hardcoded to the author.
+        SWIFT_MENTION = 'swift_mention', 'Swift Mention'
         # This account was signed in to on a device it had not been seen on
         # before. The one alert here with no sender — it is about the account
         # itself rather than about something a person did to you, so `sender`

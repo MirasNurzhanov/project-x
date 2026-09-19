@@ -438,9 +438,19 @@ def _approve(swift):
     Swift stays removed, which is the correct outcome of a race nobody can
     prevent.
     """
-    return SwiftVideo.objects.filter(
+    approved = SwiftVideo.objects.filter(
         pk=swift.pk, moderation=Moderation.PENDING,
     ).update(moderation=Moderation.OK)
+    if approved:
+        # The Swift is watchable as of this statement, which is the first
+        # moment a "you were mentioned" alert can lead somewhere. Held back
+        # until now on purpose — see `swifts.tagging.notify_pending`. Guarded,
+        # because a job finishing after a moderator already acted updates zero
+        # rows and must not announce a Swift that is not live.
+        from . import tagging
+
+        tagging.notify_pending(swift)
+    return approved
 
 
 def _quarantine(swift, decision):

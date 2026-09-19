@@ -15,7 +15,7 @@ from users import visibility as user_visibility
 from . import media, visibility
 from .models import SwiftComment, SwiftLike, SwiftRepost, SwiftVideo, SwiftView
 from .serializers import SwiftSerializer
-from .views import _page_params, _viewer_context
+from .views import _page_params, _payload_qs, _viewer_context
 
 
 def _owned_swifts(user):
@@ -39,7 +39,7 @@ class SwiftCreatorView(APIView):
             queryset = visibility.watchable(request.user).filter(author_id=target.pk)
 
         limit, offset = _page_params(request, default_limit=24)
-        queryset = queryset.select_related('author').order_by('-created_at', '-pk')
+        queryset = _payload_qs(queryset).order_by('-created_at', '-pk')
         count = queryset.count()
         page = list(queryset[offset:offset + limit])
         return Response({

@@ -4,8 +4,9 @@ from django.utils.html import format_html
 from moderation.reasons import Action
 
 from .models import (
-    SwiftComment, SwiftLike, SwiftLocationReveal, SwiftModerationJob,
-    SwiftReport, SwiftRepost, SwiftTrack, SwiftVideo, SwiftView,
+    Hashtag, SwiftComment, SwiftLike, SwiftLocationReveal, SwiftMention,
+    SwiftModerationJob, SwiftReport, SwiftRepost, SwiftTrack, SwiftVideo,
+    SwiftView,
 )
 
 
@@ -312,3 +313,69 @@ class SwiftTrackAdmin(admin.ModelAdmin):
         }),
         ('Publication', {'fields': ('is_active', 'priority', 'use_count', 'created_at')}),
     )
+
+
+@admin.register(Hashtag)
+class HashtagAdmin(admin.ModelAdmin):
+    """Tags, and the one lever a moderator has over them.
+
+    `is_blocked` is in `list_editable` for the same reason `SwiftTrack.is_active`
+    is: the whole point of the column is that somebody can reach it quickly,
+    and a tag that has to be opened, edited and saved is one that gets left
+    alone while it is being used.
+
+    ## What blocking does and — deliberately — does not do
+
+    It stops the tag being suggested, stops it trending, stops it being
+    attached to anything new, and answers 404 on its page. It does **not**
+    detach it from the Swifts already carrying it. Un-tagging published posts
+    would be editing other people's captions after the fact, and hiding the tag
+    achieves what a moderator is actually asking for. `swifts.tagging` and
+    `SwiftHashtagFeedView` are where both halves are enforced.
+
+    `swift_count` is read-only: it is a denormalised counter moved in SQL by
+    `swifts.tagging`, and a hand-typed value here would be overwritten by the
+    next publish anyway.
+    """
+
+    list_display = ('name', 'display', 'swift_count', 'is_blocked', 'created_at')
+    list_filter = ('is_blocked',)
+    list_editable = ('is_blocked',)
+    search_fields = ('name', 'display')
+    readonly_fields = ('name', 'swift_count', 'created_at')
+    ordering = ('-swift_count', 'name')
+
+    def has_add_permission(self, request):
+        """Tags are created by being used, never by hand.
+
+        A tag added here would have a `swift_count` of zero and nothing under
+        it — an empty page somebody could be sent to. The only reason to open
+        this screen is to look at a tag or to switch one off.
+        """
+        return False
+
+
+@admin.register(SwiftMention)
+class SwiftMentionAdmin(admin.ModelAdmin):
+    """Who was named in what.
+
+    Entirely read-only, and worth having for one narrow purpose: a report that
+    somebody is being named repeatedly by an account they have not blocked is
+    otherwise invisible — the alerts are the recipient's and the captions are
+    the author's, and nothing joins them.
+
+    `notified` is the flag that makes an alert send exactly once; it is shown
+    because a run of unnotified rows means the push path is failing, which is
+    not otherwise obvious from anywhere.
+    """
+
+    list_display = ('username', 'user', 'swift', 'notified', 'created_at')
+    list_filter = ('notified',)
+    search_fields = ('username', 'user__username')
+    readonly_fields = ('swift', 'user', 'username', 'position', 'notified', 'created_at')
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False

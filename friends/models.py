@@ -78,6 +78,26 @@ class Message(models.Model):
     # `image`. Still takes precedence over `image` on rows from that era, since
     # those never got one.
     image_url = models.URLField(max_length=500, blank=True, default='')
+    #: A Swift sent into this conversation, when the message is a share.
+    #:
+    #: A foreign key rather than a link in `content`, because the two questions
+    #: a shared Swift raises can only be answered by a join: *may this reader
+    #: still watch it* — audience and blocks are re-checked at read time, not
+    #: frozen at send time — and *is it still there*. A pasted URL would keep
+    #: rendering a card for a Swift that has since been deleted or made
+    #: private, and the chat would be the one surface in the app where that
+    #: leaks.
+    #:
+    #: CASCADE: a hard-deleted Swift takes its share messages with it. Soft
+    #: deletion — the ordinary case, see `SwiftVideo.delete` — leaves the row
+    #: and `friends.serializers` stops rendering the card.
+    #:
+    #: `content` stays usable alongside it: a share with a note is one message,
+    #: not two.
+    swift = models.ForeignKey(
+        'swifts.SwiftVideo', on_delete=models.CASCADE,
+        null=True, blank=True, related_name='shares',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     is_read = models.BooleanField(default=False)
     deleted_for_sender = models.BooleanField(default=False)
