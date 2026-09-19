@@ -173,10 +173,33 @@ def is_approved_viewer(rel):
 #: reopening the app, without touching the setting.
 DEFAULT_POSITION_MAX_AGE_S = 15 * 60
 
+#: The same question asked about a friend, which gets a different answer.
+#:
+#: Fifteen minutes is the right cutoff for someone who has no other way to tell
+#: a live pin from a frozen one. A friend does: they see the last-seen stamp on
+#: the profile, and they know the person. For them a frozen pin is useful where
+#: a vanished one is not — "their phone died at the office" beats an empty map —
+#: so the position keeps publishing to friends long after it stops publishing to
+#: anybody else.
+#:
+#: A day, and not forever, because the silence has to end somewhere. Nothing
+#: tells the server that an app was deleted, a phone was lost or an account was
+#: abandoned; sign-out clears the position outright (`users.views.LogoutView`)
+#: but an uninstall never reaches us. Without an outer bound those pins would
+#: stand on friends' maps indefinitely. A day covers every case the exemption
+#: exists for — a killed background task, a flat battery, a weekend in a dead
+#: spot — and retires the ones it does not.
+DEFAULT_FRIEND_POSITION_MAX_AGE_S = 24 * 60 * 60
 
-def position_max_age_s():
+
+def position_max_age_s(*, for_friend=False):
     from django.conf import settings
 
+    if for_friend:
+        return getattr(
+            settings, 'MAP_FRIEND_POSITION_MAX_AGE_S',
+            DEFAULT_FRIEND_POSITION_MAX_AGE_S,
+        )
     return getattr(settings, 'MAP_POSITION_MAX_AGE_S', DEFAULT_POSITION_MAX_AGE_S)
 
 
@@ -191,7 +214,7 @@ def sharing_q(prefix=None):
     return Q(**{f'{base}ghost_mode': False})
 
 
-def fresh_position_q(prefix=None, now=None):
+def fresh_position_q(prefix=None, now=None, *, for_friend=False):
     """Q selecting rows whose stored position is recent enough to publish.
 
     Requires a position to exist before asking how old it is. That was
@@ -208,9 +231,15 @@ def fresh_position_q(prefix=None, now=None):
     only make a position look *newer* than it is, and the owner's next report
     corrects it. Same reasoning, and same fallback, as
     `clubs.visibility._position_age`.
+
+    `for_friend` selects the longer window — see
+    `DEFAULT_FRIEND_POSITION_MAX_AGE_S`. It is the only thing that varies here:
+    a friend is asked the same question against a later cutoff, not a different
+    question.
     """
     base = '' if prefix is None else f'{prefix}__'
-    cutoff = (now or timezone.now()) - timedelta(seconds=position_max_age_s())
+    cutoff = (now or timezone.now()) - timedelta(
+        seconds=position_max_age_s(for_friend=for_friend))
     has_point = Q(**{
         f'{base}latitude__isnull': False,
         f'{base}longitude__isnull': False,
@@ -222,18 +251,26 @@ def fresh_position_q(prefix=None, now=None):
     return has_point & recent
 
 
-def on_map_q(prefix=None, now=None):
+def on_map_q(prefix=None, now=None, *, for_friend=False):
     """Q selecting rows that may be drawn on somebody else's map right now.
 
     The choice *and* a position we are still willing to stand behind. The SQL
     counterpart of `User.is_on_map`.
+
+    `for_friend` stretches the second half from fifteen minutes to a day, and
+    nothing else: a friend's dot stays at the last point we heard instead of
+    vanishing the moment their phone goes quiet. Callers that are not about a
+    specific, named relationship — strangers, connected, notifications, zone
+    music — must keep the default, because publishing a stale position to
+    somebody with no other way to know it is stale claims the owner is standing
+    where they were hours ago.
     """
-    return sharing_q(prefix) & fresh_position_q(prefix, now)
+    return sharing_q(prefix) & fresh_position_q(prefix, now, for_friend=for_friend)
 
 
 # ─── Queryset filter ──────────────────────────────────────────────────────────
 def visible_users(viewer, queryset=None, *, exclude_self=True,
-                  on_map=False, discoverable_by=None):
+                  on_map=False, discoverable_by=None, for_friend=False):
     """Base queryset of users `viewer` is allowed to receive at all.
 
     Always drops both directions of a block. The keyword flags add the
@@ -242,6 +279,7 @@ def visible_users(viewer, queryset=None, *, exclude_self=True,
     on_map          — drop anyone not currently on the map, and — because Ghost
                       Mode is mutual — return nobody at all when the *viewer*
                       is ghosted
+    for_friend      — only meaningful with `on_map`; see `on_map_q`
     discoverable_by — 'username' or 'interest'; drop anyone opted out of that
                       search surface
 
@@ -264,7 +302,7 @@ def visible_users(viewer, queryset=None, *, exclude_self=True,
     if on_map:
         if getattr(viewer, 'ghost_mode', False):
             return qs.none()
-        qs = qs.filter(on_map_q())
+        qs = qs.filter(on_map_q(for_friend=for_friend))
     if discoverable_by == 'username':
         qs = qs.filter(discoverable_by_username=True)
     elif discoverable_by == 'interest':

@@ -414,6 +414,27 @@ class LogoutTests(TestCase):
         )
         self.assertFalse(visibility.is_online(User.objects.get(pk=self.me.pk)))
 
+    def test_logout_takes_the_pin_off_the_map(self):
+        """The stale-pin guard, now that a friend's position does not expire.
+
+        Sign-out used to leave the coordinate and let the fifteen-minute cutoff
+        retire it. Friends are measured against a day instead (see
+        `visibility.on_map_q`), and waiting a day to drop the pin of somebody
+        who has explicitly left would be the wrong answer — so sign-out clears
+        the position outright rather than leaning on either window.
+        """
+        User.objects.filter(pk=self.me.pk).update(
+            latitude='10.0', longitude='10.0', location_updated_at=timezone.now(),
+        )
+        self.client.post(
+            '/api/users/logout/', {'refresh': str(self.refresh)}, format='json'
+        )
+        me = User.objects.get(pk=self.me.pk)
+        self.assertIsNone(me.latitude)
+        self.assertIsNone(me.longitude)
+        self.assertFalse(me.is_on_map())
+        self.assertFalse(me.is_on_map(for_friend=True))
+
     def test_push_token_is_cleared_even_when_the_refresh_token_is_bad(self):
         # The offline case: the app retries with whatever it had. The session
         # cannot be revoked, but the device must still stop receiving pushes.

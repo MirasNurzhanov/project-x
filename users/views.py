@@ -351,6 +351,17 @@ class LogoutView(APIView):
             last_seen=timezone.now() - visibility.ONLINE_WINDOW,
             motion_class=User.MotionClass.STATIONARY,
             motion_updated_at=None,
+            # Cleared, not left to expire. Sign-out used to rely on the
+            # fifteen-minute cutoff to retire the pin, but a friend's position
+            # is measured against a day now — see `visibility.on_map_q` — and
+            # leaving somebody who has explicitly left pinned to their last
+            # position for a day, on the maps of the people who see it most
+            # precisely, is not what signing out means. Nulling returns the row
+            # to the cold-install state every reader already handles, and the
+            # first report after signing back in restores it.
+            latitude=None,
+            longitude=None,
+            location_updated_at=None,
         )
 
         try:

@@ -453,8 +453,18 @@ def nearby_users(user, lat, lon, request):
         .prefetch_related('interests')
     )
 
-    # Friends: always visible, no distance limit
-    friend_candidates = base_qs.filter(pk__in=friend_ids) if friend_ids else User.objects.none()
+    # Friends: always visible, no distance limit, and — unlike every other tier
+    # below — measured against the day-long window rather than fifteen minutes.
+    # A friend's dot stays at the last point we heard instead of disappearing
+    # when their phone stops reporting (background task killed, no signal, app
+    # force-quit); it moves again on their next report. Connected/strangers
+    # still go through `base_qs` and its fifteen minutes — see `on_map_q`.
+    friend_base_qs = (
+        visibility.visible_users(user, on_map=True, for_friend=True)
+        .filter(latitude__isnull=False, longitude__isnull=False)
+        .prefetch_related('interests')
+    )
+    friend_candidates = friend_base_qs.filter(pk__in=friend_ids) if friend_ids else User.objects.none()
 
     # How far this viewer sees, which is now something they chose rather
     # than a constant. `zone_box` is the bounding box of their zone —

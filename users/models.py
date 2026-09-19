@@ -337,7 +337,7 @@ class User(AbstractUser):
         """
         return not self.ghost_mode
 
-    def has_fresh_position(self, now=None):
+    def has_fresh_position(self, now=None, *, for_friend=False):
         """Whether the position on this row is recent enough to publish.
 
         There has to *be* one first. That check was previously redundant —
@@ -361,9 +361,9 @@ class User(AbstractUser):
         if stamp is None:
             return False
         age = ((now or timezone.now()) - stamp).total_seconds()
-        return age <= visibility.position_max_age_s()
+        return age <= visibility.position_max_age_s(for_friend=for_friend)
 
-    def is_on_map(self, now=None):
+    def is_on_map(self, now=None, *, for_friend=False):
         """Whether this user may be drawn on anybody else's map right now.
 
         The single named predicate for "is this person published", kept as a
@@ -377,10 +377,15 @@ class User(AbstractUser):
         stale coordinate behind it. Publishing that pair claims somebody is
         standing where they were hours ago.
 
+        `for_friend` moves that cutoff out to a day — a friend's dot is allowed
+        to sit at the last point we heard, because the viewer has another way to
+        read it (the profile's last-seen stamp) and knows the person. It changes
+        the window, never the rule.
+
         `now` lets a caller sweeping many rows measure them all against one
         clock.
         """
-        return self.is_sharing() and self.has_fresh_position(now)
+        return self.is_sharing() and self.has_fresh_position(now, for_friend=for_friend)
 
     class Audience(models.TextChoices):
         EVERYONE = 'everyone', 'Everyone'

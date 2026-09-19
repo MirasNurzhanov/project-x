@@ -117,8 +117,10 @@
   Your device sends your precise position and we store it. How precisely other
   people see it is decided by us, per viewer, at the moment they look: your
   friends see where you actually are, and everyone else sees you snapped to a
-  grid cell roughly 500 metres across. A position stops being published once it
-  is about fifteen minutes old. The
+  grid cell roughly 500 metres across. A position stops being published to
+  anyone but your friends once it is about fifteen minutes old, and to your
+  friends once it is 24 hours old; Ghost Mode and signing out both end it
+  sooner. The
   <a href="{% url 'legal-privacy' %}">Privacy &amp; Safety</a> notice sets this
   out in full, and you should read it before relying on any of it.
 </p>
