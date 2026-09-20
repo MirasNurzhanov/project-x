@@ -206,6 +206,46 @@ class InterestApiTests(TestCase):
         self.assertEqual(football['category'], 'sports')
         self.assertEqual(football['category_label'], 'Sports')
 
+    def test_expanded_interests_can_be_chosen_and_edited(self):
+        expected = {
+            'Flag Football': 'sports',
+            'Reformer Pilates': 'fitness',
+            'Dombra': 'music',
+            'Tufting': 'arts',
+            'Kazakh Food': 'food',
+            'Nature Walks': 'travel',
+            'Co-op Games': 'games',
+            'Webtoons': 'entertainment',
+            'Pet Adoption': 'lifestyle',
+        }
+        response = self.client.get('/api/interests/')
+        self.assertEqual(response.status_code, 200)
+        rows = {row['name']: row for row in response.data}
+        for name, category in expected.items():
+            self.assertEqual(rows[name]['category'], category)
+
+        # Onboarding saves a batch of server-issued IDs.
+        ids = [rows[name]['id'] for name in expected]
+        response = self.client.post(
+            '/api/interests/select/', {'interest_ids': ids}, format='json',
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(set(self.user.interests.values_list('id', flat=True)), set(ids))
+
+        # The profile editor removes and adds individual interests.
+        removed_id = ids[0]
+        added_id = rows['Hot Pot']['id']
+        self.assertEqual(
+            self.client.delete(f'/api/interests/{removed_id}/select/').status_code, 204,
+        )
+        self.assertEqual(
+            self.client.post(f'/api/interests/{added_id}/select/').status_code, 204,
+        )
+        self.assertEqual(
+            set(self.user.interests.values_list('id', flat=True)),
+            (set(ids) - {removed_id}) | {added_id},
+        )
+
     def test_one_category_can_be_fetched_on_its_own(self):
         rows = self.client.get('/api/interests/?category=music').data
         self.assertGreater(len(rows), 50)

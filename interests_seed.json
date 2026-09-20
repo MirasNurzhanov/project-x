@@ -743,6 +743,46 @@
     {
       "name": "Spearfishing",
       "icon": "🔱"
+    },
+    {
+      "name": "Flag Football",
+      "icon": "🏈"
+    },
+    {
+      "name": "Touch Rugby",
+      "icon": "🏉"
+    },
+    {
+      "name": "Beach Tennis",
+      "icon": "🎾"
+    },
+    {
+      "name": "Roundnet",
+      "icon": "🏐"
+    },
+    {
+      "name": "Beach Handball",
+      "icon": "🥅"
+    },
+    {
+      "name": "Underwater Hockey",
+      "icon": "🏊"
+    },
+    {
+      "name": "Wakesurfing",
+      "icon": "🏄"
+    },
+    {
+      "name": "Ski Mountaineering",
+      "icon": "⛷️"
+    },
+    {
+      "name": "Trampolining",
+      "icon": "🤸"
+    },
+    {
+      "name": "Sports Analytics",
+      "icon": "📊"
     }
   ],
   "Fitness & Wellness": [
@@ -905,6 +945,46 @@
     {
       "name": "Marathon Training",
       "icon": "🏃"
+    },
+    {
+      "name": "Reformer Pilates",
+      "icon": "🧘"
+    },
+    {
+      "name": "Hot Yoga",
+      "icon": "🧘"
+    },
+    {
+      "name": "Aerial Yoga",
+      "icon": "🧘"
+    },
+    {
+      "name": "Yin Yoga",
+      "icon": "🧘"
+    },
+    {
+      "name": "Jump Rope",
+      "icon": "🏃"
+    },
+    {
+      "name": "Resistance Bands",
+      "icon": "💪"
+    },
+    {
+      "name": "Functional Training",
+      "icon": "🏋️"
+    },
+    {
+      "name": "Nordic Walking",
+      "icon": "🚶"
+    },
+    {
+      "name": "Rucking",
+      "icon": "🎒"
+    },
+    {
+      "name": "Sound Baths",
+      "icon": "🔔"
     }
   ],
   "Music": [
@@ -1175,6 +1255,46 @@
     {
       "name": "Open Mic",
       "icon": "🎤"
+    },
+    {
+      "name": "Pop Music",
+      "icon": "🎵"
+    },
+    {
+      "name": "J-Pop",
+      "icon": "🎵"
+    },
+    {
+      "name": "Mandopop",
+      "icon": "🎵"
+    },
+    {
+      "name": "Q-Pop",
+      "icon": "🎵"
+    },
+    {
+      "name": "Disco",
+      "icon": "🪩"
+    },
+    {
+      "name": "Reggaeton",
+      "icon": "🎵"
+    },
+    {
+      "name": "Trance",
+      "icon": "🎧"
+    },
+    {
+      "name": "Dubstep",
+      "icon": "🎧"
+    },
+    {
+      "name": "Dombra",
+      "icon": "🪕"
+    },
+    {
+      "name": "Kobyz",
+      "icon": "🎻"
     }
   ],
   "Arts & Creativity": [
@@ -1541,6 +1661,46 @@
     {
       "name": "Miniature Painting",
       "icon": "🖌️"
+    },
+    {
+      "name": "Tufting",
+      "icon": "🧶"
+    },
+    {
+      "name": "Needle Felting",
+      "icon": "🧶"
+    },
+    {
+      "name": "Cross-Stitch",
+      "icon": "🪡"
+    },
+    {
+      "name": "Punch Needle",
+      "icon": "🪡"
+    },
+    {
+      "name": "Diamond Painting",
+      "icon": "🎨"
+    },
+    {
+      "name": "Stained Glass",
+      "icon": "🪟"
+    },
+    {
+      "name": "Air-Dry Clay",
+      "icon": "🏺"
+    },
+    {
+      "name": "Digital Collage",
+      "icon": "🖼️"
+    },
+    {
+      "name": "Stop-Motion Animation",
+      "icon": "🎬"
+    },
+    {
+      "name": "Irish Dance",
+      "icon": "💃"
     }
   ],
   "Food & Drink": [
@@ -1787,6 +1947,46 @@
     {
       "name": "Baking Sourdough",
       "icon": "🍞"
+    },
+    {
+      "name": "Korean Food",
+      "icon": "🍲"
+    },
+    {
+      "name": "Thai Food",
+      "icon": "🍜"
+    },
+    {
+      "name": "Indian Food",
+      "icon": "🍛"
+    },
+    {
+      "name": "Italian Food",
+      "icon": "🍝"
+    },
+    {
+      "name": "Georgian Food",
+      "icon": "🥟"
+    },
+    {
+      "name": "Kazakh Food",
+      "icon": "🍖"
+    },
+    {
+      "name": "Hot Pot",
+      "icon": "🍲"
+    },
+    {
+      "name": "Kombucha",
+      "icon": "🫖"
+    },
+    {
+      "name": "Mocktails",
+      "icon": "🍹"
+    },
+    {
+      "name": "Coffee Roasting",
+      "icon": "☕"
     }
   ],
   "Travel & Outdoors": [
@@ -2001,6 +2201,46 @@
     {
       "name": "Ice Fishing",
       "icon": "🎣"
+    },
+    {
+      "name": "Nature Walks",
+      "icon": "🌿"
+    },
+    {
+      "name": "Botanical Gardens",
+      "icon": "🌷"
+    },
+    {
+      "name": "Forest Bathing",
+      "icon": "🌲"
+    },
+    {
+      "name": "Tide Pooling",
+      "icon": "🐚"
+    },
+    {
+      "name": "Rock Collecting",
+      "icon": "🪨"
+    },
+    {
+      "name": "Beachcombing",
+      "icon": "🐚"
+    },
+    {
+      "name": "Scenic Train Rides",
+      "icon": "🚆"
+    },
+    {
+      "name": "Hostel Travel",
+      "icon": "🎒"
+    },
+    {
+      "name": "Cultural Travel",
+      "icon": "🏛️"
+    },
+    {
+      "name": "Local Exploring",
+      "icon": "🗺️"
     }
   ],
   "Games & Tech": [
@@ -2267,6 +2507,46 @@
     {
       "name": "Note-Taking",
       "icon": "🗒️"
+    },
+    {
+      "name": "Co-op Games",
+      "icon": "🎮"
+    },
+    {
+      "name": "Cozy Games",
+      "icon": "🎮"
+    },
+    {
+      "name": "Indie Games",
+      "icon": "🎮"
+    },
+    {
+      "name": "Rhythm Games",
+      "icon": "🎮"
+    },
+    {
+      "name": "Fighting Games",
+      "icon": "🎮"
+    },
+    {
+      "name": "Roguelikes",
+      "icon": "🎮"
+    },
+    {
+      "name": "Sim Racing",
+      "icon": "🏎️"
+    },
+    {
+      "name": "Flight Simulation",
+      "icon": "✈️"
+    },
+    {
+      "name": "Mechanical Keyboards",
+      "icon": "⌨️"
+    },
+    {
+      "name": "Hackathons",
+      "icon": "💻"
     }
   ],
   "Entertainment & Culture": [
@@ -2501,6 +2781,46 @@
     {
       "name": "Chess Puzzles",
       "icon": "♟️"
+    },
+    {
+      "name": "Romance Books",
+      "icon": "📚"
+    },
+    {
+      "name": "Mystery Books",
+      "icon": "📚"
+    },
+    {
+      "name": "Historical Fiction",
+      "icon": "📚"
+    },
+    {
+      "name": "Nonfiction",
+      "icon": "📖"
+    },
+    {
+      "name": "Webtoons",
+      "icon": "📱"
+    },
+    {
+      "name": "C-Dramas",
+      "icon": "📺"
+    },
+    {
+      "name": "Turkish Drama",
+      "icon": "📺"
+    },
+    {
+      "name": "Film Clubs",
+      "icon": "🎬"
+    },
+    {
+      "name": "Ballet Performances",
+      "icon": "🩰"
+    },
+    {
+      "name": "Cultural Festivals",
+      "icon": "🎪"
     }
   ],
   "Lifestyle & Social": [
@@ -2739,6 +3059,46 @@
     {
       "name": "Cycling Commute",
       "icon": "🚲"
+    },
+    {
+      "name": "Pet Adoption",
+      "icon": "🐾"
+    },
+    {
+      "name": "Dog Walking",
+      "icon": "🐕"
+    },
+    {
+      "name": "Cat Cafes",
+      "icon": "🐈"
+    },
+    {
+      "name": "Community Gardening",
+      "icon": "🌱"
+    },
+    {
+      "name": "Beach Cleanups",
+      "icon": "🌊"
+    },
+    {
+      "name": "Clothing Swaps",
+      "icon": "👕"
+    },
+    {
+      "name": "Upcycling",
+      "icon": "♻️"
+    },
+    {
+      "name": "Repair Cafes",
+      "icon": "🛠️"
+    },
+    {
+      "name": "Pen Pals",
+      "icon": "✉️"
+    },
+    {
+      "name": "Dinner Parties",
+      "icon": "🍽️"
     }
   ]
 }
