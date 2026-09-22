@@ -12,6 +12,9 @@ os.environ.setdefault('DATABASE_URL', 'sqlite:///test.sqlite3')
 os.environ.setdefault('R2_ACCESS_KEY_ID', 'test')
 os.environ.setdefault('R2_SECRET_ACCESS_KEY', 'test')
 os.environ.setdefault('R2_BUCKET_NAME', 'test')
+# Required by core.settings, and deliberately not 'test': a private bucket
+# equal to the public one is one of the faults core.checks refuses to boot on.
+os.environ.setdefault('R2_PRIVATE_BUCKET_NAME', 'test-private')
 os.environ.setdefault('R2_ENDPOINT_URL', 'https://test.example.com')
 os.environ.setdefault('R2_PUBLIC_URL', 'https://test.example.com')
 

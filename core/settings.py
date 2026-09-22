@@ -472,7 +472,16 @@ STORAGES = {
             'access_key': config('R2_ACCESS_KEY_ID'),
             'secret_key': config('R2_SECRET_ACCESS_KEY'),
             # Must be a separate bucket with no public domain or r2.dev access.
-            'bucket_name': config('R2_PRIVATE_BUCKET_NAME', default=''),
+            #
+            # Required, with no default, for the same reason every other R2 name
+            # here is. A blank bucket name is not a degraded mode: it is a storage
+            # backend that raises `ParamValidationError` inside botocore before a
+            # single request leaves the process. That surfaced as a 500 with an
+            # empty body on every publish, from a server that had booted perfectly
+            # -- which is the failure this default used to buy. Boot loudly
+            # instead. `core.checks` covers the blank and same-as-public cases,
+            # which `config()` on its own cannot see.
+            'bucket_name': config('R2_PRIVATE_BUCKET_NAME'),
             'endpoint_url': config('R2_ENDPOINT_URL'),
             'region_name': 'auto', 'default_acl': None, 'custom_domain': None,
             'querystring_auth': True, 'querystring_expire': 300,
