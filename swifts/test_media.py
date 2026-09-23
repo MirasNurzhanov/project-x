@@ -20,7 +20,9 @@ from .testing import SwiftTestCase, fake_image, fake_video, make_swift, make_use
 def make_track(**extra):
     fields = {
         'title': 'Night Drive', 'artist': 'Approx Sounds', 'genre': 'Lo-fi',
-        'audio_url': 'https://cdn.example.com/a/night.mp3',
+        # On the test R2 host: only Approx-hosted audio is servable
+        # (swifts/music/hosting.py).
+        'audio_url': 'https://test.example.com/a/night.mp3',
         'duration_ms': 120_000,
         'source': SwiftTrack.Source.OWNED,
         'licence': 'Commissioned 2026-01, contract A-441',

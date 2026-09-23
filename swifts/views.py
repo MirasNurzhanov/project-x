@@ -1118,7 +1118,7 @@ class SwiftTrackListView(APIView):
         from .models import SwiftTrack
         from .serializers import SwiftTrackSerializer
 
-        qs = SwiftTrack.objects.filter(is_active=True)
+        qs = SwiftTrack.objects.servable()
 
         query = (request.query_params.get('q') or '').strip()
         if query:
@@ -1319,7 +1319,7 @@ class SwiftTrackGenresView(APIView):
         from .models import SwiftTrack
 
         genres = (
-            SwiftTrack.objects.filter(is_active=True)
+            SwiftTrack.objects.servable()
             .exclude(genre='')
             .values_list('genre', flat=True)
             .distinct()
