@@ -11,6 +11,10 @@ moderation policy and all database writes.
 
 Configure each Worker’s Git integration separately:
 
+Keep the production branch set to `main`. The PR containing these Worker files
+must be merged into `main` before rebuilding that branch; retrying an older
+commit will not pick up the entrypoints.
+
 | Worker | Root directory | Build command | Deploy command |
 | --- | --- | --- | --- |
 | `project-x` | `workers/project-x` | leave empty | `npx wrangler deploy` |
@@ -25,8 +29,10 @@ reported that it could not find static files.
 Set these in each Worker’s production Variables and Secrets. Never commit the
 values:
 
-`project-x` needs `BACKEND_ORIGIN` (the checked-in default points at the current
-Railway origin and can be overridden in Cloudflare).
+`BACKEND_ORIGIN` and `DJANGO_ORIGIN` are managed in the Wrangler files and point
+at the current Railway origin. Change those files to change the origins.
+`MOD_MAX_FRAMES` limits simultaneous frame calls, not the number of frames
+sampled; every timestamp in Django's lease must be processed.
 
 `backendmoderation` needs `DJANGO_ORIGIN`, `MODERATION_WORKER_TOKEN`,
 `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, and
@@ -41,8 +47,8 @@ leases and settlements while that API variable is empty. If the Railway Go
 moderation service remains enabled during the cutover, give it the same value
 as well; otherwise pause that service after the Cloudflare Worker is verified.
 
-After saving the root directories and variables, use **Retry build** for each
-failed deployment. Then verify `GET /healthz` on the moderation Worker and a
+After merging the Worker files and saving the root directories and variables,
+build the new `main` commit for each Worker. Then verify `GET /healthz` on the moderation Worker and a
 normal API request through the `project-x` Worker before switching the mobile
 client’s API URL.
 

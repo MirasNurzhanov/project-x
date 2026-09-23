@@ -17,14 +17,16 @@ function number(value, fallback, minimum, maximum) {
   return Math.min(Math.max(parsed, minimum), maximum);
 }
 
-async function fetchWithTimeout(input, init, env) {
+async function fetchWithTimeout(input, init, env, consume) {
   const controller = new AbortController();
   const timeout = setTimeout(
     () => controller.abort(),
     number(env.MOD_HTTP_TIMEOUT_MS, DEFAULT_HTTP_TIMEOUT_MS, 1_000, 60_000),
   );
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    const response = await fetch(input, { ...init, redirect: "error", signal: controller.signal });
+    // Keep the deadline active until the response body has also been read.
+    return await consume(response);
   } finally {
     clearTimeout(timeout);
   }
@@ -64,16 +66,17 @@ async function readResponse(response, label) {
 }
 
 async function fetchFrame(lease, atMs, env) {
-  const response = await fetchWithTimeout(mediaUrl(
+  return fetchWithTimeout(mediaUrl(
     env.CLOUDFLARE_MEDIA_TRANSFORM_BASE,
     lease.source_url,
     atMs,
     number(lease.frame_width, 640, 64, 1920),
-  ), undefined, env);
-  if (!response.ok) await readResponse(response, "Media Transformations");
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.length === 0) throw new Error("Media Transformations returned an empty frame");
-  return bytes;
+  ), undefined, env, async (response) => {
+    if (!response.ok) await readResponse(response, "Media Transformations");
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length === 0) throw new Error("Media Transformations returned an empty frame");
+    return bytes;
+  });
 }
 
 async function callWorkersAi(model, payload, env) {
@@ -81,15 +84,14 @@ async function callWorkersAi(model, payload, env) {
     throw new Error("CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_API_TOKEN is not configured");
   }
   const url = `${API_ROOT}/accounts/${encodeURIComponent(env.CLOUDFLARE_ACCOUNT_ID)}/ai/run/${modelPath(model)}`;
-  const response = await fetchWithTimeout(url, {
+  const text = await fetchWithTimeout(url, {
     method: "POST",
     headers: {
       ...bearer(env.CLOUDFLARE_API_TOKEN),
       "content-type": "application/json",
     },
     body: JSON.stringify(payload),
-  }, env);
-  const text = await readResponse(response, "Workers AI");
+  }, env, (response) => readResponse(response, "Workers AI"));
   let decoded;
   try {
     decoded = JSON.parse(text);
@@ -154,57 +156,63 @@ async function leaseJobs(env) {
   }
   const maxJobs = number(env.MOD_MAX_JOBS, DEFAULT_MAX_JOBS, 1, 4);
   const url = originUrl(env.DJANGO_ORIGIN, `/api/internal/moderation/lease/?limit=${maxJobs}`);
-  const response = await fetchWithTimeout(url, {
+  const text = await fetchWithTimeout(url, {
     headers: {
       ...bearer(env.MODERATION_WORKER_TOKEN),
       "x-moderation-vision-formats": "image,messages",
     },
-  }, env);
-  const text = await readResponse(response, "Django lease");
+  }, env, (response) => readResponse(response, "Django lease"));
   const decoded = JSON.parse(text);
-  return Array.isArray(decoded.leases) ? decoded.leases : [];
+  if (!Array.isArray(decoded.leases)) throw new Error("Django returned an invalid lease response");
+  return decoded.leases;
 }
 
 async function settle(env, payload) {
-  const response = await fetchWithTimeout(originUrl(env.DJANGO_ORIGIN, "/api/internal/moderation/settle/"), {
+  await fetchWithTimeout(originUrl(env.DJANGO_ORIGIN, "/api/internal/moderation/settle/"), {
     method: "POST",
     headers: {
       ...bearer(env.MODERATION_WORKER_TOKEN),
       "content-type": "application/json",
     },
     body: JSON.stringify(payload),
-  }, env);
-  await readResponse(response, "Django settle");
+  }, env, (response) => readResponse(response, "Django settle"));
 }
 
 async function processLease(lease, env) {
   const timestamps = Array.isArray(lease.timestamps_ms)
-    ? lease.timestamps_ms.slice(0, number(env.MOD_MAX_FRAMES, DEFAULT_MAX_FRAMES, 1, 12))
+    ? lease.timestamps_ms
     : [];
   if (!lease.job_id || !/^https?:\/\//i.test(String(lease.source_url || "")) || timestamps.length === 0) {
     await settle(env, { job_id: lease.job_id, error: "lease contains an invalid source or no frame timestamps", retryable: false });
     return;
   }
 
-  const frames = await Promise.all(timestamps.map(async (atMs) => {
-    try {
-      const image = await fetchFrame(lease, atMs, env);
-      return { at_ms: atMs, raw: await classifyFrame(lease, image, env) };
-    } catch (error) {
-      return { at_ms: atMs, error: safeError(error) };
-    }
-  }));
+  // Django owns the sampling plan. Limit simultaneous requests, never coverage.
+  const frames = [];
+  const concurrency = number(env.MOD_MAX_FRAMES, DEFAULT_MAX_FRAMES, 1, 6);
+  for (let offset = 0; offset < timestamps.length; offset += concurrency) {
+    frames.push(...await Promise.all(timestamps.slice(offset, offset + concurrency).map(async (atMs) => {
+      try {
+        const image = await fetchFrame(lease, atMs, env);
+        return { at_ms: atMs, raw: await classifyFrame(lease, image, env) };
+      } catch (error) {
+        return { at_ms: atMs, error: safeError(error) };
+      }
+    })));
+  }
 
   const result = { job_id: lease.job_id, frames, model_used: lease.vision_model };
   if (lease.want_audio) {
     try {
       const duration = Math.min(Math.max(Math.floor(Number(lease.duration_ms || 1000) / 1000), 1), 60);
       const audioUrl = `${env.CLOUDFLARE_MEDIA_TRANSFORM_BASE.replace(/\/$/, "")}/cdn-cgi/media/mode=audio,duration=${duration}s/${encodeURIComponent(lease.source_url)}`;
-      const audioResponse = await fetchWithTimeout(audioUrl, undefined, env);
-      if (audioResponse.ok) {
-        result.transcript = await transcribe(lease, new Uint8Array(await audioResponse.arrayBuffer()), env);
-        result.audio_checked = true;
-      }
+      const audio = await fetchWithTimeout(audioUrl, undefined, env, async (response) => {
+        if (!response.ok) await readResponse(response, "Media Transformations audio");
+        return new Uint8Array(await response.arrayBuffer());
+      });
+      if (!audio.length) throw new Error("Media Transformations returned empty audio");
+      result.transcript = await transcribe(lease, audio, env);
+      result.audio_checked = true;
     } catch (error) {
       console.log(`audio skipped: ${safeError(error)}`);
     }
@@ -213,6 +221,10 @@ async function processLease(lease, env) {
 }
 
 async function runOnce(env) {
+  // Refuse a broken configuration before claiming jobs from the working origin.
+  for (const name of ["DJANGO_ORIGIN", "MODERATION_WORKER_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_MEDIA_TRANSFORM_BASE"]) {
+    if (!env[name]) throw new Error(`${name} is not configured`);
+  }
   const leases = await leaseJobs(env);
   const results = await Promise.allSettled(leases.map((lease) => processLease(lease, env)));
   const failed = results.filter((result) => result.status === "rejected");
@@ -222,9 +234,8 @@ async function runOnce(env) {
 
 export default {
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil(runOnce(env).catch((error) => {
-      console.log(`scheduled moderation failed: ${safeError(error)}`);
-    }));
+    // Propagate errors so failed cron invocations are visible in Cloudflare.
+    ctx.waitUntil(runOnce(env));
   },
 
   async fetch(request, env) {

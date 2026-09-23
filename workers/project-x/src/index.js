@@ -21,6 +21,7 @@ function forwardedRequest(request, target) {
   // Constructing a new Request preserves the body stream and WebSocket
   // upgrade request while replacing only the destination origin.
   const forwarded = new Request(target, request);
+  forwarded.headers.set("host", target.host);
   const isWebSocket = request.headers.get("upgrade")?.toLowerCase() === "websocket";
   for (const name of HOP_BY_HOP_HEADERS) {
     // The Upgrade and Connection headers are required for the API's WebSocket
@@ -47,7 +48,9 @@ export default {
     }
 
     try {
-      return await fetch(forwardedRequest(request, target));
+      // Return redirects to the client; never forward its credentials to a
+      // second origin named by an upstream Location header.
+      return await fetch(forwardedRequest(request, target), { redirect: "manual" });
     } catch {
       return new Response("Backend origin unavailable", { status: 502 });
     }

@@ -13,6 +13,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  workers:
+    name: Worker contract tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Test proxy and moderation contracts
+        run: node --test workers/project-x/src/index.test.js workers/backendmoderation/src/index.test.js
+
   backend:
     name: Backend checks
     runs-on: ubuntu-24.04
