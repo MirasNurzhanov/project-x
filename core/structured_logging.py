@@ -36,9 +36,16 @@ class JSONFormatter(logging.Formatter):
             value = getattr(record, key, None)
             if isinstance(value, (int, float)):
                 data[key] = value
-        error_type = getattr(record, 'error_type', None)
-        if isinstance(error_type, str) and re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]{0,100}', error_type):
-            data['error_type'] = error_type
+        # Identifier-shaped strings only, for the same reason `event` above is
+        # redacted and truncated: every one of these is a label chosen in code --
+        # an exception class, a storage operation, which bucket a write was for --
+        # and never a path, a payload or a credential. The pattern is the
+        # enforcement; a caller that passes a bucket *name* or a URL here gets it
+        # dropped rather than logged.
+        for key in ('error_type', 'operation', 'bucket'):
+            value = getattr(record, key, None)
+            if isinstance(value, str) and re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]{0,100}', value):
+                data[key] = value
         if record.exc_info:
             data['error_type'] = record.exc_info[0].__name__
             # Retain actionable source locations, never exception text/locals.
