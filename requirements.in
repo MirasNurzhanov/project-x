@@ -34,6 +34,9 @@ channels_redis==4.3.0
 # Not the production server; uvicorn is. It stays in INSTALLED_APPS so `manage.py runserver`
 # serves ASGI and websockets locally, and it is the documented one-line rollback server (README.md).
 daphne==4.2.2
+# Daphne pulls in Autobahn. Pin its patched release so the security audit and
+# fresh lockfile generation cannot select a vulnerable WebSocket implementation.
+autobahn==26.7.1
 # The `standard` extra is what makes uvicorn worth switching to: uvloop for the event loop and
 # httptools for HTTP parsing, both C, plus the `websockets` implementation the channels routes
 # need. uvloop carries a marker excluding Windows, so a Linux dyno gets it and local development

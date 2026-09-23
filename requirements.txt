@@ -14,8 +14,10 @@ attrs==26.1.0
     # via
     #   service-identity
     #   twisted
-autobahn==25.12.2
-    # via daphne
+autobahn==26.7.1
+    # via
+    #   -r requirements.in
+    #   daphne
 automat==25.4.16
     # via twisted
 boto3==1.43.79
@@ -26,7 +28,9 @@ botocore==1.43.79
     # via
     #   boto3
     #   s3transfer
-cbor2==6.0.1
+cbor2==5.9.0 ; platform_python_implementation == 'PyPy' and sys_platform == 'win32'
+    # via autobahn
+cbor2==6.0.1 ; platform_python_implementation != 'PyPy' or sys_platform != 'win32'
     # via autobahn
 certifi==2026.2.25
     # via requests
@@ -119,8 +123,6 @@ psycopg-binary==3.3.4 ; implementation_name != 'pypy'
     # via psycopg
 psycopg-pool==3.3.1
     # via psycopg
-py-ubjson==0.16.1
-    # via autobahn
 pyasn1==0.6.4
     # via
     #   pyasn1-modules

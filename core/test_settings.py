@@ -20,6 +20,10 @@ os.environ.setdefault('R2_PUBLIC_URL', 'https://test.example.com')
 
 from .settings import *  # noqa: E402,F401,F403
 
+# Music fixtures use this host. CI supplies a different R2_PUBLIC_URL for the
+# production-settings check, but that placeholder must not change test results.
+R2_PUBLIC_URL = 'https://test.example.com'
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
