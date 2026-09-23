@@ -1,0 +1,12 @@
+{
+  "name": "approx-project-x-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "4.136.3"
+  }
+}
