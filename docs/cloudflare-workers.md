@@ -29,6 +29,9 @@ reported that it could not find static files.
 Set these in each Worker’s production Variables and Secrets. Never commit the
 values:
 
+Both Wrangler configurations retain additional dashboard variables on deploy
+(`keep_vars = true`). Tokens must be stored as Secrets.
+
 `BACKEND_ORIGIN` and `DJANGO_ORIGIN` are managed in the Wrangler files and point
 at the current Railway origin. Change those files to change the origins.
 `MOD_MAX_FRAMES` limits simultaneous frame calls, not the number of frames
