@@ -29,6 +29,7 @@ from django.db import models
 from core.media_storage import protected_media
 
 from .capture import MAX_SPEED_PERCENT, MIN_SPEED_PERCENT
+from .music.hosting import self_hosted_q
 
 from moderation.reasons import (
     Action as SharedAction,
@@ -755,6 +756,17 @@ class SwiftReport(models.Model):
         return f'report on swift {self.swift_id} by {self.reporter_id}'
 
 
+class SwiftTrackQuerySet(models.QuerySet):
+    def servable(self):
+        """Tracks a creator may pick and a viewer may hear.
+
+        Published *and* hosted on Approx's own storage. Publishing is the
+        licence check; hosting is what keeps the app from streaming a
+        provider's CDN — see swifts/music/hosting.py.
+        """
+        return self.filter(self_hosted_q('audio_url'), is_active=True)
+
+
 class SwiftTrack(models.Model):
     """A song a Swift may play, from Approx's own catalogue.
 
@@ -835,6 +847,8 @@ class SwiftTrack(models.Model):
     use_count = models.PositiveIntegerField(default=0)
 
     created_at = models.DateTimeField(auto_now_add=True)
+
+    objects = SwiftTrackQuerySet.as_manager()
 
     class Meta:
         ordering = ['-priority', 'title']

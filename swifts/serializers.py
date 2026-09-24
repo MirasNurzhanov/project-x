@@ -22,6 +22,7 @@ from rest_framework import serializers
 
 from . import capture, tagging, visibility as swift_visibility
 from .models import SwiftComment, SwiftTrack, SwiftVideo
+from .music.hosting import is_self_hosted, servable_artwork
 
 
 def _author_payload(user):
@@ -208,8 +209,15 @@ class SwiftSerializer(serializers.ModelSerializer):
             'id': obj.track_id,
             'title': obj.audio_title,
             'artist': obj.audio_artist,
-            'artwork_url': obj.audio_artwork_url,
-            'audio_url': obj.track.audio_url if obj.track_id and obj.track else '',
+            # Both only when on Approx's own storage — see
+            # swifts/music/hosting.py. A track that is not plays no music bed
+            # rather than having the app stream it from a provider.
+            'artwork_url': servable_artwork(obj.audio_artwork_url),
+            'audio_url': (
+                obj.track.audio_url
+                if obj.track_id and obj.track and is_self_hosted(obj.track.audio_url)
+                else ''
+            ),
             'duration_ms': obj.track.duration_ms if obj.track_id and obj.track else 0,
         }
 
@@ -302,6 +310,18 @@ class SwiftSerializer(serializers.ModelSerializer):
         return swift_visibility.location_available_for(viewer, obj)
 
 
+class _ServableTrackField(serializers.PrimaryKeyRelatedField):
+    """A catalogue track id, resolved against `SwiftTrack.objects.servable()`.
+
+    Built per request rather than passed as `queryset=` at import, because
+    which hosts count as Approx's own is a setting, and a queryset built once
+    at import would freeze whatever it said then.
+    """
+
+    def get_queryset(self):
+        return SwiftTrack.objects.servable()
+
+
 class SwiftCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
     """Posting a Swift.
 
@@ -328,14 +348,12 @@ class SwiftCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
 
     #: The music bed, by catalogue id.
     #:
-    #: Only ever an *active* track. The queryset is the enforcement: a
-    #: withdrawn or unvetted row cannot be attached however the id was
-    #: obtained, and DRF answers "invalid pk" rather than this module having to
-    #: remember to check.
-    track = serializers.PrimaryKeyRelatedField(
-        queryset=SwiftTrack.objects.filter(is_active=True),
-        required=False, allow_null=True,
-    )
+    #: Only ever a *servable* track — published, and on Approx's own storage.
+    #: The queryset is the enforcement: a withdrawn, unvetted or
+    #: provider-hosted row cannot be attached however the id was obtained, and
+    #: DRF answers "invalid pk" rather than this module having to remember to
+    #: check.
+    track = _ServableTrackField(required=False, allow_null=True)
 
     #: Tags and mentions the creator added *outside* the caption.
     #:
@@ -779,3 +797,11 @@ class SwiftTrackSerializer(serializers.ModelSerializer):
             'attribution', 'use_count',
         ]
         read_only_fields = fields
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Listed tracks already stream from Approx's storage (`servable()`);
+        # artwork is held to the same rule so the picker loads nothing from a
+        # provider either.
+        data['artwork_url'] = servable_artwork(data.get('artwork_url'))
+        return data

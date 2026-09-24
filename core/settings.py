@@ -844,6 +844,13 @@ EPIDEMIC_SOUND_TRACK_PATH = config(
     'EPIDEMIC_SOUND_TRACK_PATH', default='/v0/tracks/{id}',
 )
 
+# ── Swift music hosting ───────────────────────────────────────────────────────
+# Swift music streams from Approx's own storage and nowhere else — see
+# swifts/music/hosting.py. R2_PUBLIC_URL's host always counts; this adds other
+# hosts Approx itself controls (comma-separated, e.g. `media.example.com`). A
+# provider's CDN never belongs here: a track still on one is not served.
+SWIFT_MUSIC_MEDIA_HOSTS = _csv_setting('SWIFT_MUSIC_MEDIA_HOSTS')
+
 # ── Sign in with Google / Sign in with Apple ──────────────────────────────────
 # The OAuth client ids whose identity tokens /api/users/social/ will accept, as
 # the `aud` claim. Comma-separated, because each platform is a separate client

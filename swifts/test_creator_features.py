@@ -272,8 +272,8 @@ class MusicTests(SwiftTestCase):
         self.client.force_authenticate(self.author)
         self.track = SwiftTrack.objects.create(
             title='Almaty Nights', artist='Kaz Collective', genre='house',
-            audio_url='https://cdn.example.test/t/1.mp3',
-            artwork_url='https://cdn.example.test/t/1.jpg',
+            audio_url='https://test.example.com/t/1.mp3',
+            artwork_url='https://test.example.com/t/1.jpg',
             duration_ms=180_000, source=SwiftTrack.Source.OPEN,
             licence='CC BY 4.0', is_active=True,
         )
@@ -298,7 +298,7 @@ class MusicTests(SwiftTestCase):
             track=self.track.pk, music_volume=40, music_start_ms=30_000,
         ))
         self.assertEqual(response.data['track']['audio_url'],
-                         'https://cdn.example.test/t/1.mp3')
+                         'https://test.example.com/t/1.mp3')
         self.assertEqual(response.data['music_volume'], 40)
         self.assertEqual(response.data['music_start_ms'], 30_000)
 

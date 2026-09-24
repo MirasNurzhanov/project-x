@@ -155,8 +155,13 @@ class SyncTests(SwiftTestCase):
         self.assertEqual(track.provider_track_id, 'ES-1001')
         self.assertEqual(track.source, SwiftTrack.Source.LICENSED)
 
-    def test_an_imported_track_is_not_in_the_picker_until_published(self):
-        """The gate, asserted end to end through the API creators actually use."""
+    def test_an_imported_track_is_not_in_the_picker_until_published_and_hosted(self):
+        """Both gates, asserted end to end through the API creators use.
+
+        Publishing is the licence check; hosting is the other half. A track
+        still on the provider's CDN stays out even once published, or the app
+        would be streaming from the provider (swifts/music/hosting.py).
+        """
         sync.apply_tracks('epidemic', [provider_track()])
 
         client = APIClient()
@@ -165,6 +170,10 @@ class SyncTests(SwiftTestCase):
         self.assertEqual(body['results'], [])
 
         SwiftTrack.objects.update(is_active=True)
+        body = client.get(reverse('swift-tracks')).json()
+        self.assertEqual(body['results'], [])
+
+        SwiftTrack.objects.update(audio_url='https://test.example.com/music/1001.mp3')
         body = client.get(reverse('swift-tracks')).json()
         self.assertEqual(len(body['results']), 1)
 
