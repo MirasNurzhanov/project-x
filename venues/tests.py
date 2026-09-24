@@ -13,6 +13,8 @@ from clubs.models import Club, ClubEvent, ClubMember, ClubMessage
 from users.models import User
 from .models import Venue
 
+DUBAI_MARINA_VENUES = import_module('venues.migrations.0005_seed_dubai_marina').DUBAI_MARINA_VENUES
+
 
 class VenueTests(TestCase):
     def setUp(self):
@@ -35,17 +37,18 @@ class VenueTests(TestCase):
     def test_seeded_venues_and_numeric_coordinates(self):
         response = self.client.get('/api/venues/')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['count'], 3)
-        row = response.data['results'][0]
+        self.assertEqual(response.data['count'], 3 + len(DUBAI_MARINA_VENUES))
+        rows = {row['slug']: row for row in response.data['results']}
+        row = rows['dostyk-plaza']
         self.assertEqual(row['name'], 'Dostyk Plaza')
         self.assertEqual(row['latitude'], 43.233139)
         self.assertEqual(row['longitude'], 76.956562)
         self.assertNotIn('google_place_id', row)
-        esentai = response.data['results'][1]
+        esentai = rows['esentai-mall']
         self.assertEqual(esentai['name'], 'Esentai Mall')
         self.assertEqual(esentai['latitude'], 43.218593)
         self.assertEqual(esentai['longitude'], 76.928083)
-        six = response.data['results'][2]
+        six = rows['six-coffee-wine-abay']
         self.assertEqual(six['name'], 'Six Coffee+Wine')
         self.assertEqual(six['address'], 'Abay Avenue, 17, Almaty')
         self.assertEqual(six['latitude'], 43.24326)
@@ -96,7 +99,7 @@ class VenueTests(TestCase):
             apps, type('Editor', (), {'connection': connection})())
         self.venue.refresh_from_db()
         self.assertEqual(self.venue.description, 'Edited by staff')
-        self.assertEqual(Venue.objects.count(), 3)
+        self.assertEqual(Venue.objects.count(), 3 + len(DUBAI_MARINA_VENUES))
 
     def test_api_is_authenticated_and_read_only(self):
         self.client.force_authenticate(None)
@@ -172,9 +175,72 @@ class VenueTests(TestCase):
             self.venue.full_clean()
 
     def test_list_is_bounded(self):
+        seeded = Venue.objects.filter(is_active=True).count()
         Venue.objects.bulk_create([Venue(name=f'Place {i}', slug=f'place-{i}', address='Test',
             latitude=43, longitude=76, is_active=True) for i in range(101)])
         response = self.client.get('/api/venues/')
         self.assertEqual(len(response.data['results']), 100)
         self.assertIsNotNone(response.data['next'])
-        self.assertEqual(len(self.client.get('/api/venues/?page=2').data['results']), 4)
+        self.assertEqual(len(self.client.get('/api/venues/?page=2').data['results']), seeded + 1)
+
+
+class DubaiMarinaVenueTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='marina-member', email='marina@example.test')
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.club = Club.objects.create(name='Marina club', creator=self.user,
+            visibility_level=Club.Visibility.GLOBAL)
+        ClubMember.objects.create(club=self.club, user=self.user, role=ClubMember.Role.MEMBER)
+        self.slugs = [row[0] for row in DUBAI_MARINA_VENUES]
+
+    def test_seeded_live_with_valid_rows_in_dubai_marina(self):
+        self.assertEqual(len(set(self.slugs)), len(self.slugs))
+        venues = Venue.objects.filter(slug__in=self.slugs)
+        self.assertEqual(venues.count(), len(self.slugs))
+        for venue in venues:
+            with self.subTest(slug=venue.slug):
+                venue.full_clean()
+                self.assertTrue(venue.is_active)
+                self.assertTrue(venue.description)
+                self.assertIn(venue.category, {'Shopping mall', 'Sport & fitness',
+                                               'Beach & outdoors', 'Restaurant & cafe'})
+                # Dubai Marina, JBR and Bluewaters; a swapped lat/lng lands elsewhere.
+                self.assertTrue(Decimal('25.06') <= venue.latitude <= Decimal('25.10'))
+                self.assertTrue(Decimal('55.11') <= venue.longitude <= Decimal('55.16'))
+
+    def test_listed_and_retrievable_like_the_almaty_venues(self):
+        listed = {row['slug']: row for row in self.client.get('/api/venues/').data['results']}
+        for venue in Venue.objects.filter(slug__in=self.slugs):
+            with self.subTest(slug=venue.slug):
+                self.assertEqual(listed[venue.slug]['latitude'], float(venue.latitude))
+                detail = self.client.get(f'/api/venues/{venue.pk}/')
+                self.assertEqual(detail.status_code, 200)
+                self.assertEqual(detail.data['name'], venue.name)
+
+    def test_every_marina_venue_can_host_a_club_meetup(self):
+        for venue in Venue.objects.filter(slug__in=self.slugs):
+            with self.subTest(slug=venue.slug):
+                response = self.client.post(f'/api/clubs/{self.club.pk}/events/', {
+                    'title': 'Marina meetup', 'venue_id': venue.pk, 'meeting_point': 'Main entrance',
+                    'location_name': 'Spoofed', 'latitude': 0, 'longitude': 0,
+                    'event_datetime': (timezone.now() + timedelta(days=1)).isoformat(),
+                }, format='json')
+                self.assertEqual(response.status_code, 201, response.data)
+                event = ClubEvent.objects.get(venue=venue)
+                self.assertEqual(event.location_name, venue.name)
+                self.assertEqual(event.latitude, venue.latitude)
+                self.assertEqual(event.longitude, venue.longitude)
+                self.assertEqual(event.status, ClubEvent.Status.PENDING)
+
+    def test_seed_is_repeatable_without_overwriting_admin_edits(self):
+        venue = Venue.objects.get(slug='pier-7')
+        venue.description = 'Staff edit'
+        venue.is_active = False
+        venue.save()
+        import_module('venues.migrations.0005_seed_dubai_marina').seed_dubai_marina(
+            apps, type('Editor', (), {'connection': connection})())
+        venue.refresh_from_db()
+        self.assertEqual(venue.description, 'Staff edit')
+        self.assertFalse(venue.is_active)
+        self.assertEqual(Venue.objects.filter(slug__in=self.slugs).count(), len(self.slugs))
