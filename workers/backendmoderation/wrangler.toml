@@ -1,0 +1,17 @@
+name = "backendmoderation"
+main = "src/index.js"
+compatibility_date = "2026-09-23"
+workers_dev = true
+# Account and media-domain settings are supplied through the dashboard.
+keep_vars = true
+
+# A minute is the smallest useful schedule for the existing lease protocol.
+# Django remains the source of truth for claims, retries, and decisions.
+[triggers]
+crons = ["*/1 * * * *"]
+
+[vars]
+DJANGO_ORIGIN = "https://project-x-production-3261.up.railway.app"
+MOD_MAX_JOBS = "1"
+MOD_MAX_FRAMES = "6"
+MOD_HTTP_TIMEOUT_MS = "25000"

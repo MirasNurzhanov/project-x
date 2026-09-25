@@ -1,0 +1,13 @@
+{
+  "name": "approx-project-x-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test src/index.test.js",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "4.136.3"
+  }
+}
