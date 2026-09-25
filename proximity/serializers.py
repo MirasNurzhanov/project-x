@@ -139,7 +139,9 @@ class NearbyUserSerializer(serializers.Serializer):
         # minutes: their dot stays at the last point we heard rather than
         # disappearing — see `on_map_q`. Everyone else still needs a position
         # we are willing to stand behind right now.
-        if me.ghost_mode or not obj.is_on_map(for_friend=precise):
+        # And a non-friend takes a check-in on both sides: theirs is part of
+        # `is_on_map`, the viewer's is asked here (see `visible_users`).
+        if me.ghost_mode or not obj.is_on_map(for_friend=precise) or not (precise or me.is_checked_in()):
             raise NotOnMap(obj.pk)
 
         latitude, longitude = visibility.coordinates_for(me, obj, friend_ids)

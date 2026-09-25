@@ -151,7 +151,7 @@ def _zone_music_alert(recipient, sender, message, push_title):
     return notification
 
 
-def notify_zone_music_entry(visitor, owner, distance_m: float):
+def notify_zone_music_entry(visitor, owner, distance_m: float, *, friends=None):
     """`visitor` is standing inside `owner`'s music zone.
 
     Two alerts, because the two people learn different things:
@@ -166,7 +166,7 @@ def notify_zone_music_entry(visitor, owner, distance_m: float):
     track — being told about music you are not permitted to play is worse than
     silence. Both sides share one cooldown row per direction.
     """
-    from users.visibility import blocked_ids_for, can_view
+    from users.visibility import FRIEND, blocked_ids_for, can_view, position_max_age_s, relationship
 
     if visitor.pk == owner.pk:
         return
@@ -176,10 +176,16 @@ def notify_zone_music_entry(visitor, owner, distance_m: float):
 
     now = timezone.now()
     uncertainty = 0.0
+    # Friends see each other without a check-in; anybody else only while both
+    # are checked in — `is_on_map` carries that rule given the tier. The
+    # location write passes `friends` in from the ids it already holds; looking
+    # it up here is a query per owner in range.
+    if friends is None:
+        friends = relationship(visitor, owner) == FRIEND
     for person in (visitor, owner):
         measured_at = person.location_updated_at
         accuracy = person.location_accuracy_m
-        if not person.is_on_map() or measured_at is None:
+        if not person.is_on_map(now, for_friend=friends, max_age_s=position_max_age_s()) or measured_at is None:
             return
         if not 0 <= (now - measured_at).total_seconds() <= 120:
             return
@@ -245,7 +251,7 @@ def notify_nearby_matches(user, matches):
     from `user`'s side settles both directions of every pair. And every pair has
     `user` on one side, so a single query finds every standing cooldown row.
     """
-    from users.visibility import STRANGER, can_surface_in_proximity, relationship_map
+    from users.visibility import FRIEND, STRANGER, can_surface_in_proximity, relationship_map
 
     matches = [(other, distance) for other, distance in matches if other.pk != user.pk]
     if not matches:
@@ -263,9 +269,9 @@ def notify_nearby_matches(user, matches):
     for other, distance in matches:
         rel = rels.get(other.pk, STRANGER)
         if can_surface_in_proximity(user, other, rel):
-            wanted.append((user, other, distance))
+            wanted.append((user, other, distance, rel))
         if can_surface_in_proximity(other, user, rel):
-            wanted.append((other, user, distance))
+            wanted.append((other, user, distance, rel))
     if not wanted:
         return
 
@@ -285,9 +291,11 @@ def notify_nearby_matches(user, matches):
             recipient=recipient,
             sender=sender,
             notification_type=Notification.Type.NEARBY_USER,
-            message=f'{sender.username} with shared interests is {distance} km away.',
+            # A friend is not a match; they are somebody you know, nearby.
+            message=(f'{sender.username} is nearby — {distance} km away.' if rel == FRIEND
+                     else f'{sender.username} with shared interests is {distance} km away.'),
         )
-        for recipient, sender, distance in wanted
+        for recipient, sender, distance, rel in wanted
         if (recipient.pk, sender.pk) not in already
     ])
 

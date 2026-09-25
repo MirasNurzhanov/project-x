@@ -28,5 +28,12 @@ def share_location(user, mode=None, reported_at=None):
     """
     user.ghost_mode = False
     user.location_updated_at = reported_at or timezone.now()
-    user.save(update_fields=['ghost_mode', 'location_updated_at'])
+    # "On the map" includes non-friends' maps, which since the tier rework
+    # (users/0039) takes a check-in in the current session. Tests about the
+    # check-in itself — and about friends being visible without one — build
+    # their users without this helper, or end the check-in explicitly.
+    fields = ['ghost_mode', 'location_updated_at']
+    if user.discovery_mode == user.DiscoveryMode.DISCOVERABLE:
+        fields += user.start_check_in()
+    user.save(update_fields=fields)
     return user

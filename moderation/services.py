@@ -36,6 +36,8 @@ _TARGETS = {
     ContentReport.Target.COMMENT: ('swifts.models.SwiftComment', 'author', ('text',)),
     ContentReport.Target.MESSAGE: ('friends.models.Message', 'sender', ('content',)),
     ContentReport.Target.CLUB_MESSAGE: ('clubs.models.ClubMessage', 'sender', ('content',)),
+    # The owner's row: the track is a field on it. See `User.zone_track_report_snapshot`.
+    ContentReport.Target.ZONE_AUDIO: ('users.models.User', None, ('zone_track_report_snapshot',)),
 }
 
 #: The target types whose rows carry a `moderation` column, and can therefore be
@@ -165,6 +167,9 @@ def _maybe_quarantine(instance, target_type, target_id):
     constraint on `ContentReport` already guarantees it, and this reads the same
     table rather than a counter that could drift from it.
     """
+    if target_type == ContentReport.Target.ZONE_AUDIO:
+        _maybe_mute_zone_track(instance, target_id)
+        return
     if target_type not in _MODERATABLE:
         return
     open_reports = ContentReport.objects.filter(
@@ -186,6 +191,34 @@ def _maybe_quarantine(instance, target_type, target_id):
                 f'{target_type} #{target_id} quarantined automatically after '
                 f'{open_reports} reports'
             ),
+        )
+
+
+def _maybe_mute_zone_track(owner, target_id):
+    """The Zone Music counterpart of quarantine: mute the track for every
+    listener once enough distinct people have reported it.
+
+    Counts *open* reports only. The target id is the owner, not the track, so
+    reports a moderator has already closed — about this track or an earlier
+    one — must not count towards muting whatever is playing now. Same threshold
+    and the same reversibility as quarantine: a moderator's Restore unmutes it,
+    Remove takes it down.
+    """
+    open_reports = ContentReport.objects.filter(
+        target_type=ContentReport.Target.ZONE_AUDIO,
+        target_id=target_id,
+        source=ContentReport.Source.REPORT,
+        state=State.OPEN,
+    ).count()
+    if open_reports < AUTO_QUARANTINE_REPORTS:
+        return
+    updated = type(owner).objects.filter(pk=owner.pk, zone_audio_moderation='ok').update(
+        zone_audio_moderation='quarantined')
+    if updated:
+        ModerationAction.objects.create(
+            kind=ModerationAction.Kind.CONTENT_REMOVED,
+            subject=owner,
+            detail=f'zone_audio #{target_id} muted automatically after {open_reports} reports',
         )
 
 

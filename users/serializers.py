@@ -87,6 +87,11 @@ class UserProfileSerializer(serializers.ModelSerializer):
     #: the raw columns, so the "is this version still current" rule lives on the
     #: server and an old build cannot get it wrong by comparing strings itself.
     needs_terms = serializers.SerializerMethodField()
+    #: Whether non-friends can see this user right now, and until when. Never
+    #: the session token: that is only in the response to the tap that minted
+    #: it (proximity.views.CheckInView), so a new launch cannot read it back.
+    checked_in = serializers.SerializerMethodField()
+    check_in_expires_at = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -95,6 +100,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'date_of_birth', 'age_tier', 'nationality', 'profession', 'interests',
             'latitude', 'longitude',
             'ghost_mode',
+            'discovery_mode', 'checked_in', 'check_in_expires_at',
             # Both derived, read-only, and kept for builds predating Ghost
             # Mode: `privacy_mode` is the active/ghost/invisible spelling and
             # `location_sharing` the live/approximate/paused one.
@@ -120,6 +126,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
         read_only_fields = (
             'id', 'email', 'age_tier', 'date_joined', 'privacy_mode',
             'ghost_mode',
+            # Written only through PrivacySettingsSerializer, like `ghost_mode`.
+            'discovery_mode',
             # Server-set: see the note on the field in ZoneUpdateSerializer.
             'zone_follow_stale',
             # Acceptance is recorded by the server on the paths that actually
@@ -130,6 +138,13 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
     def get_needs_terms(self, obj):
         return not terms.has_accepted(obj)
+
+    def get_checked_in(self, obj):
+        return obj.is_checked_in()
+
+    def get_check_in_expires_at(self, obj):
+        expires_at = obj.check_in_expires_at()
+        return expires_at.isoformat() if expires_at else None
 
     def get_links(self, obj):
         # Your own profile always shows your own links.
@@ -421,6 +436,10 @@ class PrivacySettingsSerializer(serializers.ModelSerializer):
         model = User
         fields = (
             'ghost_mode',
+            # Private = friends only, permanently; Discoverable = the map offers
+            # a check-in. Setting it never makes anybody visible — see the note
+            # on `User.discovery_mode`.
+            'discovery_mode',
             'is_private',
             'visibility_interests',
             'visibility_stories',
@@ -626,10 +645,14 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
             'zone_apple_id', 'zone_apple_title', 'zone_apple_artist',
             'zone_apple_artwork', 'zone_apple_preview_url',
             'zone_track_start_ms', 'zone_track_end_ms',
+            # So the owner's zone screen can say their track is muted pending
+            # review, rather than leaving them to wonder why nobody hears it.
+            'zone_audio_moderation',
         )
         read_only_fields = (
             'zone_apple_id', 'zone_apple_title', 'zone_apple_artist',
             'zone_apple_artwork', 'zone_apple_preview_url',
+            'zone_audio_moderation',
         )
 
     def get_zone_audio_url(self, obj):
@@ -872,6 +895,8 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
         # field first.
         if attrs.get('zone_audio'):
             attrs.update(_CLEARED_APPLE_TRACK)
+            # New content: it starts unmoderated, whatever the last track was.
+            attrs['zone_audio_moderation'] = 'ok'
 
         # A new track means a new loop. Cleared on any change of source —
         # including clearing one, so a silent zone does not keep a window.

@@ -6,6 +6,7 @@ from .views import (
     ReportMessageView,
     ReportStoryView,
     ReportUserView,
+    ReportZoneAudioView,
 )
 
 urlpatterns = [
@@ -15,4 +16,5 @@ urlpatterns = [
     path('report/message/<int:pk>/', ReportMessageView.as_view(), name='report-message'),
     path('report/club-message/<int:pk>/', ReportClubMessageView.as_view(),
          name='report-club-message'),
+    path('report/zone-audio/<int:pk>/', ReportZoneAudioView.as_view(), name='report-zone-audio'),
 ]

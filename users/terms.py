@@ -25,7 +25,12 @@ from django.conf import settings
 #: minutes for everybody became fifteen minutes for everybody but friends, and
 #: a day for friends. That is a data-handling term rather than wording, so it
 #: re-prompts — see the location section of each document.
-CURRENT_VERSION = '2026-09-19'
+#:
+#: 2026-09-25 made visibility depend on relationship tier (App Review
+#: 5.1.2(i)): friends see you whenever Ghost Mode is off; everybody else only
+#: after a per-session check-in, which Discoverable makes available and Private
+#: removes. Who receives a position is the substance of the location term.
+CURRENT_VERSION = '2026-09-25'
 
 #: Where the documents live. This backend serves them itself at /legal/ - see
 #: moderation/legal_views.py for why - so the default is its own origin, and

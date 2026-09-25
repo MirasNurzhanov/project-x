@@ -21,7 +21,7 @@ delete this file rather than letting both drift.
 <h2>What Approx collects</h2>
 <ul>
   <li><strong>Account</strong> — username, email address, date of birth, and anything you choose to put on your profile.</li>
-  <li><strong>Location</strong> — the precise latitude and longitude your device reports, stored while you are not in Ghost Mode, plus how accurate that fix was. What other people are shown is decided per viewer; see below.</li>
+  <li><strong>Location</strong> — the precise latitude and longitude your device reports, plus how accurate that fix was. Who is shown it, and how precisely, depends on your relationship with them and on whether you have checked in; see below.</li>
   <li><strong>Content</strong> — Swifts, stories, comments, messages, and the images you attach to them.</li>
   <li><strong>Social graph</strong> — your friends, connections, and your block list.</li>
   <li><strong>Safety</strong> — reports you file, reports filed about you, blocks, and moderation decisions.</li>
@@ -30,26 +30,41 @@ delete this file rather than letting both drift.
 
 <h2>Location, in detail</h2>
 <p>
-  This is the part worth reading twice, and it changed in September 2026. If you
-  read an earlier version of this policy, read this section again — what your
-  device sends us is not what it used to be.
+  This is the part worth reading twice, and it changed again on 25 September
+  2026. If you read an earlier version of this policy, read this section again.
 </p>
 <ul>
   <li>
-    There is one control, <strong>Ghost Mode</strong>, and it is off by default:
-    an ordinary account is visible on the map. Turning Ghost Mode on takes you
-    off it. There is no longer a Live / Approximate / Paused choice.
+    <strong>Your friends see you whenever Ghost Mode is off.</strong> A friend is
+    somebody whose friend request you accepted, or who accepted yours. For them
+    your position is shared across sessions and, if you allow background
+    location, while Approx is closed. There is no check-in for friends.
   </li>
   <li>
-    <strong>Sharing persists between sessions.</strong> It does not reset when
-    you close Approx. It stays as you left it until you change it.
+    <strong>Nobody else sees you unless you check in.</strong> People you have
+    exchanged a Hi with, and strangers, see you only after you tap
+    <strong>Check in</strong> on the map, and only for that session. The
+    check-in ends when Approx is next started, when you check out, sign out,
+    switch discovery to Private or turn on Ghost Mode — and after eight hours
+    at the latest. Opening Approx, granting a location permission, or any
+    setting you saved earlier never checks you in. While you are not checked in
+    you see only your friends on the map.
+  </li>
+  <li>
+    <strong>Discovery</strong>, in Privacy &amp; safety, has two settings.
+    <strong>Private</strong> keeps you friends-only permanently; there is no
+    check-in to make. <strong>Discoverable</strong> puts the Check in button on
+    the map. Choosing Discoverable does not make you visible to anyone — only
+    the tap does, each session.
+  </li>
+  <li>
+    <strong>Ghost Mode</strong> takes you off everybody's map, friends included,
+    and while it is on nobody is on yours.
   </li>
   <li>
     Nothing is transmitted until you have been shown a screen explaining what
     being on the map means, once per installation. Until you have seen it your
-    device sends no position at all, and an account with no position is on
-    nobody's map. Granting the operating system's location permission does not
-    by itself put you on anybody's map.
+    device sends no position at all.
   </li>
   <li>
     <strong>Your device sends your precise position, and we store it.</strong>
@@ -65,7 +80,8 @@ delete this file rather than letting both drift.
     <ul>
       <li>You, and people you are friends with, see your precise position.</li>
       <li>
-        Everybody else sees it snapped to a grid cell roughly 500 metres across.
+        Everybody else — only while you are checked in — sees it snapped to a
+        grid cell roughly 500 metres across.
       </li>
     </ul>
   </li>
@@ -87,10 +103,12 @@ delete this file rather than letting both drift.
     at once, and signing out clears it entirely.
   </li>
   <li>
-    <strong>Ghost Mode is mutual.</strong> While it is on you are on nobody's
-    map and nobody is on yours. It does not delete the position we hold, which
-    still answers features that are only about you, such as which clubs and
-    region you belong to — but no other person receives it.
+    <strong>Hiding never deletes the position we hold.</strong> Not being
+    checked in, being Private and being in Ghost Mode all decide who
+    <em>receives</em> your position; none of them stops us keeping the latest
+    one, because it still answers features that are only about you, such as
+    which clubs, meetups and region you belong to. Nobody who is not entitled to
+    see it receives it.
   </li>
   <li>
     People you have blocked never see you, and you never see them. That applies
@@ -98,8 +116,10 @@ delete this file rather than letting both drift.
   </li>
   <li>
     Background location is optional and separate. If you allow it, Approx keeps
-    your position current while the app is closed, and only while you are
-    sharing. Turning on Ghost Mode stops it. Everything else works without it.
+    your position current while the app is closed, so your friends' maps stay
+    accurate — and, during a session you have checked in, the maps of the other
+    people who can see you. Turning on Ghost Mode stops it. Everything else
+    works without it.
   </li>
   <li>
     Two things ride alongside a position. <strong>Speed</strong> is sorted into
@@ -127,7 +147,8 @@ delete this file rather than letting both drift.
   A stored position is replaced by each newer one and is not kept as a history
   of where you have been; once it is about fifteen minutes old it stops being
   published to anyone but your friends, and once it is 24 hours old it stops
-  being published to them too. Ghost Mode hides you but does not delete it.
+  being published to them too. Ghost Mode, Private and not being checked in
+  hide you but do not delete it.
   Signing out clears it, so a device you have signed out of leaves nothing on
   anybody's map. Deleting your account from Settings removes your profile,
   content and stored position. Where an account has been reported, blocked or removed for abuse we
@@ -138,7 +159,9 @@ delete this file rather than letting both drift.
 
 <h2>Your controls</h2>
 <ul>
-  <li>Ghost Mode, which takes you off the map entirely and is mutual. Changeable at any moment.</li>
+  <li>Check in / check out, on the map: whether people who are not your friends can see you this session.</li>
+  <li>Discovery — Private or Discoverable — in Privacy &amp; safety.</li>
+  <li>Ghost Mode, which takes you off the map entirely, friends included, and is mutual. Changeable at any moment.</li>
   <li>Per-field visibility for interests, stories, stats, connections, links and presence.</li>
   <li>A private account, so only approved people see anything beyond your name and picture.</li>
   <li>Discoverability switches for search by username and by interest.</li>

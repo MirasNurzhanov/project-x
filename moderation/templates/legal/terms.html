@@ -101,26 +101,51 @@
 
 <h2>6. Location</h2>
 <p>
-  Approx shows people near you. Visibility is governed by one control,
-  <strong>Ghost Mode</strong>, which is off by default — an ordinary account is
-  on the map — and which is mutual: while it is on you are on nobody's map and
-  nobody is on yours. Sharing persists between sessions and does not reset when
-  you close the app.
+  Approx shows people near you, and who can see you depends on your relationship
+  with them.
 </p>
+<ul>
+  <li>
+    <strong>Your friends</strong> (people whose friend request you accepted, or
+    who accepted yours) can see you on the map whenever Ghost Mode is off,
+    including between sessions and while Approx is in the background. There is
+    nothing to switch on for them.
+  </li>
+  <li>
+    <strong>Everybody else</strong> — people you have exchanged a Hi with, and
+    strangers — can see you only after you tap <strong>Check in</strong> on the
+    map, and only for that session. A check-in ends when Approx is next
+    started, when you check out, sign out, switch discovery to Private or turn
+    on Ghost Mode, and in any case after eight hours. Opening the app, granting
+    a location permission or any saved setting never checks you in. While you
+    are not checked in you see only your friends.
+  </li>
+  <li>
+    <strong>Discovery</strong>, in Privacy &amp; safety, is either
+    <strong>Private</strong> — friends only, with no check-in available — or
+    <strong>Discoverable</strong>, which makes the check-in available. Choosing
+    Discoverable does not make you visible to anyone by itself.
+  </li>
+  <li>
+    <strong>Ghost Mode</strong> takes you off everybody's map, friends included,
+    and while it is on nobody is on yours.
+  </li>
+</ul>
 <p>
   Before your device transmits a position at all, Approx shows you a screen
   explaining what being on the map means. Until you have seen it, nothing is
-  sent. Granting the operating system's location permission does not by itself
-  put you on anybody's map.
+  sent.
 </p>
 <p>
   Your device sends your precise position and we store it. How precisely other
   people see it is decided by us, per viewer, at the moment they look: your
   friends see where you actually are, and everyone else sees you snapped to a
-  grid cell roughly 500 metres across. A position stops being published to
-  anyone but your friends once it is about fifteen minutes old, and to your
-  friends once it is 24 hours old; Ghost Mode and signing out both end it
-  sooner. The
+  grid cell roughly 500 metres across — and only while you are checked in. A
+  position stops being published to anyone but your friends once it is about
+  fifteen minutes old, and to your friends once it is 24 hours old; Ghost Mode
+  and signing out both end it sooner. We keep the latest position you sent
+  whether or not anybody can see it, because it also decides which clubs,
+  meetups and region you belong to. The
   <a href="{% url 'legal-privacy' %}">Privacy &amp; Safety</a> notice sets this
   out in full, and you should read it before relying on any of it.
 </p>

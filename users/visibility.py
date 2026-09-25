@@ -192,6 +192,23 @@ DEFAULT_POSITION_MAX_AGE_S = 15 * 60
 DEFAULT_FRIEND_POSITION_MAX_AGE_S = 24 * 60 * 60
 
 
+#: How long a check-in lasts at most, whatever else happens.
+#:
+#: A check-in ends with the session that made it: the next launch cannot present
+#: its token (see proximity.views.EndStaleCheckInView). What that cannot catch is
+#: a session that never ends — a phone that is never relaunched keeps the
+#: background task reporting, and without a ceiling it would stay visible to
+#: strangers for as long as the battery lasts. Eight hours is a long evening
+#: out, and then the user has to choose again.
+DEFAULT_CHECK_IN_MAX_AGE_S = 8 * 60 * 60
+
+
+def check_in_max_age():
+    from django.conf import settings
+
+    return timedelta(seconds=getattr(settings, 'MAP_CHECK_IN_MAX_AGE_S', DEFAULT_CHECK_IN_MAX_AGE_S))
+
+
 def position_max_age_s(*, for_friend=False):
     from django.conf import settings
 
@@ -214,7 +231,25 @@ def sharing_q(prefix=None):
     return Q(**{f'{base}ghost_mode': False})
 
 
-def fresh_position_q(prefix=None, now=None, *, for_friend=False):
+def checked_in_q(prefix=None, now=None):
+    """Q selecting rows whose owner is checked in right now.
+
+    The SQL half of `User.is_checked_in`, condition for condition: Discoverable,
+    not a ghost, a session, and a session younger than `check_in_max_age`.
+    """
+    from .models import User
+
+    base = '' if prefix is None else f'{prefix}__'
+    cutoff = (now or timezone.now()) - check_in_max_age()
+    return Q(**{
+        f'{base}ghost_mode': False,
+        f'{base}discovery_mode': User.DiscoveryMode.DISCOVERABLE,
+        f'{base}check_in_session__isnull': False,
+        f'{base}checked_in_at__gte': cutoff,
+    })
+
+
+def fresh_position_q(prefix=None, now=None, *, for_friend=False, max_age_s=None):
     """Q selecting rows whose stored position is recent enough to publish.
 
     Requires a position to exist before asking how old it is. That was
@@ -238,8 +273,9 @@ def fresh_position_q(prefix=None, now=None, *, for_friend=False):
     question.
     """
     base = '' if prefix is None else f'{prefix}__'
-    cutoff = (now or timezone.now()) - timedelta(
-        seconds=position_max_age_s(for_friend=for_friend))
+    if max_age_s is None:
+        max_age_s = position_max_age_s(for_friend=for_friend)
+    cutoff = (now or timezone.now()) - timedelta(seconds=max_age_s)
     has_point = Q(**{
         f'{base}latitude__isnull': False,
         f'{base}longitude__isnull': False,
@@ -251,7 +287,7 @@ def fresh_position_q(prefix=None, now=None, *, for_friend=False):
     return has_point & recent
 
 
-def on_map_q(prefix=None, now=None, *, for_friend=False):
+def on_map_q(prefix=None, now=None, *, for_friend=False, max_age_s=None):
     """Q selecting rows that may be drawn on somebody else's map right now.
 
     The choice *and* a position we are still willing to stand behind. The SQL
@@ -264,8 +300,15 @@ def on_map_q(prefix=None, now=None, *, for_friend=False):
     music — must keep the default, because publishing a stale position to
     somebody with no other way to know it is stale claims the owner is standing
     where they were hours ago.
+
+    `for_friend` is also the check-in exemption, and this is where the
+    relationship-tier rule lives (App Review 5.1.2(i)): a friend sees the owner
+    whenever Ghost Mode is off, anybody else only while the owner is checked in
+    — see `checked_in_q` and the note on `User.discovery_mode`. `max_age_s`
+    overrides the freshness window and nothing else.
     """
-    return sharing_q(prefix) & fresh_position_q(prefix, now, for_friend=for_friend)
+    q = sharing_q(prefix) & fresh_position_q(prefix, now, for_friend=for_friend, max_age_s=max_age_s)
+    return q if for_friend else q & checked_in_q(prefix, now)
 
 
 # ─── Queryset filter ──────────────────────────────────────────────────────────
@@ -279,7 +322,16 @@ def visible_users(viewer, queryset=None, *, exclude_self=True,
     on_map          — drop anyone not currently on the map, and — because Ghost
                       Mode is mutual — return nobody at all when the *viewer*
                       is ghosted
-    for_friend      — only meaningful with `on_map`; see `on_map_q`
+    for_friend      — only meaningful with `on_map`: the audience is the
+                      viewer's friends, so the check-in is not required and the
+                      day-long window applies (see `on_map_q`). Restricted to
+                      the viewer's friends here rather than trusted to the
+                      caller, since it is what lifts the check-in gate.
+
+    Without `for_friend`, `on_map` is the non-friend map, and check-in is
+    mutual on it the way Ghost Mode is: a viewer who is not checked in gets
+    nobody — they cannot watch checked-in strangers without being visible
+    themselves.
     discoverable_by — 'username' or 'interest'; drop anyone opted out of that
                       search surface
 
@@ -301,6 +353,20 @@ def visible_users(viewer, queryset=None, *, exclude_self=True,
         qs = qs.exclude(pk=viewer.pk)
     if on_map:
         if getattr(viewer, 'ghost_mode', False):
+            return qs.none()
+        if for_friend:
+            # A subquery rather than `approved_ids_for`: blocks are already
+            # excluded above, and this runs on the location write every phone
+            # makes every thirty seconds.
+            from django.db.models import Exists, OuterRef
+            from friends.models import FriendRequest
+
+            accepted = FriendRequest.objects.filter(status=FriendRequest.Status.ACCEPTED)
+            qs = qs.filter(
+                Exists(accepted.filter(sender=viewer, receiver=OuterRef('pk')))
+                | Exists(accepted.filter(receiver=viewer, sender=OuterRef('pk')))
+            )
+        elif not viewer.is_checked_in():
             return qs.none()
         qs = qs.filter(on_map_q(for_friend=for_friend))
     if discoverable_by == 'username':
@@ -344,6 +410,11 @@ def can_view(viewer, target, field, rel=None):
     # Same shape as `motion_for`, which caps presence-derived motion the same
     # way regardless of the presence audience setting.
     if field == 'zone_audio':
+        # A track muted by moderation reaches nobody but its owner (SELF
+        # returned above). Here rather than at each caller, because every
+        # listener path — the map, the profile, the zone alerts — asks this.
+        if target.zone_track_muted:
+            return False
         return rel in (FRIEND, CONNECTED)
     # And a story is never for a stranger either - same collapse, one tier
     # tighter. A story is a photograph of where somebody is and who they are
@@ -450,10 +521,15 @@ def can_surface_in_proximity(viewer, target, rel=None):
         return False
     # "Someone is near you" is a publication of where `target` is standing, so
     # it takes the same consent the map dot does. Applied per direction by the
-    # callers, which ask this twice with the pair swapped.
-    if not target.is_on_map():
+    # callers, which ask this twice with the pair swapped. Fifteen minutes for
+    # friends too: this is about now, not about the last place they were.
+    if rel in (SELF, FRIEND):
+        return target.is_on_map(for_friend=True, max_age_s=position_max_age_s())
+    # Everybody else takes a check-in, on both sides — the same mutual rule as
+    # the map (see `visible_users`).
+    if not viewer.is_checked_in() or not target.is_on_map():
         return False
-    if rel in (SELF, FRIEND, CONNECTED):
+    if rel == CONNECTED:
         return True
     # Strangers only ever found each other through shared interests.
     return bool(target.discoverable_by_interest)
@@ -471,6 +547,8 @@ def proximity_visible_ids(viewer, candidate_ids):
         return set()
 
     rels = relationship_map(viewer, candidate_ids)
+    viewer_checked_in = viewer.is_checked_in()
+    checked_in = set(User.objects.filter(checked_in_q(), pk__in=candidate_ids).values_list('pk', flat=True))
     allowed = set()
     for pk, ghosted, discoverable in User.objects.filter(
         pk__in=candidate_ids,
@@ -478,7 +556,13 @@ def proximity_visible_ids(viewer, candidate_ids):
         rel = rels.get(pk, STRANGER)
         if rel == BLOCKED or ghosted:
             continue
-        if rel in (FRIEND, CONNECTED) or discoverable:
+        if rel == FRIEND:
+            allowed.add(pk)
+            continue
+        # Non-friends only across two check-ins, as on the map.
+        if not (viewer_checked_in and pk in checked_in):
+            continue
+        if rel == CONNECTED or discoverable:
             allowed.add(pk)
     return allowed
 
@@ -658,12 +742,18 @@ def coordinates_for(viewer, target, friend_ids=None):
     the jitter away, because there is none.
 
     Returns `(None, None)` for a target with no stored position, so callers can
-    treat "not shareable" and "not known" the same way.
+    treat "not shareable" and "not known" the same way — and likewise for a
+    non-friend pair that is not checked in on both sides. The querysets feeding
+    every caller already drop those rows (`visible_users(on_map=True)`); this
+    repeats the rule at the last step before a coordinate leaves, so a caller
+    that assembles its own list cannot publish an unchecked-in position.
     """
     if target.latitude is None or target.longitude is None:
         return None, None
     if is_friend(viewer, target, friend_ids):
         return target.latitude, target.longitude
+    if not (target.is_checked_in() and viewer.is_checked_in()):
+        return None, None
     return snap_coordinates(target, target.latitude, target.longitude)
 
 

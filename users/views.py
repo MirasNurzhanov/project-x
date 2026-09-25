@@ -362,6 +362,9 @@ class LogoutView(APIView):
             latitude=None,
             longitude=None,
             location_updated_at=None,
+            # Signing out ends the session, so it ends the check-in too.
+            check_in_session=None,
+            checked_in_at=None,
         )
 
         try:
@@ -510,6 +513,15 @@ class PrivacySettingsView(APIView):
         serializer = PrivacySettingsSerializer(user, data=data, partial=True)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+
+        # A check-in does not survive leaving the state that allowed it. Going
+        # Private or Ghost ends it now rather than leaving a session that would
+        # come back to life if the setting were flipped back — turning
+        # Discoverable on again must never make anybody visible by itself.
+        if user.check_in_session is not None and (
+            user.ghost_mode or user.discovery_mode != User.DiscoveryMode.DISCOVERABLE
+        ):
+            user.save(update_fields=user.end_check_in())
 
         # Nothing is torn down here, and that is the deliberate part.
         #
@@ -761,10 +773,13 @@ class ZoneAppleMusicView(APIView):
         # preview it would point past the end.
         user.zone_track_start_ms = 0
         user.zone_track_end_ms = None
+        # A new track is new content; the previous one's moderation state does
+        # not carry over (its reports stay in the queue for a moderator).
+        user.zone_audio_moderation = 'ok'
         user.save(update_fields=[
             'zone_apple_id', 'zone_apple_title', 'zone_apple_artist',
             'zone_apple_artwork', 'zone_apple_preview_url',
-            'zone_audio',
+            'zone_audio', 'zone_audio_moderation',
             'zone_track_start_ms', 'zone_track_end_ms', 'updated_at',
         ])
         return Response(ZoneUpdateSerializer(user).data)

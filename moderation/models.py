@@ -38,6 +38,11 @@ class ContentReport(models.Model):
         COMMENT = 'comment', 'Swift comment'
         MESSAGE = 'message', 'Direct message'
         CLUB_MESSAGE = 'club_message', 'Club message'
+        #: A user's Zone Music — audio other people hear when they are near
+        #: them, so user-generated content under App Review 1.2. The target id
+        #: is the *owner's* user id: the track lives on their row, and a
+        #: replaced track is a new thing to report.
+        ZONE_AUDIO = 'zone_audio', 'Zone music'
 
     class Source(models.TextChoices):
         """How the report was raised.

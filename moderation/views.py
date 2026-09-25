@@ -114,6 +114,20 @@ class ReportMessageView(_ReportView):
         return instance.receiver_id == user.pk
 
 
+class ReportZoneAudioView(_ReportView):
+    """Report somebody's Zone Music. `pk` is the owner's user id.
+
+    Reportable by exactly the people who can hear it: there has to be a track,
+    and the viewer has to be in its audience. Anyone else gets the same 404 as
+    a missing user.
+    """
+
+    target_type = ContentReport.Target.ZONE_AUDIO
+
+    def can_see(self, user, instance, author):
+        return instance.has_zone_track and user_visibility.can_view(user, instance, 'zone_audio')
+
+
 class ReportClubMessageView(_ReportView):
     target_type = ContentReport.Target.CLUB_MESSAGE
 

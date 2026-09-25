@@ -50,8 +50,10 @@ class PrivateBrowsingTests(TestCase):
     def setUp(self):
         self.client = APIClient()
         # Sharing, and deliberately given no stored position: the state
-        # somebody is in before their first report lands.
+        # somebody is in before their first report lands. Checked in, since
+        # seeing non-friends takes one (the check-in is mutual).
         self.me = make_user('me')
+        self.me.save(update_fields=self.me.start_check_in())
         self.neighbour = share_location(
             make_user('neighbour', latitude='10.0005', longitude='10.0005'))
         interest = Interest.objects.create(name='Climbing')
@@ -182,6 +184,8 @@ class QueryAnchorTests(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.me = make_user('me')
+        # Seeing non-friends takes a check-in of your own.
+        self.me.save(update_fields=self.me.start_check_in())
         self.me.interests.add(Interest.objects.create(name='Climbing'))
         self.client.force_authenticate(self.me)
 

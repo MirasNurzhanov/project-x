@@ -5,12 +5,11 @@ ghosted *and* we hold a position fresh enough to stand behind. Both halves, and
 the second is not decoration — a setting with no position behind it publishes
 nothing, which is what a cold install and a phone in a tunnel have in common.
 
-The rule used to be a different sentence: nothing but an explicit per-launch
-choice could publish anybody, and everybody started off. That was the shape of
-an App Review remedy under 5.1.2(i), and it is deliberately gone — sharing
-follows the OS permission now and persists across launches. Tests that asserted
-the old default were rewritten to assert the new one rather than deleted, so
-the file still says, from every direction, exactly who is visible and why.
+That sentence is about friends' maps. Everybody else's takes a third condition
+since the second 5.1.2(i) rejection: a check-in made by a tap in the current
+session (see proximity/test_check_in.py, which owns the tier rules). Tests here
+that are about ghosting, freshness or the query anchor check their users in
+where a non-friend has to see them, rather than asserting the tiers again.
 
 `ghost_mode` is the only axis left. Precision is no longer one: friends see the
 precise point and everybody else a ~500m cell, which
@@ -53,11 +52,12 @@ class SharingDefaultTests(TestCase):
         self.assertFalse(user.is_on_map())
 
     def test_reporting_a_position_is_what_puts_someone_on_the_map(self):
-        """The write is no longer refused, and that is the change.
+        """The write is never refused, and it puts somebody on their friends'
+        maps — not on anybody else's.
 
-        It used to 403 unless the user had checked in, so that a permission
-        could never be mistaken for consent. Consent is the OS permission now,
-        and the position it produces is what makes somebody visible.
+        Friends see a user whenever Ghost Mode is off. Everybody else needs a
+        check-in made by a tap in this session (App Review 5.1.2(i)); a
+        position, a permission or a setting is not one.
         """
         user = make_user('reporter')
         client = APIClient()
@@ -70,6 +70,11 @@ class SharingDefaultTests(TestCase):
         self.assertEqual(response.status_code, 200)
         user.refresh_from_db()
         self.assertEqual(float(user.latitude), 10.0)
+        self.assertTrue(user.is_on_map(for_friend=True))
+        self.assertFalse(user.is_on_map())
+
+        self.assertEqual(client.post('/api/proximity/check-in/').status_code, 200)
+        user.refresh_from_db()
         self.assertTrue(user.is_on_map())
 
     def test_a_ghost_reports_but_is_still_off_the_map(self):
@@ -302,12 +307,17 @@ class GhostTransitionTests(TestCase):
 
     def test_unghosting_puts_you_straight_back(self):
         """No re-report needed. The position was never thrown away, so coming
-        back is one field and takes effect on the next request."""
+        back to friends' maps is one field and takes effect on the next request.
+
+        Non-friends' maps are not restored: ghosting ended the check-in, and
+        only a new tap makes one."""
         self.patch(True)
         self.patch(False)
 
         self.me.refresh_from_db()
-        self.assertTrue(self.me.is_on_map())
+        self.assertTrue(self.me.is_on_map(for_friend=True))
+        self.assertFalse(self.me.is_checked_in())
+        self.assertFalse(self.me.is_on_map())
         self.assertEqual(float(self.me.latitude), 10.0)
 
     def test_the_payload_reports_the_state_back(self):
@@ -404,7 +414,8 @@ class GoingLiveEndToEndTests(TransactionTestCase):
         self.client.force_authenticate(self.me)
 
     def go_live(self, client, user):
-        """Privacy first, then a position — the order the client uses."""
+        """Privacy first, then a position, then the check-in tap that makes
+        a non-friend visible."""
         response = client.patch(
             '/api/users/privacy/', {'ghost_mode': False}, format='json',
         )
@@ -415,6 +426,7 @@ class GoingLiveEndToEndTests(TransactionTestCase):
             format='json',
         )
         self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(client.post('/api/proximity/check-in/').status_code, 200)
         user.refresh_from_db()
 
     def test_going_live_shows_other_live_users(self):
@@ -478,6 +490,7 @@ class GoingLiveEndToEndTests(TransactionTestCase):
         self.client.patch(
             '/api/users/privacy/', {'ghost_mode': False}, format='json',
         )
+        self.client.post('/api/proximity/check-in/')
         response = self.client.post(
             '/api/map/nearby/query/',
             {'latitude': '10.0', 'longitude': '10.0'},

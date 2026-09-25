@@ -330,13 +330,14 @@ class BlockingThroughEveryPathTests(TransactionTestCase):
 class ZoneRulesStillApplyTests(TestCase):
     """Visibility is a conjunction, and the private path must not drop a term.
 
-    live AND has a position AND inside the viewer's zone AND not blocked AND
-    the other privacy rules pass.
+    live AND checked in (both sides, for non-friends) AND has a position AND
+    inside the viewer's zone AND not blocked AND the other privacy rules pass.
     """
 
     def setUp(self):
         self.interest = Interest.objects.create(name='Climbing')
         self.me = make_user('me')
+        self.me.save(update_fields=self.me.start_check_in())
         self.me.interests.add(self.interest)
         self.client = APIClient()
         self.client.force_authenticate(self.me)

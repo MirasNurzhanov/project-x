@@ -2,7 +2,7 @@ import math
 import logging
 logger = logging.getLogger(__name__)
 
-from rest_framework import permissions, status
+from rest_framework import permissions, serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db.models import Exists, OuterRef, Q
@@ -203,30 +203,54 @@ def _get_relationship_ids(user, excluded_ids):
 
 
 def _trigger_nearby_notifications(user):
+    """Nearby alerts and encounters for the person who just reported.
+
+    Two tiers, and they follow the map's rule, not one rule for both:
+
+      friends      persistent, like friend map visibility: Ghost Mode off and a
+                   position from the last fifteen minutes on both sides — no
+                   check-in, and no interest or age filter, because a friend is
+                   not being *discovered*. This is the friend-proximity feature
+                   the `location` background mode serves.
+      everyone     interest discovery: both checked in this session, shared
+      else         interests, discoverable by interest, same age tier.
+
+    Friends used to go through the second tier too — including its interest
+    filter, so a friend with nothing in common was never announced at all.
+    """
     if user.latitude is None or user.longitude is None:
         return
-    if not user.is_on_map():
+    fresh_s = visibility.position_max_age_s()
+    if not user.is_on_map(for_friend=True, max_age_s=fresh_s):
         return
 
     lat = float(user.latitude)
     lon = float(user.longitude)
     lat_delta = DEFAULT_RADIUS_KM / 111.0
     lon_delta = DEFAULT_RADIUS_KM / (111.0 * math.cos(math.radians(lat)))
-
-    candidates = visibility.visible_users(user, on_map=True).filter(
+    in_box = Q(
         latitude__isnull=False,
         longitude__isnull=False,
         latitude__range=(lat - lat_delta, lat + lat_delta),
         longitude__range=(lon - lon_delta, lon + lon_delta),
     )
 
-    if user.age_tier:
-        candidates = candidates.filter(age_tier=user.age_tier)
+    # Friends: `for_friend` restricts to them and lifts the check-in; the
+    # window is pulled back to fifteen minutes because an alert is about now,
+    # not about the last place somebody was.
+    friends = visibility.visible_users(user, on_map=True, for_friend=True).filter(
+        in_box, visibility.fresh_position_q(max_age_s=fresh_s),
+    )
 
+    # Everybody else: `visible_users(on_map=True)` is empty unless the mover is
+    # checked in, and only returns checked-in people.
+    others = visibility.visible_users(user, on_map=True).filter(in_box)
+    if user.age_tier:
+        others = others.filter(age_tier=user.age_tier)
     user_interest_ids = list(user.interests.values_list('id', flat=True))
     if user_interest_ids:
         # Interest matching only reaches people who are findable that way.
-        candidates = candidates.filter(
+        others = others.filter(
             Exists(User.interests.through.objects.filter(
                 user_id=OuterRef('pk'), interest_id__in=user_interest_ids,
             )), discoverable_by_interest=True,
@@ -234,22 +258,24 @@ def _trigger_nearby_notifications(user):
 
     # Collected first, then written once. The per-candidate version issued about
     # ten queries each on the endpoint every phone reports to every thirty
-    # seconds; these two calls are a fixed cost however many people are in range.
+    # seconds; these calls are a fixed cost however many people are in range.
     matches = []
-    for candidate in candidates:
+    seen = set()
+    for candidate in list(friends) + list(others.exclude(pk__in=[f.pk for f in friends])):
+        if candidate.pk in seen:
+            continue
+        seen.add(candidate.pk)
         dist = round(haversine(lat, lon, float(candidate.latitude), float(candidate.longitude)), 2)
         if dist <= DEFAULT_RADIUS_KM:
             matches.append((candidate, dist))
 
-    # Each direction is gated on the *sender's* own sharing setting inside
-    # `can_surface_in_proximity`, so this stays one call: someone paused is
-    # neither announced to anyone nor told about anyone.
+    # Each direction is gated again per tier inside `can_surface_in_proximity`
+    # (friends persistent, everybody else two check-ins), so a Ghost is neither
+    # announced to anyone nor told about anyone.
     notify_nearby_matches(user, matches)
     # An encounter is a symmetric record of two people having been in the same
-    # place, so it takes consent from both. The candidate's is settled by
-    # `visible_users(on_map=True)` above and the reporter's by the early return
-    # at the top of this function — which is what keeps the encounter log free
-    # of positions nobody agreed to publish.
+    # place, so it takes the same consent the map does from both: friendship,
+    # or two check-ins. Both are settled by the querysets above.
     record_encounters(user, matches)
 
 
@@ -270,8 +296,12 @@ def _trigger_zone_music_alerts(user):
     # Both halves of this alert say where somebody is standing — one tells the
     # owner a friend just walked into earshot, the other tells the visitor whose
     # earshot they are in. Neither is sendable without the person it discloses
-    # being on the map, and the mover is the one disclosed here.
-    if not user.is_on_map():
+    # being on the map, and the mover is the one disclosed here. Friends see the
+    # mover without a check-in, so this only asks for sharing and a fresh
+    # position; the connected owners below additionally need the mover checked
+    # in, which is asked per owner.
+    fresh_s = visibility.position_max_age_s()
+    if not user.is_on_map(for_friend=True, max_age_s=fresh_s):
         return
 
     lat = float(user.latitude)
@@ -297,9 +327,15 @@ def _trigger_zone_music_alerts(user):
     # via `broadcasts_zone_track` for the callers that do not come through here.
     # `on_map_q` for the owner side: a zone belongs to a person, and a person
     # who is off the map has no zone on it to be walked into.
+    #
+    # Split by tier because the check-in gate is: a friend owner needs no
+    # check-in (fifteen-minute freshness still — an alert is about now), a
+    # connected owner does, and so does the mover in that case.
+    owner_tiers = Q(visibility.on_map_q(for_friend=True, max_age_s=fresh_s), pk__in=friend_ids)
+    if user.is_checked_in():
+        owner_tiers |= Q(visibility.on_map_q(), pk__in=connected_ids)
     owners = User.objects.filter(
-        visibility.on_map_q(),
-        pk__in=approved_ids,
+        owner_tiers,
         music_zone_active=True,
         latitude__isnull=False,
         longitude__isnull=False,
@@ -312,7 +348,7 @@ def _trigger_zone_music_alerts(user):
     for owner in owners:
         metres = haversine(lat, lon, float(owner.latitude), float(owner.longitude)) * 1000
         if metres <= owner.music_zone_radius:
-            notify_zone_music_entry(user, owner, metres)
+            notify_zone_music_entry(user, owner, metres, friends=owner.pk in friend_ids)
 
 
 #: Speed bucket edges in m/s. 2.2 m/s ≈ 8 km/h, above a walk; 8.0 m/s ≈ 29 km/h,
@@ -775,3 +811,109 @@ def _transient_place(lat, lon):
         'region': hierarchy.region_name or None,
         'country_code': hierarchy.country_code or None,
     }
+
+
+# ─── Check-in (App Review 5.1.2(i)) ───────────────────────────────────────────
+# Being visible to anybody who is not a friend takes a check-in made by a
+# deliberate tap in the current session. Nothing here stores, clears or reads a
+# position: the gate is on who may *see* one — `visibility.on_map_q` and its
+# callers — and clubs, meetups and region lookup keep resolving from the stored
+# position whether or not anybody can see it.
+
+
+def _check_in_state(user):
+    """What the client is told about its own check-in. Never the token — that
+    is only ever in the response to the POST that minted it, so a fresh launch
+    cannot read one back and present it as its own (see EndStaleCheckInView)."""
+    expires_at = user.check_in_expires_at()
+    return {
+        'checked_in': expires_at is not None,
+        'check_in_expires_at': expires_at.isoformat() if expires_at else None,
+        'discovery_mode': user.discovery_mode,
+    }
+
+
+class CheckInView(APIView):
+    """"Show me to people who are not my friends, for this session."
+
+    Only ever the result of the user pressing Check in. The client must not
+    call this on launch, on a permission grant, or from a stored preference —
+    that is the whole of what App Review asked for — and the server enforces
+    what it can: a Private account has no check-in to perform, and a ghost is
+    off every map, so both are refused rather than silently recorded.
+
+    Each press mints a new session, so a repeat press is harmless and the
+    newest run of the app always owns it.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if user.ghost_mode:
+            return Response(
+                {'detail': 'Turn off Ghost Mode to check in.', 'code': 'ghost_mode'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if user.discovery_mode != User.DiscoveryMode.DISCOVERABLE:
+            return Response(
+                {'detail': 'Switch discovery to Discoverable in Privacy & safety to check in.',
+                 'code': 'private'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        user.save(update_fields=user.start_check_in())
+        return Response({**_check_in_state(user), 'session': str(user.check_in_session)})
+
+
+class CheckOutView(APIView):
+    """Stop being visible to non-friends now. Friends are unaffected."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if user.check_in_session is not None or user.checked_in_at is not None:
+            user.save(update_fields=user.end_check_in())
+        return Response(_check_in_state(user))
+
+
+class EndStaleCheckInSerializer(serializers.Serializer):
+    session = serializers.UUIDField(required=False, allow_null=True)
+
+
+class EndStaleCheckInView(APIView):
+    """"This app just started, and I did not bring a check-in with me."
+
+    The half of "visibility ends with the session" that no event handler can
+    enforce, because the event is the *absence* of one: the app starting with
+    nothing in memory. The client holds the session token in a module variable
+    only — never on disk — and calls this once per foreground launch with
+    whatever it has. The same design as the pre-Ghost-Mode sharing session
+    (see git history of this file), minus the position wipe: ending a check-in
+    hides the user from non-friends and leaves everything else alone.
+
+        no check-in on the row      nothing to end
+        token matches               this run owns the check-in — left alone
+        token missing or different  a different run made it — ended
+
+    The middle line is what makes it safe to fire on startup: somebody who
+    opens the app and taps Check in at once has a token before this lands, so
+    their tap survives the startup call already in flight.
+
+    Never called by the background location task. iOS relaunches the app in
+    the background to deliver locations, and ending the check-in there would
+    make backgrounding a check-out.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = EndStaleCheckInSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        presented = serializer.validated_data.get('session')
+        if user.check_in_session is not None and presented == user.check_in_session:
+            return Response(_check_in_state(user))
+        if user.check_in_session is not None or user.checked_in_at is not None:
+            user.save(update_fields=user.end_check_in())
+        return Response(_check_in_state(user))

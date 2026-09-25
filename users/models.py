@@ -208,6 +208,16 @@ class User(AbstractUser):
     zone_apple_artist = models.CharField(max_length=200, blank=True)
     zone_apple_artwork = models.URLField(max_length=500, blank=True)
     zone_apple_preview_url = models.URLField(max_length=500, blank=True)
+    #: Moderation state of the *current* zone track — Zone Music is
+    #: user-generated audio other people hear (App Review 1.2). QUARANTINED is
+    #: the automatic mute after enough independent reports
+    #: (`moderation.reasons.AUTO_QUARANTINE_REPORTS`), reversible by a
+    #: moderator; REMOVED is a moderator taking the track down. Either one
+    #: silences the track for every listener (`zone_track_muted`) while the
+    #: owner keeps seeing it. A new track is new content and starts at OK.
+    zone_audio_moderation = models.CharField(max_length=12, default='ok', choices=(
+        ('ok', 'OK'), ('quarantined', 'Quarantined'), ('removed', 'Removed'),
+    ))
 
     # ── The loop ──────────────────────────────────────────────────────────────
     # Which slice of the track actually repeats. Source-agnostic on purpose: an
@@ -245,6 +255,37 @@ class User(AbstractUser):
         return bool(self.zone_apple_preview_url or self.zone_audio)
 
     @property
+    def zone_track_report_snapshot(self):
+        """What a moderator needs to find the reported track again: which kind,
+        its name where there is one, and where the audio is. Snapshotted when a
+        Zone Music report is filed, because the owner can replace the track."""
+        if self.zone_apple_preview_url:
+            name = ' — '.join(part for part in (self.zone_apple_title, self.zone_apple_artist) if part)
+            return f'Apple Music preview: {name or "untitled"} ({self.zone_apple_preview_url})'
+        if self.zone_audio:
+            try:
+                url = self.zone_audio.url
+            except Exception:  # storage misconfigured: still name the file
+                url = self.zone_audio.name
+            return f'Uploaded audio: {url}'
+        return ''
+
+    def remove_zone_track(self):
+        """Take the track out of this user's zone. Returns the fields to save.
+
+        The moderation removal. The file itself is not deleted from storage —
+        the report's snapshot points at it, and it is the evidence."""
+        self.zone_audio = None
+        self.zone_apple_id = ''
+        self.zone_apple_title = ''
+        self.zone_apple_artist = ''
+        self.zone_apple_artwork = ''
+        self.zone_apple_preview_url = ''
+        self.zone_audio_moderation = 'removed'
+        return ['zone_audio', 'zone_apple_id', 'zone_apple_title', 'zone_apple_artist',
+                'zone_apple_artwork', 'zone_apple_preview_url', 'zone_audio_moderation']
+
+    @property
     def broadcasts_zone_track(self):
         """Whether anyone can currently hear this zone.
 
@@ -255,7 +296,12 @@ class User(AbstractUser):
         the track directly — removing the zone hides you from other people, not
         your song from you.
         """
-        return self.music_zone_active and self.has_zone_track
+        return self.music_zone_active and self.has_zone_track and not self.zone_track_muted
+
+    @property
+    def zone_track_muted(self):
+        """Silenced by moderation, pending review or for good."""
+        return self.zone_audio_moderation in ('quarantined', 'removed')
 
     @property
     def zone_boundary_available(self):
@@ -327,6 +373,81 @@ class User(AbstractUser):
     #: decided per viewer at read time. See `visibility.coordinates_for`.
     ghost_mode = models.BooleanField(default=False, db_index=True)
 
+    # ── Discovery and check-in (App Review 5.1.2(i)) ─────────────────────────
+    # Visibility is decided by relationship tier, and only one tier is
+    # automatic:
+    #
+    #   friends            see this user whenever Ghost Mode is off — across
+    #                      launches and in the background. No check-in. This is
+    #                      the feature the `location` background mode exists for.
+    #   connected/strangers see this user only after an explicit check-in in
+    #                      the *current* session, and only while that session
+    #                      lasts.
+    #
+    # `discovery_mode` is the Privacy & safety setting. PRIVATE is friends-only,
+    # permanently: there is no check-in to perform. DISCOVERABLE only makes the
+    # check-in *possible* — it never makes anyone visible by itself, which is the
+    # line App Review drew: nothing that is a stored preference may put a person
+    # on a stranger's map.
+    #
+    # A check-in is `check_in_session` + `checked_in_at`, minted by a deliberate
+    # tap (proximity.views.CheckInView) and ended by: the next launch of the app
+    # (it cannot present the token, which is held in memory only — see
+    # EndStaleCheckInView), signing out, switching to PRIVATE, turning Ghost Mode
+    # on, checking out, or `visibility.CHECK_IN_MAX_AGE` passing. None of those
+    # touches the stored position: clubs, meetups and region lookup keep reading
+    # it whether or not anyone can see it.
+    class DiscoveryMode(models.TextChoices):
+        PRIVATE = 'private', 'Private'
+        DISCOVERABLE = 'discoverable', 'Discoverable'
+
+    discovery_mode = models.CharField(
+        max_length=12, choices=DiscoveryMode.choices, default=DiscoveryMode.DISCOVERABLE,
+    )
+    check_in_session = models.UUIDField(null=True, blank=True, editable=False)
+    checked_in_at = models.DateTimeField(null=True, blank=True, editable=False)
+
+    def is_checked_in(self, now=None):
+        """Whether this user may currently be seen by non-friends (and see them).
+
+        All of it, every time, rather than trusting the columns alone: a row
+        left checked in by a stale session, or one whose owner switched to
+        Private or Ghost, must read as not checked in without waiting for a
+        cleanup. The SQL half is `visibility.checked_in_q`.
+        """
+        from django.utils import timezone
+
+        from . import visibility
+
+        if self.ghost_mode or self.discovery_mode != self.DiscoveryMode.DISCOVERABLE:
+            return False
+        if self.check_in_session is None or self.checked_in_at is None:
+            return False
+        return (now or timezone.now()) - self.checked_in_at <= visibility.check_in_max_age()
+
+    def check_in_expires_at(self):
+        from . import visibility
+
+        if not self.is_checked_in():
+            return None
+        return self.checked_in_at + visibility.check_in_max_age()
+
+    def start_check_in(self):
+        """Mint a new session. Returns the fields to save."""
+        import uuid
+
+        from django.utils import timezone
+
+        self.check_in_session = uuid.uuid4()
+        self.checked_in_at = timezone.now()
+        return ['check_in_session', 'checked_in_at']
+
+    def end_check_in(self):
+        """Forget the session, and nothing else. Returns the fields to save."""
+        self.check_in_session = None
+        self.checked_in_at = None
+        return ['check_in_session', 'checked_in_at']
+
     def is_sharing(self):
         """Whether this user may be drawn on somebody else's map at all.
 
@@ -337,7 +458,7 @@ class User(AbstractUser):
         """
         return not self.ghost_mode
 
-    def has_fresh_position(self, now=None, *, for_friend=False):
+    def has_fresh_position(self, now=None, *, for_friend=False, max_age_s=None):
         """Whether the position on this row is recent enough to publish.
 
         There has to *be* one first. That check was previously redundant —
@@ -361,9 +482,11 @@ class User(AbstractUser):
         if stamp is None:
             return False
         age = ((now or timezone.now()) - stamp).total_seconds()
-        return age <= visibility.position_max_age_s(for_friend=for_friend)
+        if max_age_s is None:
+            max_age_s = visibility.position_max_age_s(for_friend=for_friend)
+        return age <= max_age_s
 
-    def is_on_map(self, now=None, *, for_friend=False):
+    def is_on_map(self, now=None, *, for_friend=False, max_age_s=None):
         """Whether this user may be drawn on anybody else's map right now.
 
         The single named predicate for "is this person published", kept as a
@@ -382,10 +505,18 @@ class User(AbstractUser):
         read it (the profile's last-seen stamp) and knows the person. It changes
         the window, never the rule.
 
+        `for_friend` is also the check-in exemption. A friend sees this user
+        whenever Ghost Mode is off; anybody else only while they are checked in
+        (`is_checked_in`) — see the discovery note above. `max_age_s` overrides
+        the freshness window alone, for a surface that wants fifteen minutes
+        even between friends (a proximity alert is about *now*).
+
         `now` lets a caller sweeping many rows measure them all against one
         clock.
         """
-        return self.is_sharing() and self.has_fresh_position(now, for_friend=for_friend)
+        if not (self.is_sharing() and self.has_fresh_position(now, for_friend=for_friend, max_age_s=max_age_s)):
+            return False
+        return for_friend or self.is_checked_in(now)
 
     class Audience(models.TextChoices):
         EVERYONE = 'everyone', 'Everyone'

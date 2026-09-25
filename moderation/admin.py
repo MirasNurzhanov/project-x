@@ -116,9 +116,24 @@ class ContentReportAdmin(admin.ModelAdmin):
         touched = 0
         for report in queryset:
             instance, author, _ = services.resolve_target(report.target_type, report.target_id)
-            if instance is None or not hasattr(instance, 'moderation'):
+            if instance is None:
                 continue
-            type(instance).objects.filter(pk=instance.pk).update(moderation=moderation)
+            if report.target_type == ContentReport.Target.ZONE_AUDIO:
+                # Removal takes the track off the owner's zone. Restore lifts an
+                # automatic mute; there is nothing to restore once removed.
+                if moderation == Moderation.REMOVED:
+                    if not instance.has_zone_track:
+                        continue
+                    instance.save(update_fields=instance.remove_zone_track())
+                elif instance.zone_audio_moderation == 'quarantined':
+                    instance.zone_audio_moderation = 'ok'
+                    instance.save(update_fields=['zone_audio_moderation'])
+                else:
+                    continue
+            elif not hasattr(instance, 'moderation'):
+                continue
+            else:
+                type(instance).objects.filter(pk=instance.pk).update(moderation=moderation)
             ModerationAction.objects.create(
                 kind=kind,
                 subject=author,
