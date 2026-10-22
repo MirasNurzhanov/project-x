@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 from regions import places
-from users import visibility, zones
+from users import review_demo, visibility, zones
 from users.models import User
 from friends.models import FriendRequest, HiRequest
 from .serializers import (
@@ -445,6 +445,12 @@ class UpdateLocationView(APIView):
             # the map, the feed and the alerts all depend on, and a zone that
             # failed to move must not take it down.
             logger.warning('zone_follow_failed', extra={'error_type': type(exc).__name__})
+        if user.is_review_demo:
+            # Before the alerts below, so they see the cast where it now is.
+            try:
+                review_demo.arrange_around(user)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning('review_demo_arrange_failed', extra={'error_type': type(exc).__name__})
         _trigger_nearby_notifications(user)
         # Best-effort: a zone alert is a nice-to-have, and a failure inside it
         # must not fail the location write that every other feature depends on.

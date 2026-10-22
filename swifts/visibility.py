@@ -123,9 +123,13 @@ def _audience_q(viewer, unblocked):
     # already satisfied and needs no clause of its own here.
     friends = Q(visibility=SwiftVideo.Visibility.FRIENDS) & friend & unblocked
 
+    # The App Review demo's Swifts reach demo accounts only, and real Swifts
+    # reach real accounts only — see `User.is_review_demo`.
+    same_world = Q(author__is_review_demo=getattr(viewer, 'is_review_demo', False))
+
     # Anonymous creators retract all their Swifts from other people,
     # including existing friends. Their own collection remains available.
-    return (own | (Q(author__ghost_mode=False) & (public | friends))) & Q(
+    return (own | (same_world & Q(author__ghost_mode=False) & (public | friends))) & Q(
         author__is_active=True, author__deletion_requested_at__isnull=True,
         author__retired_account_id__isnull=True,
     )
@@ -168,6 +172,8 @@ def can_watch(viewer, swift):
         return False
     if swift.author_id == viewer.pk:
         return True
+    if swift.author.is_review_demo != getattr(viewer, 'is_review_demo', False):
+        return False
     if swift.author.ghost_mode:
         return False
 

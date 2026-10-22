@@ -348,6 +348,9 @@ def visible_users(viewer, queryset=None, *, exclude_self=True,
 
     qs = User.objects.all() if queryset is None else queryset
     qs = qs.filter(is_active=True, deletion_requested_at__isnull=True, retired_account_id__isnull=True)
+    # The App Review demo is a separate world in both directions — see
+    # `User.is_review_demo`.
+    qs = qs.filter(is_review_demo=getattr(viewer, 'is_review_demo', False))
     qs = qs.exclude(pk__in=blocked_ids_for(viewer))
     if exclude_self:
         qs = qs.exclude(pk=viewer.pk)

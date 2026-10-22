@@ -634,6 +634,15 @@ class User(AbstractUser):
     suspended_until = models.DateTimeField(null=True, blank=True)
     suspension_reason = models.CharField(max_length=200, blank=True, default='')
 
+    # ── App Review demo (guideline 2.1(a)) ────────────────────────────────────
+    # The reviewer's account and the made-up people around it. They form a
+    # world of their own: `visibility.visible_users` and the Swift audience
+    # show demo accounts only to demo accounts, and real accounts only to real
+    # ones, so nobody real ever meets a fake and the reviewer never meets
+    # anybody real. Set by `manage.py seed_review_demo` and nothing else; see
+    # `users.review_demo`.
+    is_review_demo = models.BooleanField(default=False, db_index=True, editable=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
