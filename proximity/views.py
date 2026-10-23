@@ -378,6 +378,21 @@ def classify_speed(speed):
     return User.MotionClass.STATIONARY
 
 
+def _arrange_review_demo(user, anchor=None):
+    """Move the App Review demo's cast next to a demo account, best-effort.
+
+    Called from the private queries too. They store nothing about the caller,
+    and this does not either: it writes only the demo cast's rows, so the
+    queries stay read-only for every real account and for the reviewer's own.
+    """
+    if not user.is_review_demo:
+        return
+    try:
+        review_demo.arrange_around(user, anchor=anchor)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning('review_demo_arrange_failed', extra={'error_type': type(exc).__name__})
+
+
 class UpdateLocationView(APIView):
     """Where the phone says it is.
 
@@ -445,12 +460,8 @@ class UpdateLocationView(APIView):
             # the map, the feed and the alerts all depend on, and a zone that
             # failed to move must not take it down.
             logger.warning('zone_follow_failed', extra={'error_type': type(exc).__name__})
-        if user.is_review_demo:
-            # Before the alerts below, so they see the cast where it now is.
-            try:
-                review_demo.arrange_around(user)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning('review_demo_arrange_failed', extra={'error_type': type(exc).__name__})
+        # Before the alerts below, so they see the cast where it now is.
+        _arrange_review_demo(user)
         _trigger_nearby_notifications(user)
         # Best-effort: a zone alert is a nice-to-have, and a failure inside it
         # must not fail the location write that every other feature depends on.
@@ -721,12 +732,10 @@ class NearbyQueryView(APIView):
     def post(self, request):
         serializer = NearbyQuerySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        return Response(nearby_users(
-            request.user,
-            float(serializer.validated_data['latitude']),
-            float(serializer.validated_data['longitude']),
-            request,
-        ))
+        lat = float(serializer.validated_data['latitude'])
+        lon = float(serializer.validated_data['longitude'])
+        _arrange_review_demo(request.user, anchor=(lat, lon))
+        return Response(nearby_users(request.user, lat, lon, request))
 
 
 def _map_payload(user, lat, lon, request):
@@ -798,6 +807,7 @@ class MapQueryView(APIView):
         lat = float(serializer.validated_data['latitude'])
         lon = float(serializer.validated_data['longitude'])
 
+        _arrange_review_demo(request.user, anchor=(lat, lon))
         payload = _map_payload(request.user, lat, lon, request)
         payload['place'] = _transient_place(lat, lon)
         return Response(payload)

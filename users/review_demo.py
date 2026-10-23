@@ -79,9 +79,17 @@ def _metres_between(a_lat, a_lon, b_lat, b_lon):
     return haversine(float(a_lat), float(a_lon), float(b_lat), float(b_lon)) * 1000
 
 
-def arrange_around(reviewer, now=None):
-    """Keep the cast where the reviewer can find it. Returns the members moved."""
-    if not reviewer.is_review_demo or reviewer.latitude is None or reviewer.longitude is None:
+def arrange_around(reviewer, now=None, anchor=None):
+    """Keep the cast where the reviewer can find it. Returns the members moved.
+
+    `anchor` is the reviewer's position when it is not the stored one: the map's
+    private query carries a coordinate it never stores, and arranging from it
+    means the demo does not hang on the phone's location report reaching us.
+    """
+    if not reviewer.is_review_demo:
+        return []
+    anchor_lat, anchor_lon = anchor or (reviewer.latitude, reviewer.longitude)
+    if anchor_lat is None or anchor_lon is None:
         return []
     now = now or timezone.now()
     placed = {m.username: m for m in CAST if m.offset is not None}
@@ -90,7 +98,7 @@ def arrange_around(reviewer, now=None):
         return []
 
     def expected(member):
-        return offset_position(reviewer.latitude, reviewer.longitude, *placed[member.username].offset)
+        return offset_position(anchor_lat, anchor_lon, *placed[member.username].offset)
 
     replace = any(
         m.latitude is None or m.longitude is None
@@ -111,11 +119,11 @@ def arrange_around(reviewer, now=None):
             fields |= set(member.start_check_in())
     User.objects.bulk_update(members, sorted(fields))
 
-    _keep_content_current(reviewer, members, now, moved=replace)
+    _keep_content_current(reviewer, members, now, moved=replace, anchor=(anchor_lat, anchor_lon))
     return members if replace else []
 
 
-def _keep_content_current(reviewer, members, now, moved):
+def _keep_content_current(reviewer, members, now, moved, anchor):
     """Stories expire and meetups pass; the demo's should not."""
     from clubs.models import ClubEvent
     from stories.models import Story
@@ -130,8 +138,6 @@ def _keep_content_current(reviewer, members, now, moved):
             update['event_datetime'] = now + timedelta(days=2)
             update['expires_at'] = now + timedelta(days=2, hours=3)
         if moved or event.latitude is None:
-            update['latitude'], update['longitude'] = offset_position(
-                reviewer.latitude, reviewer.longitude, 120, 220,
-            )
+            update['latitude'], update['longitude'] = offset_position(*anchor, 120, 220)
         if update:
             ClubEvent.objects.filter(pk=event.pk).update(**update)

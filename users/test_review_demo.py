@@ -178,3 +178,11 @@ class FollowTheReviewerTests(TestCase):
         self.assertTrue(Notification.objects.filter(
             recipient=self.reviewer, notification_type=Notification.Type.ZONE_MUSIC,
         ).exists())
+
+    def test_the_map_query_alone_brings_the_cast(self):
+        # A phone that never stores a position still gets a populated map, and
+        # the query still stores nothing about the reviewer.
+        seen = seen_by(self.reviewer, *CUPERTINO)
+        self.assertTrue({'demo_amina', 'demo_daniyar', 'demo_sofia'} <= seen)
+        self.reviewer.refresh_from_db()
+        self.assertIsNone(self.reviewer.latitude)
