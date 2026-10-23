@@ -5,7 +5,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import APIException
 from django.contrib.auth.password_validation import validate_password
 from friends.models import FriendRequest, HiRequest
-from . import terms, visibility, zones
+from . import terms, visibility, zone_repair, zones
 from .models import ProfileLink, User
 from interests.models import Interest
 from interests.serializers import InterestSerializer
@@ -595,6 +595,10 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
     #: silence the only signal the zone screen has that the boundary on it is
     #: no longer the one the user is standing in.
     zone_follow_stale = serializers.BooleanField(read_only=True)
+    #: A city or district zone with no boundary stored, so discovery is
+    #: answering from the circle. The map says so and offers a Retry.
+    zone_boundary_missing = serializers.SerializerMethodField()
+    zone_place_name = serializers.SerializerMethodField()
     # Declared explicitly to own the error message. Left to the model, DRF
     # derives the field from the MinValue/MaxValue validators and answers an
     # over-large radius with "ensure this value is less than or equal to
@@ -633,7 +637,7 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
             'zone_audio', 'zone_audio_url', 'zone_active',
             'zone_type', 'zone_radius', 'zone_region', 'zone_region_detail',
             'zone_follows_location', 'zone_follow_stale',
-            'effective_zone_mode',
+            'effective_zone_mode', 'zone_boundary_missing', 'zone_place_name',
             # Write-only, validation-only, never stored — see the note above.
             'latitude', 'longitude', 'accuracy',
             # One switch and one radius. `music_radius_m` used to sit here
@@ -657,6 +661,21 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
 
     def get_zone_audio_url(self, obj):
         return _zone_audio_url(obj)
+
+    def get_zone_boundary_missing(self, obj):
+        return zone_repair.needs_boundary(obj)
+
+    def get_zone_place_name(self, obj):
+        """The place the zone covers, or should: the boundary's name once there
+        is one, and until then the name the user's last place lookup found."""
+        if obj.zone_region_id:
+            return obj.zone_region.name
+        place = getattr(obj, 'place', None)
+        if place is None:
+            return ''
+        if obj.zone_type == User.ZoneType.DISTRICT:
+            return place.district_name or place.region_name or ''
+        return place.city_name or ''
 
     def validate(self, attrs):
         # Two independent rulesets, kept apart because they have nothing to say

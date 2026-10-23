@@ -6,7 +6,7 @@ from .views import (
     DeleteAccountView, MeView, SocialLoginView, SocialLinkView, SafeTokenRefreshView,
     TermsView, TermsAcceptView, UserReportView,
     SuspensionAwareTokenObtainPairView,
-    AppleMusicSearchView, AppleMusicStatusView, ZoneAppleMusicView,
+    AppleMusicSearchView, AppleMusicStatusView, ZoneAppleMusicView, ZoneBoundaryRetryView,
     DeviceRegisterView,
 )
 
@@ -31,6 +31,7 @@ urlpatterns = [
     path('zone/apple-music/status/', AppleMusicStatusView.as_view(), name='apple-music-status'),
     path('zone/apple-music/search/', AppleMusicSearchView.as_view(), name='apple-music-search'),
     path('zone/apple-music/', ZoneAppleMusicView.as_view(), name='zone-apple-music'),
+    path('zone/boundary/', ZoneBoundaryRetryView.as_view(), name='zone-boundary-retry'),
     path('zone/', ZoneView.as_view(), name='zone'),
     path('<int:user_id>/profile/', PublicProfileView.as_view(), name='public-profile'),
     path('profile/<int:user_id>/', PublicProfileView.as_view(), name='public-profile-v2'),

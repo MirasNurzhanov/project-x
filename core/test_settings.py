@@ -65,3 +65,8 @@ STORAGES['private_media'] = {
 # would send it — so what gets decided is still fully asserted, and nothing
 # leaves the machine.
 PUSH_DISABLED = True
+
+# No boundary fetches from the location report in a test run: they would start
+# threads and reach for the map service. users.zone_repair honours this, and its
+# own tests switch to 'inline'.
+ZONE_BOUNDARY_REPAIR = 'off'

@@ -1,4 +1,5 @@
 import logging
+from django.core.cache import cache
 from django.db.models import Max, Q
 from django.utils import timezone
 from rest_framework import generics, permissions, status
@@ -16,7 +17,7 @@ from friends.models import FriendRequest
 from moderation.views import ReportUserView
 from notifications.utils import notify_new_device
 from regions import places
-from . import applemusic, socialauth, terms, visibility, zones
+from . import applemusic, socialauth, terms, visibility, zone_repair, zones
 from .links import LinkError, MAX_LINKS_PER_USER, normalize_link
 from .serializers import (
     RegisterSerializer, UserProfileSerializer, EditProfileSerializer,
@@ -736,6 +737,30 @@ class AppleMusicSearchView(APIView):
             # reads the same in the UI as it does in the logs.
             return Response({'detail': str(exc), 'code': exc.code}, status=exc.status)
         return Response(songs)
+
+
+class ZoneBoundaryRetryView(APIView):
+    """The map's Retry: fetch the missing boundary for a city or district zone now.
+
+    Inline, unlike the location report's background repair, because somebody is
+    waiting on the answer — and limited to one attempt per user every
+    `RETRY_COOLDOWN_S`, so a held-down button cannot hammer the map service.
+    Answers with the zone, which says whether the boundary landed.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    RETRY_COOLDOWN_S = 10
+
+    def post(self, request):
+        user = request.user
+        if zone_repair.needs_boundary(user):
+            if not cache.add(f'zone-repair-retry:{user.pk}', '1', timeout=self.RETRY_COOLDOWN_S):
+                return Response(
+                    {'detail': 'Give it a few seconds before trying again.', 'code': 'retry_too_soon'},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS,
+                )
+            zone_repair.repair(user)
+        return Response(ZoneUpdateSerializer(user).data)
 
 
 class ZoneAppleMusicView(APIView):

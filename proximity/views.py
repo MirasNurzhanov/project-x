@@ -8,7 +8,7 @@ from rest_framework.views import APIView
 from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 from regions import places
-from users import review_demo, visibility, zones
+from users import review_demo, visibility, zone_repair, zones
 from users.models import User
 from friends.models import FriendRequest, HiRequest
 from .serializers import (
@@ -134,6 +134,10 @@ def _viewer_zone_box(user, lat, lon):
 
     # Circle, or a polygon type whose boundary has been evicted — see
     # `_viewer_zone_contains` for why that degrades to the circle here.
+    if user.zone_type in User.POLYGON_ZONE_TYPES:
+        # Once per request, not per candidate. No coordinates: what this is for
+        # is noticing that the map service is failing to supply boundaries.
+        logger.warning('zone_boundary_fallback', extra={'zone_type': user.zone_type})
     km = user.zone_radius / 1000
     lat_delta = km / 111.0
     lon_delta = km / (111.0 * math.cos(math.radians(lat)))
@@ -460,6 +464,12 @@ class UpdateLocationView(APIView):
             # the map, the feed and the alerts all depend on, and a zone that
             # failed to move must not take it down.
             logger.warning('zone_follow_failed', extra={'error_type': type(exc).__name__})
+        # A city or district zone with no stored boundary yet: fetch one off the
+        # request, so this report is never held up by the map service.
+        try:
+            zone_repair.schedule(user)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('zone_boundary_repair_failed', extra={'error_type': type(exc).__name__})
         # Before the alerts below, so they see the cast where it now is.
         _arrange_review_demo(user)
         _trigger_nearby_notifications(user)
