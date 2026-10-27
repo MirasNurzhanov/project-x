@@ -210,6 +210,18 @@ def _storefront(value=None):
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
+def song_url(song_id, storefront=None):
+    """Where a catalogue song lives on Apple Music, for "Listen on Apple Music".
+
+    A preview played in a zone links back to the song it came from; see
+    users.serializers, which sends this beside every Apple Music zone track.
+    """
+    song_id = (song_id or '').strip()
+    if not song_id.isdigit():
+        return ''
+    return f'https://music.apple.com/{_storefront(storefront)}/song/{song_id}'
+
+
 def search_songs(term, storefront=None, limit=25):
     """Songs matching `term`, newest Apple ranking first, previewable only."""
     term = (term or '').strip()

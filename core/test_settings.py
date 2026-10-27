@@ -70,3 +70,7 @@ PUSH_DISABLED = True
 # threads and reach for the map service. users.zone_repair honours this, and its
 # own tests switch to 'inline'.
 ZONE_BOUNDARY_REPAIR = 'off'
+
+# The music-bed code stays covered while production has it switched off; the
+# test for the switch itself overrides this.
+SWIFT_MUSIC_ENABLED = True

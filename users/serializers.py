@@ -5,7 +5,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import APIException
 from django.contrib.auth.password_validation import validate_password
 from friends.models import FriendRequest, HiRequest
-from . import terms, visibility, zone_repair, zones
+from . import applemusic, terms, visibility, zone_repair, zones
 from .models import ProfileLink, User
 from interests.models import Interest
 from interests.serializers import InterestSerializer
@@ -367,14 +367,10 @@ _CLEARED_LOOP = {
 
 
 def _zone_audio_url(obj):
-    # One zone plays one thing, and this is the order that decides which. An
-    # Apple track wins because picking one clears the upload — the order only
-    # matters for rows written before that rule existed.
-    if obj.zone_apple_preview_url:
-        return obj.zone_apple_preview_url
-    if obj.zone_audio:
-        return obj.zone_audio.url
-    return None
+    # Apple Music previews only. An upload left over from before uploads were
+    # switched off is not played to anyone, its owner included — see
+    # `ZoneUpdateSerializer._validate_zone`.
+    return obj.zone_apple_preview_url or None
 
 
 class UserSearchSerializer(serializers.ModelSerializer):
@@ -599,6 +595,8 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
     #: answering from the circle. The map says so and offers a Retry.
     zone_boundary_missing = serializers.SerializerMethodField()
     zone_place_name = serializers.SerializerMethodField()
+    #: "Listen on Apple Music" for the song the zone plays.
+    zone_apple_url = serializers.SerializerMethodField()
     # Declared explicitly to own the error message. Left to the model, DRF
     # derives the field from the MinValue/MaxValue validators and answers an
     # over-large radius with "ensure this value is less than or equal to
@@ -637,7 +635,7 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
             'zone_audio', 'zone_audio_url', 'zone_active',
             'zone_type', 'zone_radius', 'zone_region', 'zone_region_detail',
             'zone_follows_location', 'zone_follow_stale',
-            'effective_zone_mode', 'zone_boundary_missing', 'zone_place_name',
+            'effective_zone_mode', 'zone_boundary_missing', 'zone_place_name', 'zone_apple_url',
             # Write-only, validation-only, never stored — see the note above.
             'latitude', 'longitude', 'accuracy',
             # One switch and one radius. `music_radius_m` used to sit here
@@ -661,6 +659,9 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
 
     def get_zone_audio_url(self, obj):
         return _zone_audio_url(obj)
+
+    def get_zone_apple_url(self, obj):
+        return applemusic.song_url(obj.zone_apple_id) if obj.zone_apple_preview_url else ''
 
     def get_zone_boundary_missing(self, obj):
         return zone_repair.needs_boundary(obj)
@@ -908,14 +909,15 @@ class ZoneUpdateSerializer(serializers.ModelSerializer):
                     self._place_you_are_in(lat, lon, incoming),
                 )
 
-        # An upload clears an Apple track, which is the other way to fill the
-        # same slot. Without this a user who picked a song and then uploaded a
-        # file would keep hearing the song: `_zone_audio_url` reads the Apple
-        # field first.
+        # Zones play Apple Music previews only. An uploaded file is somebody
+        # else's music as often as not, and Approx cannot show App Review the
+        # rights to it (guideline 5.2.3). Clearing an old upload is still
+        # allowed — that is `zone_audio` set to nothing.
         if attrs.get('zone_audio'):
-            attrs.update(_CLEARED_APPLE_TRACK)
-            # New content: it starts unmoderated, whatever the last track was.
-            attrs['zone_audio_moderation'] = 'ok'
+            raise serializers.ValidationError({
+                'zone_audio': 'Uploading your own audio is no longer supported. Pick a song from Apple Music instead.',
+                'code': 'zone_upload_disabled',
+            })
 
         # A new track means a new loop. Cleared on any change of source —
         # including clearing one, so a silent zone does not keep a window.

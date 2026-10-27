@@ -392,6 +392,16 @@ class SwiftCreateSerializer(ScreenedTextMixin, serializers.ModelSerializer):
         from core.uploads import validate_video
         return validate_video(value)
 
+    def validate_track(self, value):
+        """Refused while `SWIFT_MUSIC_ENABLED` is off — see core.settings."""
+        from django.conf import settings
+
+        if value is not None and not settings.SWIFT_MUSIC_ENABLED:
+            raise serializers.ValidationError(
+                'Swifts use the sound they were recorded with for now. Music is coming later.'
+            )
+        return value
+
     def validate_effect(self, value):
         """Only a treatment some player actually knows how to draw.
 

@@ -252,7 +252,8 @@ class User(AbstractUser):
 
     @property
     def has_zone_track(self):
-        return bool(self.zone_apple_preview_url or self.zone_audio)
+        # Apple Music previews only: uploads are no longer played to anyone.
+        return bool(self.zone_apple_preview_url)
 
     @property
     def zone_track_report_snapshot(self):

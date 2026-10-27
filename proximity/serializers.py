@@ -1,7 +1,7 @@
 import logging
 from django.utils.functional import cached_property
 from rest_framework import serializers
-from users import visibility
+from users import applemusic, visibility
 from users.models import User
 from interests.serializers import InterestSerializer
 logger = logging.getLogger(__name__)
@@ -216,7 +216,8 @@ class NearbyUserSerializer(serializers.Serializer):
         # judgement to get wrong. Nothing here is sent while the music zone is
         # off, and that absence is what takes the circle off every viewer's map.
         if visibility.can_view(me, obj, 'zone_audio', rel) and obj.music_zone_active:
-            data['zone_audio'] = obj.zone_audio.url if obj.zone_audio else None
+            # Kept for older builds; uploads are no longer served.
+            data['zone_audio'] = None
             data['zone_audio_url'] = _zone_track_url(obj)
             # How close you have to be to hear it, which is not the same as how
             # big their zone is. Sent inside this gate rather than with
@@ -230,6 +231,7 @@ class NearbyUserSerializer(serializers.Serializer):
                 data['zone_track_title'] = obj.zone_apple_title
                 data['zone_track_artist'] = obj.zone_apple_artist
                 data['zone_track_artwork'] = obj.zone_apple_artwork
+                data['zone_track_apple_url'] = applemusic.song_url(obj.zone_apple_id)
             # The slice that loops. Sent to listeners, not just the owner — the
             # trim is part of what the zone plays, so a card that ignored it
             # would play a different thing from what its owner set up.
@@ -241,8 +243,5 @@ class NearbyUserSerializer(serializers.Serializer):
 
 
 def _zone_track_url(obj):
-    if obj.zone_apple_preview_url:
-        return obj.zone_apple_preview_url
-    if obj.zone_audio:
-        return obj.zone_audio.url
-    return None
+    # Apple Music previews only — see users.serializers._zone_audio_url.
+    return obj.zone_apple_preview_url or None

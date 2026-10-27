@@ -850,6 +850,11 @@ EPIDEMIC_SOUND_TRACK_PATH = config(
 # hosts Approx itself controls (comma-separated, e.g. `media.example.com`). A
 # provider's CDN never belongs here: a track still on one is not served.
 SWIFT_MUSIC_MEDIA_HOSTS = _csv_setting('SWIFT_MUSIC_MEDIA_HOSTS')
+# Whether a new Swift may carry a music track at all. Off until Approx holds a
+# licence it can show App Review (guideline 5.2.3): Swifts use the sound they
+# were recorded with. The catalogue and the playback of older Swifts are
+# untouched; only attaching a track to a new one is refused.
+SWIFT_MUSIC_ENABLED = config('SWIFT_MUSIC_ENABLED', default=False, cast=bool)
 
 # ── Sign in with Google / Sign in with Apple ──────────────────────────────────
 # The OAuth client ids whose identity tokens /api/users/social/ will accept, as
