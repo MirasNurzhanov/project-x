@@ -15,6 +15,7 @@ from .serializers import (
     LocationUpdateSerializer,
     NearbyQuerySerializer,
     NearbyUserSerializer,
+    _zone_track_url,
 )
 from .utils import haversine
 from notifications.utils import notify_nearby_matches, notify_zone_music_entry
@@ -294,9 +295,12 @@ def _trigger_zone_music_alerts(user):
     Only the person who *moved* is evaluated, which is enough to cover both
     directions: when you walk into a stationary friend's zone this runs for
     you, and when they walk into yours it runs for them.
+
+    Returns the zones `user` is inside as (owner, metres) pairs, cooldown or
+    not, so the location response can say what is playing where they stand.
     """
     if user.latitude is None or user.longitude is None:
-        return
+        return []
     # Both halves of this alert say where somebody is standing — one tells the
     # owner a friend just walked into earshot, the other tells the visitor whose
     # earshot they are in. Neither is sendable without the person it discloses
@@ -306,7 +310,7 @@ def _trigger_zone_music_alerts(user):
     # in, which is asked per owner.
     fresh_s = visibility.position_max_age_s()
     if not user.is_on_map(for_friend=True, max_age_s=fresh_s):
-        return
+        return []
 
     lat = float(user.latitude)
     lon = float(user.longitude)
@@ -317,7 +321,7 @@ def _trigger_zone_music_alerts(user):
     friend_ids, connected_ids = _get_relationship_ids(user, visibility.blocked_ids_for(user) | {user.pk})
     approved_ids = friend_ids | connected_ids
     if not approved_ids:
-        return
+        return []
 
     # Not filtered on `zone_active`. That flag is about the zone drawn on the
     # map, and using it here tied someone's music to whether they wanted a
@@ -349,10 +353,40 @@ def _trigger_zone_music_alerts(user):
     # `music_zone_radius` now — it never inherits a region border, which is what
     # the removed `music_zone_separate` flag used to allow and what made this
     # loop skip region-mode owners to avoid alerting on everyone in town.
+    inside = []
     for owner in owners:
         metres = haversine(lat, lon, float(owner.latitude), float(owner.longitude)) * 1000
         if metres <= owner.music_zone_radius:
             notify_zone_music_entry(user, owner, metres, friends=owner.pk in friend_ids)
+            inside.append((owner, metres))
+    return inside
+
+
+def _zone_music_here(user, inside):
+    """The track playing where `user` stands, for the app to play once.
+
+    The nearest zone among `inside` whose track this listener may hear — the
+    same gate the map card uses — or None. Deliberately not cooled down like
+    the alert: the app decides whether to play, and it needs to know it is
+    still inside a zone to keep the track going and out of one to stop it.
+    """
+    for owner, metres in sorted(inside, key=lambda pair: pair[1]):
+        if not owner.broadcasts_zone_track or not visibility.can_view(user, owner, 'zone_audio'):
+            continue
+        url = _zone_track_url(owner)
+        if not url:
+            continue
+        return {
+            'owner_id': owner.pk,
+            'username': owner.username,
+            'url': url,
+            'title': owner.zone_apple_title if owner.zone_apple_preview_url else '',
+            'artist': owner.zone_apple_artist if owner.zone_apple_preview_url else '',
+            'artwork': owner.zone_apple_artwork if owner.zone_apple_preview_url else '',
+            'start_ms': owner.zone_track_start_ms if owner.has_trimmed_loop else 0,
+            'end_ms': owner.zone_track_end_ms if owner.has_trimmed_loop else None,
+        }
+    return None
 
 
 #: Speed bucket edges in m/s. 2.2 m/s ≈ 8 km/h, above a walk; 8.0 m/s ≈ 29 km/h,
@@ -475,11 +509,16 @@ class UpdateLocationView(APIView):
         _trigger_nearby_notifications(user)
         # Best-effort: a zone alert is a nice-to-have, and a failure inside it
         # must not fail the location write that every other feature depends on.
+        zone_music = None
         try:
-            _trigger_zone_music_alerts(user)
+            zone_music = _zone_music_here(user, _trigger_zone_music_alerts(user))
         except Exception as exc:  # noqa: BLE001
             logger.warning('zone_music_sweep_failed', extra={'error_type': type(exc).__name__})
-        return Response({'latitude': str(user.latitude), 'longitude': str(user.longitude)})
+        return Response({
+            'latitude': str(user.latitude), 'longitude': str(user.longitude),
+            # What the app plays while closed — see services/zoneMusicAuto.ts.
+            'zone_music': zone_music,
+        })
 
 
 def nearby_users(user, lat, lon, request):
