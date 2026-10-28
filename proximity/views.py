@@ -295,8 +295,9 @@ def _trigger_zone_music_alerts(user):
     directions: when you walk into a stationary friend's zone this runs for
     you, and when they walk into yours it runs for them.
 
-    Returns the zones `user` is inside as (owner, metres) pairs, cooldown or
-    not, so the location response can say what is playing where they stand.
+    Returns the zones `user` is inside as (owner, metres, alerted) triples,
+    cooldown or not, so the location response can say what is playing where
+    they stand — and whether `user` was just told so by push.
     """
     if user.latitude is None or user.longitude is None:
         return []
@@ -349,8 +350,8 @@ def _trigger_zone_music_alerts(user):
     for owner in owners:
         metres = haversine(lat, lon, float(owner.latitude), float(owner.longitude)) * 1000
         if metres <= owner.music_zone_radius:
-            notify_zone_music_entry(user, owner, metres, friends=owner.pk in friend_ids)
-            inside.append((owner, metres))
+            alerted = notify_zone_music_entry(user, owner, metres, friends=owner.pk in friend_ids)
+            inside.append((owner, metres, bool(alerted)))
     return inside
 
 
@@ -362,7 +363,7 @@ def _zone_music_here(user, inside):
     the alert: the app decides whether to play, and it needs to know it is
     still inside a zone to keep the track going and out of one to stop it.
     """
-    for owner, metres in sorted(inside, key=lambda pair: pair[1]):
+    for owner, metres, alerted in sorted(inside, key=lambda entry: entry[1]):
         if not owner.broadcasts_zone_track or not visibility.can_view(user, owner, 'zone_audio'):
             continue
         url = _zone_track_url(owner)
@@ -377,6 +378,9 @@ def _zone_music_here(user, inside):
             'artwork': owner.zone_apple_artwork if owner.zone_apple_preview_url else '',
             'start_ms': owner.zone_track_start_ms if owner.has_trimmed_loop else 0,
             'end_ms': owner.zone_track_end_ms if owner.has_trimmed_loop else None,
+            # The visitor was pushed "there is music where you are" by this very
+            # report, so the app need not post a notice of its own.
+            'alerted': alerted,
         }
     return None
 

@@ -165,6 +165,9 @@ def notify_zone_music_entry(visitor, owner, distance_m: float, *, friends=None):
     visitor's half additionally requires that they are allowed to hear the
     track — being told about music you are not permitted to play is worse than
     silence. Both sides share one cooldown row per direction.
+
+    Returns whether the visitor was alerted just now, so the location response
+    can tell the app not to post a second notice of its own.
     """
     from users.visibility import FRIEND, blocked_ids_for, can_view, position_max_age_s, relationship
 
@@ -225,12 +228,13 @@ def notify_zone_music_entry(visitor, owner, distance_m: float, *, friends=None):
 
     if visitor.music_zone_alerts and can_view(visitor, owner, 'zone_audio'):
         playing = f'{title} is playing here' if title else 'there is something playing here'
-        _zone_music_alert(
+        return _zone_music_alert(
             recipient=visitor,
             sender=owner,
             message=f"You're in @{owner.username}'s music zone — {playing}.",
             push_title='🎵 There is music where you are',
-        )
+        ) is not None
+    return False
 
 
 def notify_nearby_matches(user, matches):

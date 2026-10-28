@@ -63,6 +63,12 @@ class ZoneMusicHereTests(TestCase):
         self.report(10.0005)
         self.assertIsNotNone(self.report(10.0004))
 
+    def test_says_whether_this_report_pushed_the_alert(self):
+        # The app posts its own notice only when the server's push did not go
+        # out, so the listener is never told twice.
+        self.assertTrue(self.report(10.0005)['alerted'])
+        self.assertFalse(self.report(10.0004)['alerted'])  # inside the cooldown
+
     def test_says_nothing_when_the_music_zone_is_off(self):
         User.objects.filter(pk=self.owner.pk).update(music_zone_active=False)
         self.assertIsNone(self.report(10.0005))
