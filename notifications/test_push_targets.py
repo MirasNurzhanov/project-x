@@ -29,7 +29,7 @@ from notifications.utils import (
     notify_club_event_created, notify_club_event_decided, notify_club_invite,
     notify_club_message, notify_direct_message,
 )
-from users.models import User
+from users.models import Device, User
 from users.testing import share_location
 
 
@@ -194,6 +194,15 @@ class ClubMessageAlertTests(PushTargetTestCase):
         """
         self.assertEqual(notify_club_message(self.club, self.sender, 'one'), 3)
         self.assertEqual(self.recipients_of('two', by=self.members[0]), {'sender'})
+
+    def test_a_member_registered_only_as_a_device_is_reached(self):
+        # How every current build registers: a Device row, and the old
+        # `User.push_token` column left empty. Club chat used to read the
+        # column alone and so skipped these members entirely.
+        phone = make_user('phone', token='')
+        Device.objects.create(user=phone, install_id='install-phone', push_token='ExponentPushToken[phone]')
+        ClubMember.objects.create(user=phone, club=self.club)
+        self.assertIn('phone', self.recipients_of('hi'))
 
     def test_non_members_hear_nothing(self):
         make_user('outsider', token='outsider-tok')

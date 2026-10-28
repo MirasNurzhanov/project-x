@@ -401,16 +401,20 @@ def notify_club_message(club, sender, content='', *, image=None):
     # `notify_club_messages` is re-checked inside push_to_users, but filtering
     # here also keeps cooldown keys from being claimed by people who are opted
     # out — otherwise turning the setting back on would be silent for a while.
+    #
+    # A token on any registered device, or the old single column. This used to
+    # read the column alone, which current builds no longer keep filled, so
+    # club chat reached almost nobody — `push_to_users` fans out over devices.
     recipients = list(
         User.objects
         .filter(club_memberships__club=club, notify_club_messages=True)
+        .filter(Q(devices__push_token__gt='') | Q(push_token__gt=''))
         .exclude(pk=sender.pk)
-        .exclude(push_token__isnull=True)
-        .exclude(push_token='')
         # Someone who blocked the sender does not want their club chatter
         # either. Symmetric, like every other block check in the app.
         .exclude(blocked_by__blocker=sender)
         .exclude(blocking__blocked=sender)
+        .distinct()
         .only('pk', 'push_token', 'notify_club_messages')
     )
     fresh = [
