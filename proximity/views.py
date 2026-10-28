@@ -287,10 +287,9 @@ def _trigger_nearby_notifications(user):
 def _trigger_zone_music_alerts(user):
     """`user` has just reported a position. Whose music are they now inside?
 
-    Friends and connections only, in both roles. A stranger's zone music is
-    not something they asked to be told about, and a stranger walking past is
-    not news to the owner either — the map already shows both of them to
-    each other.
+    Friends only, in both roles — the audience `visibility.can_view` allows
+    for zone audio. A Hi is a hello, not an audience, and a stranger's zone
+    music is not something anyone asked to be told about.
 
     Only the person who *moved* is evaluated, which is enough to cover both
     directions: when you walk into a stationary friend's zone this runs for
@@ -306,8 +305,7 @@ def _trigger_zone_music_alerts(user):
     # earshot they are in. Neither is sendable without the person it discloses
     # being on the map, and the mover is the one disclosed here. Friends see the
     # mover without a check-in, so this only asks for sharing and a fresh
-    # position; the connected owners below additionally need the mover checked
-    # in, which is asked per owner.
+    # position.
     fresh_s = visibility.position_max_age_s()
     if not user.is_on_map(for_friend=True, max_age_s=fresh_s):
         return []
@@ -315,12 +313,11 @@ def _trigger_zone_music_alerts(user):
     lat = float(user.latitude)
     lon = float(user.longitude)
 
-    # Friends and connections both qualify — `visibility.can_view('zone_audio')`
-    # allows the same two tiers, and `notify_zone_music_entry` re-checks it
-    # per owner anyway, so this only has to avoid querying strangers at all.
-    friend_ids, connected_ids = _get_relationship_ids(user, visibility.blocked_ids_for(user) | {user.pk})
-    approved_ids = friend_ids | connected_ids
-    if not approved_ids:
+    # Friends only — `visibility.can_view('zone_audio')` allows the same tier,
+    # and `notify_zone_music_entry` re-checks it per owner anyway, so this only
+    # has to avoid querying anybody else at all.
+    friend_ids, _ = _get_relationship_ids(user, visibility.blocked_ids_for(user) | {user.pk})
+    if not friend_ids:
         return []
 
     # Not filtered on `zone_active`. That flag is about the zone drawn on the
@@ -334,16 +331,11 @@ def _trigger_zone_music_alerts(user):
     # rather than walked and discarded. `notify_zone_music_entry` re-checks it
     # via `broadcasts_zone_track` for the callers that do not come through here.
     # `on_map_q` for the owner side: a zone belongs to a person, and a person
-    # who is off the map has no zone on it to be walked into.
-    #
-    # Split by tier because the check-in gate is: a friend owner needs no
-    # check-in (fifteen-minute freshness still — an alert is about now), a
-    # connected owner does, and so does the mover in that case.
-    owner_tiers = Q(visibility.on_map_q(for_friend=True, max_age_s=fresh_s), pk__in=friend_ids)
-    if user.is_checked_in():
-        owner_tiers |= Q(visibility.on_map_q(), pk__in=connected_ids)
+    # who is off the map has no zone on it to be walked into. A friend owner
+    # needs no check-in, but a fresh position still — an alert is about now.
     owners = User.objects.filter(
-        owner_tiers,
+        visibility.on_map_q(for_friend=True, max_age_s=fresh_s),
+        pk__in=friend_ids,
         music_zone_active=True,
         latitude__isnull=False,
         longitude__isnull=False,

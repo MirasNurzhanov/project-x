@@ -65,13 +65,14 @@ class NearbyZoneAudioTests(TestCase):
         self.assertNotIn('zone_audio', entry)
         self.assertNotIn('zone_audio_url', entry)
 
-    def test_connected_via_hi_gets_zone_audio(self):
+    def test_connected_via_hi_does_not_get_zone_audio(self):
+        # Zone music is for friends: a Hi is a hello, not an audience.
         HiRequest.objects.create(
             sender=self.me, receiver=self.other, status=HiRequest.Status.ACCEPTED
         )
         entry = self._nearby_by_id()[self.other.pk]
         self.assertEqual(entry['relationship'], 'connected')
-        self.assertEqual(entry['zone_audio_url'], TEST_TRACK_URL)
+        self.assertNotIn('zone_audio_url', entry)
 
     def test_friend_gets_zone_audio(self):
         FriendRequest.objects.create(

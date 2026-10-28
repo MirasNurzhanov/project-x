@@ -271,12 +271,12 @@ class FieldVisibilityTests(TestCase):
         entries = {e['id']: e for e in self.client.get('/api/proximity/nearby/').json()}
         self.assertNotIn('zone_audio_url', entries[self.target.pk])
 
-    def test_zone_audio_reaches_a_connection_by_default(self):
-        # Default is Friends, but zone audio treats an accepted connection the
-        # same as a friend — see users.visibility.can_view.
+    def test_zone_audio_does_not_reach_a_connection(self):
+        # Zone audio is for friends only — see users.visibility.can_view. An
+        # accepted Hi is not enough.
         connect(self.viewer, self.target)
         entries = {e['id']: e for e in self.client.get('/api/proximity/nearby/').json()}
-        self.assertEqual(entries[self.target.pk]['zone_audio_url'], TEST_TRACK_URL)
+        self.assertNotIn('zone_audio_url', entries[self.target.pk])
 
 
 # ─── Discoverability ──────────────────────────────────────────────────────────

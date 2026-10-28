@@ -9,7 +9,7 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from friends.models import FriendRequest
+from friends.models import FriendRequest, HiRequest
 from users.models import User
 
 LOCATION_URL = '/api/proximity/location/'
@@ -65,6 +65,14 @@ class ZoneMusicHereTests(TestCase):
 
     def test_says_nothing_when_the_music_zone_is_off(self):
         User.objects.filter(pk=self.owner.pk).update(music_zone_active=False)
+        self.assertIsNone(self.report(10.0005))
+
+    def test_says_nothing_for_a_connection(self):
+        # Zone music is for friends: an accepted Hi does not let you hear it.
+        FriendRequest.objects.all().delete()
+        HiRequest.objects.create(sender=self.visitor, receiver=self.owner, status=HiRequest.Status.ACCEPTED)
+        for user in (self.visitor, self.owner):
+            user.save(update_fields=user.start_check_in())
         self.assertIsNone(self.report(10.0005))
 
     def test_says_nothing_for_a_stranger(self):

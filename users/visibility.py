@@ -407,18 +407,19 @@ def can_view(viewer, target, field, rel=None):
     audience = getattr(target, FIELD_SETTINGS[field])
     if audience == User.Audience.NOBODY:
         return False
-    # A music zone is never for a stranger, whatever this is set to — "Friends"
-    # and "Everyone" collapse to the same audience here (see app/zone.tsx and
+    # A music zone is for friends, whatever this is set to — "Friends" and
+    # "Everyone" collapse to the same audience here (see app/zone.tsx and
     # app/privacy.tsx, which no longer offer "Everyone" as a distinct choice).
-    # Same shape as `motion_for`, which caps presence-derived motion the same
-    # way regardless of the presence audience setting.
+    # Not CONNECTED: a Hi is a hello, not an audience — the same line stories
+    # draw below. Same shape as `motion_for`, which caps presence-derived motion
+    # the same way regardless of the presence audience setting.
     if field == 'zone_audio':
         # A track muted by moderation reaches nobody but its owner (SELF
         # returned above). Here rather than at each caller, because every
         # listener path — the map, the profile, the zone alerts — asks this.
         if target.zone_track_muted:
             return False
-        return rel in (FRIEND, CONNECTED)
+        return rel == FRIEND
     # And a story is never for a stranger either - same collapse, one tier
     # tighter. A story is a photograph of where somebody is and who they are
     # with, and the product it belongs to is "show this to your friends", not
