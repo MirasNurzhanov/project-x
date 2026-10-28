@@ -451,7 +451,11 @@ class UpdateLocationView(APIView):
 
     def patch(self, request):
         serializer = LocationUpdateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            # Which fields, never their values: a refused report is otherwise
+            # indistinguishable in the logs from a phone that never sent one.
+            logger.warning('location_report_rejected', extra={'fields': sorted(serializer.errors)})
+            serializer.is_valid(raise_exception=True)
         user = request.user
 
         # Stored precise, always. Fuzzing moved to the read, because a friend
