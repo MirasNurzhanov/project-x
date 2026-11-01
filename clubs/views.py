@@ -275,6 +275,7 @@ class MyClubLocationView(APIView):
 
 class ClubDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request, pk):
         # The direct-lookup hole this feature exists to close: without this, a
@@ -290,6 +291,49 @@ class ClubDetailView(APIView):
         )
         if club is None:
             return _out_of_area(place)
+        return Response(ClubDetailSerializer(club, context={'request': request}).data)
+
+    def patch(self, request, pk):
+        """Rename the club, or change its emblem. Owners only.
+
+        Not location-gated, like delete: this is management. A name goes
+        through the same screening club chat does, since every member and
+        everyone who can find the club reads it.
+        """
+        from core.uploads import validate_image
+
+        club = Club.objects.filter(pk=pk, is_active=True).first()
+        if club is None:
+            return user_visibility.not_found()
+        is_owner = request.user == club.creator or club.members.filter(
+            user=request.user, role=ClubMember.Role.OWNER,
+        ).exists()
+        if not is_owner:
+            return Response({'detail': 'Only club owners can change the club.'}, status=status.HTTP_403_FORBIDDEN)
+
+        changed = []
+        if 'name' in request.data:
+            name = str(request.data.get('name') or '').strip()
+            if not name:
+                return Response({'name': ['Give the club a name.']}, status=status.HTTP_400_BAD_REQUEST)
+            if len(name) > Club._meta.get_field('name').max_length:
+                return Response({'name': ['That name is too long.']}, status=status.HTTP_400_BAD_REQUEST)
+            if Club.objects.filter(name__iexact=name).exclude(pk=club.pk).exists():
+                return Response({'name': ['A club with this name already exists.']},
+                                status=status.HTTP_400_BAD_REQUEST)
+            verdict = moderation_services.screen(name, raise_on_block=False)
+            if verdict.blocked:
+                return Response({'detail': verdict.message(), 'code': 'objectionable_content'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            club.name = name
+            changed.append('name')
+        emblem = request.FILES.get('emblem')
+        if emblem is not None:
+            club.emblem = validate_image(emblem)
+            changed.append('emblem')
+        if not changed:
+            return Response({'detail': 'Nothing to change.'}, status=status.HTTP_400_BAD_REQUEST)
+        club.save(update_fields=changed)
         return Response(ClubDetailSerializer(club, context={'request': request}).data)
 
     def delete(self, request, pk):
