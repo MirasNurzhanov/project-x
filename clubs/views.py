@@ -676,6 +676,79 @@ class ClubEventResponsesView(APIView):
         return Response(responses.summary(event, request.user))
 
 
+class ClubEventArrivalView(APIView):
+    """ "I'm here": a member has arrived at an approved meetup.
+
+    POST `{latitude, longitude}` — the phone's position now, checked against
+    the meetup's, because the count on the map is only worth reading if it
+    means people are standing there. Opens `OPENS_BEFORE` ahead of the start
+    and lasts while the meetup is on the map. Arriving puts you in, so the
+    count can never read 10/9. DELETE takes a mistaken tap back.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    #: How close counts as there. GPS indoors wanders by a couple of hundred
+    #: metres; a park or a mall entrance is bigger than that.
+    RADIUS_M = 500
+    OPENS_BEFORE = timedelta(hours=1)
+
+    def _event(self, request, event_id):
+        event = ClubEvent.objects.select_related('club').filter(pk=event_id).first()
+        if event is None or not event.club.members.filter(user=request.user).exists():
+            return None
+        return event
+
+    def post(self, request, event_id):
+        from proximity.utils import haversine
+
+        event = self._event(request, event_id)
+        if event is None:
+            return user_visibility.not_found()
+        if event.created_by_id == request.user.pk:
+            return Response({'detail': 'You proposed this meetup.'}, status=status.HTTP_400_BAD_REQUEST)
+        now = timezone.now()
+        if event.status != ClubEvent.Status.APPROVED or (event.expires_at and event.expires_at <= now):
+            return Response({'detail': 'This meetup is not on.'}, status=status.HTTP_400_BAD_REQUEST)
+        if now < event.event_datetime - self.OPENS_BEFORE:
+            return Response(
+                {'detail': 'Check-in opens an hour before the meetup.', 'code': 'too_early'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if event.latitude is not None and event.longitude is not None:
+            try:
+                lat = float(request.data.get('latitude'))
+                lon = float(request.data.get('longitude'))
+            except (TypeError, ValueError):
+                return Response({'detail': 'Your location is needed to check in.', 'code': 'no_location'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if haversine(lat, lon, float(event.latitude), float(event.longitude)) * 1000 > self.RADIUS_M:
+                return Response(
+                    {'detail': "You're not at the meetup yet.", 'code': 'too_far'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        ClubEventResponse.objects.update_or_create(
+            event=event, user=request.user,
+            defaults={'answer': ClubEventResponse.Answer.IN, 'arrived_at': now},
+        )
+        return self._answer(request, event)
+
+    def delete(self, request, event_id):
+        event = self._event(request, event_id)
+        if event is None:
+            return user_visibility.not_found()
+        ClubEventResponse.objects.filter(event=event, user=request.user).update(arrived_at=None)
+        return self._answer(request, event)
+
+    @staticmethod
+    def _answer(request, event):
+        try:
+            responses.broadcast(event)
+        except Exception as exc:  # noqa: BLE001 — the arrival is saved either way
+            logger.warning('club_event_responses_broadcast_failed', extra={'error_type': type(exc).__name__})
+        return Response(responses.summary(event, request.user))
+
+
 class ClubEventNearbyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -692,9 +765,12 @@ class ClubEventNearbyView(APIView):
                 club__members__user=request.user,
             )
             .select_related('club', 'created_by', 'approved_by')
+            .prefetch_related(Prefetch(
+                'responses', queryset=ClubEventResponse.objects.select_related('user'),
+            ))
             .order_by('event_datetime')
         )
-        return Response(ClubEventNearbySerializer(events, many=True).data)
+        return Response(ClubEventNearbySerializer(events, many=True, context={'request': request}).data)
 
 
 class ClubMessageListView(APIView):

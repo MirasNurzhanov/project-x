@@ -141,3 +141,65 @@ class JoinAnnouncementTests(TestCase):
         recipients, _title, body = self.push.call_args.args
         self.assertEqual([u.pk for u in recipients], [self.member.pk])
         self.assertEqual(body, '@joiner joined the club')
+
+
+class ArrivalTests(MeetupResponseTests):
+    """ "I'm here" on the map: only at the place, only around the time."""
+
+    AT = (43.238949, 76.889709)
+
+    def setUp(self):
+        super().setUp()
+        self.event.status = ClubEvent.Status.APPROVED
+        self.event.event_datetime = timezone.now() + timedelta(minutes=20)
+        self.event.expires_at = timezone.now() + timedelta(hours=24)
+        self.event.latitude, self.event.longitude = self.AT
+        self.event.save()
+
+    def arrive(self, user, lat=AT[0], lon=AT[1]):
+        return self.client_for(user).post(
+            f'/api/clubs/events/{self.event.pk}/here/', {'latitude': lat, 'longitude': lon}, format='json',
+        )
+
+    def test_arrivals_count_against_everyone_in(self):
+        self.answer(self.amina, 'in')
+        self.answer(self.dan, 'in')
+        self.answer(self.owner, 'out')
+        summary = self.arrive(self.amina).json()
+        self.assertEqual((summary['here_count'], summary['in_count']), (1, 2))
+        self.assertTrue(summary['my_arrived'])
+
+    def test_turning_up_without_answering_puts_you_in(self):
+        summary = self.arrive(self.owner).json()
+        self.assertEqual((summary['here_count'], summary['in_count'], summary['my_answer']), (1, 1, 'in'))
+
+    def test_only_at_the_place(self):
+        response = self.arrive(self.amina, 43.25, 76.95)  # ~5 km away
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()['code'], 'too_far')
+        self.assertEqual(self.arrive(self.amina, 43.2410, 76.8897).status_code, 200)  # ~230 m
+
+    def test_only_from_an_hour_before(self):
+        self.event.event_datetime = timezone.now() + timedelta(hours=3)
+        self.event.save(update_fields=['event_datetime'])
+        response = self.arrive(self.amina)
+        self.assertEqual(response.json()['code'], 'too_early')
+
+    def test_not_for_the_proposer_or_a_pending_meetup(self):
+        self.assertEqual(self.arrive(self.proposer).status_code, 400)
+        self.event.status = ClubEvent.Status.PENDING
+        self.event.save(update_fields=['status'])
+        self.assertEqual(self.arrive(self.amina).status_code, 400)
+
+    def test_a_mistaken_tap_can_be_taken_back(self):
+        self.arrive(self.amina)
+        summary = self.client_for(self.amina).delete(f'/api/clubs/events/{self.event.pk}/here/').json()
+        self.assertEqual((summary['here_count'], summary['in_count'], summary['my_arrived']), (0, 1, False))
+
+    def test_the_map_carries_the_count(self):
+        self.answer(self.amina, 'in')
+        self.answer(self.dan, 'in')
+        self.arrive(self.dan)
+        meetups = self.client_for(self.amina).get('/api/clubs/events/nearby/').json()
+        counts = meetups[0]['responses']
+        self.assertEqual((counts['here_count'], counts['in_count'], counts['my_arrived']), (1, 2, False))

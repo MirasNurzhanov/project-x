@@ -19,6 +19,7 @@ urlpatterns = [
     path('<int:pk>/events/', views.ClubEventListCreateView.as_view(), name='club-event-list-create'),
     path('events/nearby/', views.ClubEventNearbyView.as_view(), name='club-event-nearby'),
     path('events/<int:event_id>/', views.ClubEventDetailView.as_view(), name='club-event-detail'),
+    path('events/<int:event_id>/here/', views.ClubEventArrivalView.as_view(), name='club-event-here'),
     path('events/<int:event_id>/responses/', views.ClubEventResponsesView.as_view(), name='club-event-responses'),
     path('events/<int:event_id>/approve/', views.ClubEventApproveView.as_view(), name='club-event-approve'),
     path('events/<int:event_id>/reject/', views.ClubEventRejectView.as_view(), name='club-event-reject'),

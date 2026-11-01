@@ -233,6 +233,8 @@ class ClubEventNearbySerializer(NumericLatLngMixin, serializers.ModelSerializer)
     approved_by = BasicUserSerializer(read_only=True)
     club_name = serializers.CharField(source='club.name', read_only=True)
     club_emblem = serializers.ImageField(source='club.emblem', read_only=True)
+    #: Arrivals against everyone in, for the map's "3/9" — `clubs.responses`.
+    responses = serializers.SerializerMethodField()
 
     class Meta:
         model = ClubEvent
@@ -240,7 +242,13 @@ class ClubEventNearbySerializer(NumericLatLngMixin, serializers.ModelSerializer)
             'id', 'club', 'club_name', 'club_emblem', 'created_by',
             'title', 'description', 'location_name', 'latitude', 'longitude',
             'event_datetime', 'status', 'approved_by', 'approved_at', 'expires_at', 'created_at', 'venue', 'meeting_point',
+            'responses',
         )
+
+    def get_responses(self, obj):
+        from . import responses
+
+        return responses.summary(obj, getattr(self.context.get('request'), 'user', None))
 
 
 class ClubMessageSerializer(serializers.ModelSerializer):

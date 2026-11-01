@@ -267,6 +267,9 @@ class ClubEventResponse(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='club_event_responses',
     )
     answer = models.CharField(max_length=3, choices=Answer.choices)
+    #: When they tapped "I'm here" at the meetup itself — the numerator of the
+    #: map's "3/9". Always with `answer` IN: turning up is saying you are in.
+    arrived_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
