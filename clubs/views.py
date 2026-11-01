@@ -1,8 +1,10 @@
+import logging
+
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from datetime import timedelta
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from moderation import services as moderation_services
@@ -20,8 +22,8 @@ from notifications.utils import (
 from regions import upstream
 from users import visibility as user_visibility
 from venues.models import Venue
-from . import visibility
-from .models import Club, ClubEvent, ClubInvitation, ClubMember, ClubMessage
+from . import joins, responses, visibility
+from .models import Club, ClubEvent, ClubEventResponse, ClubInvitation, ClubMember, ClubMessage
 from .serializers import (
     ClubDetailSerializer, ClubEventNearbySerializer, ClubEventSerializer,
     ClubInvitationSerializer, ClubMemberSerializer, ClubMessageCursorSerializer,
@@ -39,6 +41,9 @@ from .serializers import (
 # than a wrapper object. The default is set well above any real district's club
 # count so that today nothing is cut off; see the audit note about moving the
 # app onto the parameters before a city can plausibly exceed it.
+logger = logging.getLogger(__name__)
+
+
 LIST_MAX = 200
 
 
@@ -312,6 +317,7 @@ class ClubJoinView(APIView):
         if club.members.filter(user=request.user).exists():
             return Response({'detail': 'Already a member.'}, status=status.HTTP_400_BAD_REQUEST)
         member = ClubMember.objects.create(user=request.user, club=club)
+        joins.announce(club, request.user)
         return Response(ClubMemberSerializer(member).data, status=status.HTTP_201_CREATED)
 
 
@@ -399,7 +405,9 @@ class ClubInvitationAcceptView(APIView):
             if not claimed:
                 return user_visibility.not_found()
             club = Club.objects.get(invitations__pk=pk)
-            member, _ = ClubMember.objects.get_or_create(user=request.user, club=club)
+            member, joined = ClubMember.objects.get_or_create(user=request.user, club=club)
+            if joined:
+                transaction.on_commit(lambda: joins.announce(club, request.user))
         return Response(ClubMemberSerializer(member).data, status=status.HTTP_201_CREATED)
 
 
@@ -617,6 +625,57 @@ class ClubEventRejectView(APIView):
         return Response(ClubEventSerializer(event).data)
 
 
+class ClubEventResponsesView(APIView):
+    """Members answer a meetup ("I'm in" / "Nope"), and read who said what.
+
+    POST `{answer: "in" | "out" | null}` — null takes the answer back. Not for
+    the proposer, a rejected meetup, or one that has already happened. Answers
+    with the card's summary, and tells every open club chat. See
+    `clubs.responses`.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _event(self, request, event_id):
+        event = ClubEvent.objects.select_related('club').filter(pk=event_id).first()
+        if event is None or not event.club.members.filter(user=request.user).exists():
+            return None
+        return event
+
+    def get(self, request, event_id):
+        event = self._event(request, event_id)
+        if event is None:
+            return user_visibility.not_found()
+        return Response(responses.full_list(event))
+
+    def post(self, request, event_id):
+        event = self._event(request, event_id)
+        if event is None:
+            return user_visibility.not_found()
+        if event.created_by_id == request.user.pk:
+            return Response({'detail': 'You proposed this meetup.'}, status=status.HTTP_400_BAD_REQUEST)
+        if event.status == ClubEvent.Status.REJECTED:
+            return Response({'detail': 'This meetup was turned down.'}, status=status.HTTP_400_BAD_REQUEST)
+        if event.event_datetime < timezone.now():
+            return Response({'detail': 'This meetup has already happened.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        answer = request.data.get('answer')
+        if answer in (None, ''):
+            ClubEventResponse.objects.filter(event=event, user=request.user).delete()
+        elif answer in ClubEventResponse.Answer.values:
+            ClubEventResponse.objects.update_or_create(
+                event=event, user=request.user, defaults={'answer': answer},
+            )
+        else:
+            return Response({'answer': ['Answer "in", "out" or null.']}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            responses.broadcast(event)
+        except Exception as exc:  # noqa: BLE001 — the answer is saved either way
+            logger.warning('club_event_responses_broadcast_failed', extra={'error_type': type(exc).__name__})
+        return Response(responses.summary(event, request.user))
+
+
 class ClubEventNearbyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -658,7 +717,10 @@ class ClubMessageListView(APIView):
             .filter(
                 Q(moderation__in=VISIBLE_STATES) | Q(sender_id=request.user.pk),
             )
-            .select_related('sender')
+            .select_related('sender', 'event__created_by', 'event__approved_by')
+            .prefetch_related(Prefetch(
+                'event__responses', queryset=ClubEventResponse.objects.select_related('user'),
+            ))
             # Catch-up and older-page requests use an exclusive ID cursor.
             # Timestamp ties must not change which 50 rows a page selects.
             .order_by('-id')
@@ -670,7 +732,7 @@ class ClubMessageListView(APIView):
         if before_id is not None:
             qs = qs.filter(id__lt=before_id)
         messages = list(reversed(qs[:50]))
-        return Response(ClubMessageSerializer(messages, many=True).data)
+        return Response(ClubMessageSerializer(messages, many=True, context={'request': request}).data)
 
     def post(self, request, pk):
         place = visibility.place_for(request.user)

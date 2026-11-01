@@ -210,14 +210,22 @@ class NumericLatLngMixin(serializers.Serializer):
 class ClubEventSerializer(NumericLatLngMixin, serializers.ModelSerializer):
     created_by = BasicUserSerializer(read_only=True)
     approved_by = BasicUserSerializer(read_only=True)
+    #: Who is in — see `clubs.responses`. `my_answer` needs the request in the
+    #: context, and is null without it.
+    responses = serializers.SerializerMethodField()
 
     class Meta:
         model = ClubEvent
         fields = (
             'id', 'club', 'created_by', 'title', 'description',
             'location_name', 'latitude', 'longitude', 'event_datetime', 'venue', 'meeting_point',
-            'status', 'approved_by', 'approved_at', 'expires_at', 'created_at',
+            'status', 'approved_by', 'approved_at', 'expires_at', 'created_at', 'responses',
         )
+
+    def get_responses(self, obj):
+        from . import responses
+
+        return responses.summary(obj, getattr(self.context.get('request'), 'user', None))
 
 
 class ClubEventNearbySerializer(NumericLatLngMixin, serializers.ModelSerializer):

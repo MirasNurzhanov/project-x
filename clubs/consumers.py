@@ -100,6 +100,13 @@ class ClubChatConsumer(SuspensionAwareConsumer):
             'proposal': event.get('proposal'),
         }))
 
+    async def club_event_responses(self, event):
+        await self.send(json.dumps({
+            'type': 'club_event_responses',
+            'event_id': event['event_id'],
+            'responses': event['responses'],
+        }))
+
     async def _send_error(self, detail):
         await self.send(json.dumps({'type': 'error', 'detail': detail}))
 

@@ -250,10 +250,42 @@ class ClubEvent(models.Model):
         return f'{self.title} @ {self.club}'
 
 
+class ClubEventResponse(models.Model):
+    """A member's answer to a meetup: in, or not.
+
+    One row per member per meetup, changed in place — saying "I'm in" and then
+    "Nope" moves you, it does not count you twice. The club sees these: the
+    whole point is that people can see who is coming. See `clubs.responses`.
+    """
+
+    class Answer(models.TextChoices):
+        IN = 'in', "I'm in"
+        OUT = 'out', 'Nope'
+
+    event = models.ForeignKey(ClubEvent, on_delete=models.CASCADE, related_name='responses')
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='club_event_responses',
+    )
+    answer = models.CharField(max_length=3, choices=Answer.choices)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['updated_at']
+        constraints = [
+            models.UniqueConstraint(fields=['event', 'user'], name='clubeventresponse_one_per_member'),
+        ]
+
+    def __str__(self):
+        return f'{self.user} {self.answer} {self.event}'
+
+
 class ClubMessage(models.Model):
     class MessageType(models.TextChoices):
         TEXT = 'text', 'Text'
         MEETUP_PROPOSAL = 'meetup_proposal', 'Meetup Proposal'
+        # "@x joined the club", written by `clubs.joins`. The sender is the
+        # person who joined; there is no content.
+        MEMBER_JOINED = 'member_joined', 'Member Joined'
 
     club = models.ForeignKey(Club, on_delete=models.CASCADE, related_name='messages')
     sender = models.ForeignKey(

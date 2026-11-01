@@ -437,6 +437,35 @@ def notify_club_message(club, sender, content='', *, image=None):
     )
 
 
+def notify_club_member_joined(club, joiner):
+    """Somebody joined `club`. The other members hear, once each.
+
+    Push only, like club chat: the "joined" line in the chat is the record.
+    Follows the club chat setting, since that is where the line appears.
+    """
+    from users.models import User
+
+    recipients = list(
+        User.objects
+        .filter(club_memberships__club=club, notify_club_messages=True)
+        .filter(Q(devices__push_token__gt='') | Q(push_token__gt=''))
+        .exclude(pk=joiner.pk)
+        .exclude(blocked_by__blocker=joiner)
+        .exclude(blocking__blocked=joiner)
+        .distinct()
+        .only('pk', 'push_token', 'notify_club_messages')
+    )
+    if not recipients:
+        return 0
+    return push_to_users(
+        recipients,
+        f'👋 {club.name}',
+        f'@{joiner.username} joined the club',
+        data={'type': 'club_message', 'club_id': club.pk, 'club_name': club.name},
+        category='club_message',
+    )
+
+
 # ── Meetups ───────────────────────────────────────────────────────────────────
 # These do write rows. A meetup proposed on Tuesday for Saturday is exactly the
 # thing someone needs to find again after the push has been swiped away, and
