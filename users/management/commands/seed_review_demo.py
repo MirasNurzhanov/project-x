@@ -175,15 +175,19 @@ class Command(BaseCommand):
 
     # ── Who knows whom ────────────────────────────────────────────────────────
     def _relationships(self, reviewer, cast):
+        # A friend request needs an accepted Hi first in the app, and messaging
+        # and sharing check that Hi rather than the friendship. Without it the
+        # reviewer could not message or send a Swift to any demo friend.
         for member in CAST:
             user = cast[member.username]
+            if member.role in ('friend', 'connected', 'requester'):
+                self._pair(HiRequest, user, reviewer, HiRequest.Status.ACCEPTED)
             if member.role == 'friend':
                 self._pair(FriendRequest, user, reviewer, FriendRequest.Status.ACCEPTED)
-            elif member.role == 'connected':
-                self._pair(HiRequest, user, reviewer, HiRequest.Status.ACCEPTED)
             elif member.role == 'requester':
                 self._pair(FriendRequest, user, reviewer, FriendRequest.Status.PENDING)
         # Mutual friends, and a Hi waiting for the reviewer to answer.
+        self._pair(HiRequest, cast['demo_amina'], cast['demo_daniyar'], HiRequest.Status.ACCEPTED)
         self._pair(FriendRequest, cast['demo_amina'], cast['demo_daniyar'], FriendRequest.Status.ACCEPTED)
         self._pair(HiRequest, cast['demo_alina'], reviewer, HiRequest.Status.PENDING)
 

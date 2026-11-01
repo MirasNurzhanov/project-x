@@ -76,6 +76,25 @@ class SeedTests(TestCase):
         roles = dict(ClubMember.objects.filter(user=reviewer).values_list('club__name', 'role'))
         self.assertEqual(sorted(roles.values()), [ClubMember.Role.MEMBER, ClubMember.Role.OWNER])
 
+    def test_the_reviewer_can_message_and_share_with_every_demo_friend(self):
+        # Friends were seeded without the accepted Hi the app requires first, so
+        # every message and Swift share to them was refused.
+        reviewer = seed()
+        client = client_for(reviewer)
+        friends = User.objects.filter(username__in=[m.username for m in review_demo.CAST if m.role == 'friend'])
+        for friend in friends:
+            response = client.post(f'/api/friends/messages/{friend.pk}/', {'content': 'hi'}, format='json')
+            self.assertEqual(response.status_code, 201, (friend.username, response.content))
+        swift = SwiftVideo.objects.create(
+            author=User.objects.get(username='demo_amina'), duration_ms=6000, width=1080, height=1920,
+            status=SwiftVideo.Status.READY, moderation=SwiftVideo.Moderation.OK,
+            visibility=SwiftVideo.Visibility.PUBLIC,
+        )
+        response = client.post(
+            f'/api/swifts/{swift.pk}/send/', {'user_ids': [f.pk for f in friends]}, format='json',
+        )
+        self.assertEqual(response.json()['refused'], [])
+
     def test_running_it_again_changes_nothing_but_the_password(self):
         seed()
         counts = (User.objects.count(), FriendRequest.objects.count(), Club.objects.count(), Story.objects.count())
