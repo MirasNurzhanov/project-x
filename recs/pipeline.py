@@ -56,6 +56,9 @@ from . import diversity, exposure, features, metrics, safety, scoring
 from .params import load_params
 
 SESSION_PREFIX = 'recs:session:'
+#: Served-by labels for `_backfill`'s two tails.
+NEWEST = 'newest'
+REWATCH = 'rewatch'
 
 
 @dataclass
@@ -105,7 +108,8 @@ def build_session(viewer, *, params=None, now=None, seed=None):
     stages['eligible'] = len(pool)
 
     if not pool:
-        return [], {}, stages, source_counts
+        ordered_ids, sources_by_id = _backfill(viewer, [], {}, suppressed, limits)
+        return ordered_ids, sources_by_id, stages, source_counts
 
     # 4 — light ranking. Needs the rows, but only the cheap columns.
     with metrics.timed('recs.stage.light'):
@@ -169,7 +173,61 @@ def build_session(viewer, *, params=None, now=None, seed=None):
         s.swift_id: _primary_source(s.features.sources)
         for s in arranged
     }
+    ordered_ids, sources_by_id = _backfill(viewer, ordered_ids, sources_by_id, suppressed, limits)
     return ordered_ids, sources_by_id, stages, source_counts
+
+
+def _backfill(viewer, ordered_ids, sources_by_id, suppressed, limits):
+    """Everything else the viewer may watch, after the ranked part.
+
+    The sources are tuned for a big catalogue, and on a small one they leave
+    gaps: a stranger's brand-new Swift that no source picked up, a friend's
+    that the friends ceiling dropped. A Swift someone just posted must still
+    show up, so the unwatched rest follows the ranking, newest first. Then what
+    the viewer has already watched, newest first — a tab that has run out of
+    new Swifts shows old ones rather than claiming there are none.
+    """
+    from swifts import visibility as swift_visibility
+    from swifts.models import SwiftView
+
+    taken = set(ordered_ids)
+    qs = (
+        swift_visibility.watchable(viewer)
+        .exclude(author_id=viewer.pk)
+        .exclude(pk__in=taken)
+    )
+    if suppressed:
+        qs = qs.exclude(author_id__in=suppressed)
+    watched = SwiftView.objects.filter(viewer=viewer).values('swift_id')
+    room = limits.session_size
+
+    # Spread over a wider slice than is kept, so one creator's burst of
+    # uploads cannot be the whole of what there was to spread.
+    fresh = _spread(qs.exclude(pk__in=watched).order_by('-created_at')
+                    .values_list('pk', 'author_id')[:room * 5])[:room]
+    rewatch = _spread(qs.filter(pk__in=watched).order_by('-created_at')
+                      .values_list('pk', 'author_id')[:room * 5])[:room]
+
+    ordered_ids = list(ordered_ids) + fresh + rewatch
+    sources_by_id = dict(sources_by_id)
+    sources_by_id.update({i: NEWEST for i in fresh})
+    sources_by_id.update({i: REWATCH for i in rewatch})
+    return ordered_ids, sources_by_id
+
+
+def _spread(rows):
+    """Newest first, one Swift per creator per round, so a creator who posts
+    twenty in a row cannot fill the tail the ranker kept them out of."""
+    queues = {}
+    for swift_id, author_id in rows:
+        queues.setdefault(author_id, []).append(swift_id)
+    spread = []
+    while queues:
+        for author_id in list(queues):
+            spread.append(queues[author_id].pop(0))
+            if not queues[author_id]:
+                del queues[author_id]
+    return spread
 
 
 def _primary_source(source_set):

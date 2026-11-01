@@ -249,16 +249,41 @@ class ExposureTests(SwiftTestCase):
         self.viewer = make_user('viewer')
         self.author = make_user('author')
 
-    def test_an_already_watched_swift_is_not_re_served(self):
+    def test_an_already_watched_swift_comes_after_everything_unwatched(self):
         swift = make_swift(self.author)
         watch(self.viewer, swift)
         from swifts.models import SwiftView
         SwiftView.objects.create(swift=swift, viewer=self.viewer)
+        unwatched = bulk_swifts(make_user('another'), 3)
 
-        ids, _, stages, _ = build_session(self.viewer)
+        ids, sources, stages, _ = build_session(self.viewer)
 
-        self.assertNotIn(swift.id, ids)
         self.assertGreaterEqual(stages['filtered_exposure'], 1)
+        self.assertEqual(ids[-1], swift.id)
+        self.assertEqual(sources[swift.id], 'rewatch')
+        for other in unwatched:
+            self.assertLess(ids.index(other.id), ids.index(swift.id))
+
+    def test_a_feed_that_has_run_out_of_new_swifts_is_not_empty(self):
+        from swifts.models import SwiftView
+        for swift in bulk_swifts(self.author, 2):
+            SwiftView.objects.create(swift=swift, viewer=self.viewer)
+
+        ids, _, _, _ = build_session(self.viewer)
+
+        self.assertEqual(len(ids), 2)
+
+    def test_a_swift_posted_just_now_is_in_the_next_session(self):
+        """Even from a stranger no candidate source picked up."""
+        from swifts.models import SwiftView
+        old = make_swift(self.author)
+        SwiftView.objects.create(swift=old, viewer=self.viewer)
+        page(self.viewer, limit=10)
+
+        new = make_swift(make_user('stranger'))
+        ids, _, _, _ = build_session(self.viewer)
+
+        self.assertLess(ids.index(new.id), ids.index(old.id))
 
     def test_serving_a_page_records_impressions(self):
         bulk_swifts(self.author, 3)
@@ -270,7 +295,9 @@ class ExposureTests(SwiftTestCase):
             len(result.swift_ids),
         )
 
-    def test_a_served_swift_does_not_come_back_in_the_next_session(self):
+    def test_a_served_but_unwatched_swift_comes_back_in_the_next_session(self):
+        """Served is not seen: reopening the tab must not lose what was never
+        swiped to."""
         bulk_swifts(self.author, 4)
         first = page(self.viewer, limit=2)
 
@@ -278,8 +305,9 @@ class ExposureTests(SwiftTestCase):
         second = build_session(self.viewer)[0]
 
         for swift_id in first.swift_ids:
-            self.assertNotIn(swift_id, second)
+            self.assertIn(swift_id, second)
 
+    @override_settings(SWIFT_RECS={'exposure': {'reserve_hours': 72}})
     def test_a_served_but_unwatched_swift_returns_after_the_reserve_window(self):
         """Served is not seen. Over-fetching must not burn candidates."""
         bulk_swifts(self.author, 3)
@@ -343,7 +371,9 @@ class DiversityTests(SwiftTestCase):
                 popular(swift, likes=3, views=50)
 
         ids, _, _, _ = build_session(self.viewer)
-        authors = self._authors_in_order(ids)
+        # The ranked part. What follows it is `_backfill`'s newest-first tail,
+        # the thin-pool fallback, which yields to the caps rather than ending.
+        authors = self._authors_in_order(ids[:load_params().limits.session_size])
 
         for start in range(0, len(authors), self.window):
             page_authors = authors[start:start + self.window]

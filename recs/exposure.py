@@ -59,6 +59,9 @@ def excluded_ids(viewer, *, params=None, now=None):
             .values_list('swift_id', flat=True)
         )
 
+    if params.exposure.reserve_hours <= 0:
+        return watched
+
     recently_served = set(
         SwiftImpression.objects
         .filter(viewer=viewer, last_served_at__gte=cutoff)

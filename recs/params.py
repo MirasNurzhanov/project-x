@@ -146,10 +146,12 @@ class DiversityRules:
 class ExposureRules:
     """When a Swift may be shown again."""
 
-    reserve_hours: int = 72
+    reserve_hours: int = 0
     """A Swift served but never actually watched — the viewer stopped scrolling
-    before reaching it — becomes eligible again after this long. Without it,
-    over-fetching a page permanently burns candidates nobody ever saw."""
+    before reaching it — becomes eligible again after this long. Zero: the
+    next session may serve it straight away. A session never repeats itself
+    anyway, and holding back Swifts nobody saw is what left a viewer's tab
+    empty while a friend's new one sat on the server."""
     watched_never_again: bool = True
     """Once genuinely watched (a `SwiftView` row exists), never re-served.
     Rewatching is something a viewer does deliberately from a profile, not
