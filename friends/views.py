@@ -239,7 +239,7 @@ class FriendsListView(APIView):
                 Q(sender=request.user, deleted_for_sender=True) |
                 Q(receiver=request.user, deleted_for_receiver=True)
             ).order_by('-created_at').only(
-                'sender_id', 'receiver_id', 'content', 'image', 'created_at'
+                'sender_id', 'receiver_id', 'content', 'image', 'swift_id', 'created_at'
             )
             for m in msgs:
                 other_id = m.receiver_id if m.sender_id == request.user.id else m.sender_id
@@ -263,7 +263,9 @@ class FriendsListView(APIView):
             data = dict(BasicUserSerializer(user).data)
             last = last_by_user.get(user.id)
             if last is not None:
-                data['last_message'] = last.content if last.content else '📷 Photo'
+                data['last_message'] = (
+                    last.content or ('Sent a Swift' if last.swift_id else '📷 Photo')
+                )
                 data['last_message_at'] = last.created_at.isoformat()
             data['unread_count'] = unread_map.get(user.id, 0)
             # The tier is already known from which list we are building, so it

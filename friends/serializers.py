@@ -40,18 +40,25 @@ class MessageSerializer(serializers.ModelSerializer):
     # Cloudinary.
     image = serializers.SerializerMethodField()
     swift = serializers.SerializerMethodField()
+    #: A shared Swift this reader may no longer watch. Without it that message
+    #: reads as empty, and the app drew a blank bubble; with it, it can say the
+    #: Swift is unavailable. Says nothing about why — see `get_swift`.
+    swift_unavailable = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
         fields = (
             'id', 'client_id', 'sender', 'content', 'image', 'swift',
-            'created_at', 'is_read',
+            'swift_unavailable', 'created_at', 'is_read',
         )
 
     def get_image(self, obj):
         if obj.image_url:
             return obj.image_url
         return obj.image.url if obj.image else None
+
+    def get_swift_unavailable(self, obj):
+        return bool(obj.swift_id) and obj.swift_id not in (self.context.get('shareable_ids') or ())
 
     def get_swift(self, obj):
         """The card for a shared Swift, or None if this reader may not watch it.
