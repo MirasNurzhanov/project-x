@@ -144,7 +144,8 @@ class SwiftPublishStorageTests(SwiftTestCase):
         public, private = MagicMock(), MagicMock()
         private.exists.return_value = False
         private.save.side_effect = lambda name, content: name
-        private.url.side_effect = lambda name: 'https://r2.example.test/' + name + '?X-Amz-Signature=abc'
+        private.url.side_effect = (
+            lambda name, expire=None: 'https://r2.example.test/' + name + '?X-Amz-Signature=abc')
 
         with patch('core.media_storage.storages', {'default': public, 'private_media': private}):
             response = client.post('/api/swifts/', {

@@ -71,8 +71,13 @@ class ProtectedMediaStorage(Storage):
     def exists(self, name):
         return self._attempt('exists', self._purpose(name), lambda: self._backend(name).exists(name))
 
-    def url(self, name):
-        return self._attempt('url', self._purpose(name), lambda: self._backend(name).url(name))
+    def url(self, name, expire=None):
+        """`expire` overrides how long a private link is signed for, in
+        seconds. Public files are unsigned, so there it means nothing."""
+        backend = self._backend(name)
+        if expire is not None and getattr(backend, 'querystring_auth', False):
+            return self._attempt('url', 'private', lambda: backend.url(name, expire=expire))
+        return self._attempt('url', self._purpose(name), lambda: backend.url(name))
 
     def size(self, name):
         return self._attempt('size', self._purpose(name), lambda: self._backend(name).size(name))

@@ -58,6 +58,21 @@ MIN_DURATION_MS = 1_000
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 
+#: How long a Swift's signed video and poster links work, in seconds. Longer
+#: than the private bucket's five minutes: a feed row is often watched well
+#: after it was fetched, and an expired link is a Swift that "wouldn't play".
+#: An hour also outlasts a ranked feed session (`recs` `session_ttl_s`).
+LINK_TTL_S = 3600
+
+
+def _signed(field):
+    from core.media_storage import ProtectedMediaStorage
+
+    if isinstance(field.storage, ProtectedMediaStorage):
+        return field.storage.url(field.name, expire=LINK_TTL_S)
+    return field.url
+
+
 def playback_url(swift):
     """The address of this Swift's video.
 
@@ -66,7 +81,7 @@ def playback_url(swift):
     predates it, which is the only case that column is ever read for.
     """
     if swift.video:
-        return swift.video.url
+        return _signed(swift.video)
     return swift.video_url or ''
 
 
@@ -79,5 +94,5 @@ def poster_url(swift):
     and R2 cannot decode video to do the equivalent.
     """
     if swift.thumbnail:
-        return swift.thumbnail.url
+        return _signed(swift.thumbnail)
     return swift.thumbnail_url or ''

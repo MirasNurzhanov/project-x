@@ -86,6 +86,16 @@ class UploadValidationTests(SimpleTestCase):
             storage.url(name); private.url.assert_called_once_with(name)
             storage.url('chat_images/legacy.png'); public.url.assert_called_once_with('chat_images/legacy.png')
 
+    def test_a_private_link_can_be_signed_for_longer(self):
+        public, private = MagicMock(querystring_auth=False), MagicMock(querystring_auth=True)
+        with patch('core.media_storage.storages', {'default': public, 'private_media': private}):
+            storage = ProtectedMediaStorage()
+            storage.url('private/swifts/a.mov', expire=3600)
+            private.url.assert_called_once_with('private/swifts/a.mov', expire=3600)
+            # Public files are unsigned; the override is not passed to them.
+            storage.url('swifts/legacy.mov', expire=3600)
+            public.url.assert_called_once_with('swifts/legacy.mov')
+
     def test_private_r2_url_is_signed_and_uses_private_bucket(self):
         from storages.backends.s3 import S3Storage
         storage = S3Storage(access_key='test-access', secret_key='test-secret', bucket_name='private-test',
