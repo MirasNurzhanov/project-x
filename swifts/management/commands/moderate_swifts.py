@@ -113,7 +113,7 @@ class Command(BaseCommand):
                 # Account deletions that have served their grace period. This
                 # is the project's only always-on process, and nothing else
                 # ever ran `purge_deleted_accounts` — requested deletions were
-                # disabled but never finished. Hourly is plenty for a 30-day
+                # disabled but never finished. Hourly is plenty for a 14-day
                 # deadline, and a failure must not stop moderation.
                 if time.monotonic() >= next_purge:
                     next_purge = time.monotonic() + PURGE_EVERY_S

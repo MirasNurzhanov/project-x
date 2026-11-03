@@ -18,7 +18,7 @@ from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, Ou
 from . import socialauth
 from .models import User
 
-GRACE_DAYS = 30
+GRACE_DAYS = 14
 REAUTH_MAX_AGE_SECONDS = 300
 
 
