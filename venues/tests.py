@@ -14,6 +14,8 @@ from users.models import User
 from .models import Venue
 
 DUBAI_MARINA_VENUES = import_module('venues.migrations.0005_seed_dubai_marina').DUBAI_MARINA_VENUES
+GYM_CHAIN_VENUES = import_module('venues.migrations.0006_seed_gym_chains').GYM_CHAIN_VENUES
+SEEDED = 3 + len(DUBAI_MARINA_VENUES) + len(GYM_CHAIN_VENUES)
 
 
 class VenueTests(TestCase):
@@ -37,7 +39,7 @@ class VenueTests(TestCase):
     def test_seeded_venues_and_numeric_coordinates(self):
         response = self.client.get('/api/venues/')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['count'], 3 + len(DUBAI_MARINA_VENUES))
+        self.assertEqual(response.data['count'], SEEDED)
         rows = {row['slug']: row for row in response.data['results']}
         row = rows['dostyk-plaza']
         self.assertEqual(row['name'], 'Dostyk Plaza')
@@ -99,7 +101,7 @@ class VenueTests(TestCase):
             apps, type('Editor', (), {'connection': connection})())
         self.venue.refresh_from_db()
         self.assertEqual(self.venue.description, 'Edited by staff')
-        self.assertEqual(Venue.objects.count(), 3 + len(DUBAI_MARINA_VENUES))
+        self.assertEqual(Venue.objects.count(), SEEDED)
 
     def test_api_is_authenticated_and_read_only(self):
         self.client.force_authenticate(None)
@@ -175,11 +177,13 @@ class VenueTests(TestCase):
             self.venue.full_clean()
 
     def test_list_is_bounded(self):
+        from venues.views import VenuePagination
+        size = VenuePagination.page_size
         seeded = Venue.objects.filter(is_active=True).count()
         Venue.objects.bulk_create([Venue(name=f'Place {i}', slug=f'place-{i}', address='Test',
-            latitude=43, longitude=76, is_active=True) for i in range(101)])
+            latitude=43, longitude=76, is_active=True) for i in range(size + 1)])
         response = self.client.get('/api/venues/')
-        self.assertEqual(len(response.data['results']), 100)
+        self.assertEqual(len(response.data['results']), size)
         self.assertIsNotNone(response.data['next'])
         self.assertEqual(len(self.client.get('/api/venues/?page=2').data['results']), seeded + 1)
 
@@ -244,3 +248,37 @@ class DubaiMarinaVenueTests(TestCase):
         self.assertEqual(venue.description, 'Staff edit')
         self.assertFalse(venue.is_active)
         self.assertEqual(Venue.objects.filter(slug__in=self.slugs).count(), len(self.slugs))
+
+
+class GymChainVenueTests(TestCase):
+    """Invictus (Kazakhstan, no GO) and every UK Virgin Active club."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='gym-member', email='gym@example.test')
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.slugs = [row[0] for row in GYM_CHAIN_VENUES]
+
+    def test_seeded_live_with_valid_rows_in_the_right_country(self):
+        self.assertEqual(len(set(self.slugs)), len(self.slugs))
+        venues = Venue.objects.filter(slug__in=self.slugs)
+        self.assertEqual(venues.count(), 48)
+        for venue in venues:
+            with self.subTest(slug=venue.slug):
+                venue.full_clean()
+                self.assertTrue(venue.is_active)
+                self.assertEqual(venue.category, 'Sport & fitness')
+                self.assertNotIn(' GO', venue.name)
+                # A swapped lat/lng lands in another country.
+                if venue.slug.startswith('invictus-'):
+                    self.assertTrue(Decimal('40.5') <= venue.latitude <= Decimal('55.5'))
+                    self.assertTrue(Decimal('46.5') <= venue.longitude <= Decimal('87.5'))
+                else:
+                    self.assertTrue(venue.slug.startswith('virgin-active-'))
+                    self.assertTrue(Decimal('49.9') <= venue.latitude <= Decimal('58.7'))
+                    self.assertTrue(Decimal('-8.2') <= venue.longitude <= Decimal('1.8'))
+
+    def test_every_venue_fits_the_one_page_the_map_reads(self):
+        listed = self.client.get('/api/venues/').data
+        self.assertEqual(len(listed['results']), Venue.objects.filter(is_active=True).count())
+        self.assertIsNone(listed['next'])

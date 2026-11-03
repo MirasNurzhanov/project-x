@@ -5,7 +5,9 @@ from .serializers import VenueSerializer
 
 
 class VenuePagination(PageNumberPagination):
-    page_size = 100
+    # The app reads the first page only (hooks/useMapVenues), so this is the
+    # most venues the map can show. Room for whole chains, not a dozen cafes.
+    page_size = 500
 
 
 class VenueListView(generics.ListAPIView):
