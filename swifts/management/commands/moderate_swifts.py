@@ -29,6 +29,9 @@ from django.core.management.base import BaseCommand, CommandError
 
 from swifts import ai_moderation
 
+#: How often the loop finalizes account deletions that are due.
+PURGE_EVERY_S = 3600
+
 
 class Command(BaseCommand):
     help = 'Run queued AI moderation jobs for Swifts.'
@@ -104,8 +107,17 @@ class Command(BaseCommand):
         # settings read per interval instead of a restart.
         self.stdout.write(f'Sweeping every {options["interval"]}s. Ctrl-C to stop.')
         idle_logged = False
+        next_purge = 0.0
         try:
             while True:
+                # Account deletions that have served their grace period. This
+                # is the project's only always-on process, and nothing else
+                # ever ran `purge_deleted_accounts` — requested deletions were
+                # disabled but never finished. Hourly is plenty for a 30-day
+                # deadline, and a failure must not stop moderation.
+                if time.monotonic() >= next_purge:
+                    next_purge = time.monotonic() + PURGE_EVERY_S
+                    self._purge_accounts()
                 if ai_moderation.enabled():
                     idle_logged = False
                     self._pass(options['limit'])
@@ -120,6 +132,13 @@ class Command(BaseCommand):
                 time.sleep(options['interval'])
         except KeyboardInterrupt:
             self.stdout.write('\nStopped.')
+
+    def _purge_accounts(self):
+        from django.core.management import call_command
+        try:
+            call_command('purge_deleted_accounts', execute=True, stdout=self.stdout)
+        except Exception as exc:  # noqa: BLE001 — logged, and the loop goes on
+            self.stderr.write(f'Account purge failed: {type(exc).__name__}')
 
     def _pass(self, limit):
         from django.db import connection, connections

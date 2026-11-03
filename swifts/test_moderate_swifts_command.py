@@ -9,11 +9,14 @@ once a second, forever.
 And it is the *default* path, not an edge case: `SWIFT_AI_MODERATION_ENABLED`
 is off unless somebody turns it on.
 """
+from contextlib import nullcontext
 from io import StringIO
 from unittest.mock import call, patch
 
 from django.core.management import CommandError, call_command
 from django.test import SimpleTestCase, override_settings
+
+from swifts.management.commands import moderate_swifts
 
 
 class SinglePassTests(SimpleTestCase):
@@ -37,7 +40,7 @@ class SinglePassTests(SimpleTestCase):
 class LoopTests(SimpleTestCase):
     """--loop: a supervisor is watching, and exiting is a restart."""
 
-    def run_loop(self, ticks):
+    def run_loop(self, ticks, stub_purge=True):
         """Run the loop for `ticks` iterations, then break out of it.
 
         `time.sleep` is the seam: the loop is `while True`, so the only way to
@@ -52,7 +55,11 @@ class LoopTests(SimpleTestCase):
             calls['n'] += 1
             if calls['n'] >= ticks:
                 raise KeyboardInterrupt
-        with patch('swifts.management.commands.moderate_swifts.time.sleep', fake_sleep):
+        # These tests have no database; the purge is stubbed unless a test is
+        # about it (see AccountPurgeTests).
+        purge = (patch.object(moderate_swifts.Command, '_purge_accounts')
+                 if stub_purge else nullcontext())
+        with patch('swifts.management.commands.moderate_swifts.time.sleep', fake_sleep), purge:
             call_command('moderate_swifts', '--loop', '--interval', '1', stdout=out)
         return out.getvalue(), calls['n']
 
@@ -143,3 +150,25 @@ class ExplicitRetryTests(SimpleTestCase):
                 call_command('moderate_swifts', '--retry-failed', '22',
                              stdout=StringIO())
         retry.assert_not_called()
+
+
+
+class AccountPurgeTests(SimpleTestCase):
+    """The worker also finishes account deletions; nothing else ever ran them."""
+
+    run_loop = LoopTests.run_loop
+
+    @override_settings(SWIFT_AI_MODERATION_ENABLED=False)
+    def test_due_deletions_are_finalized_once_an_hour_not_every_tick(self):
+        with patch('django.core.management.call_command') as run:
+            self.run_loop(5, stub_purge=False)
+        purges = [c for c in run.call_args_list if c.args[:1] == ('purge_deleted_accounts',)]
+        self.assertEqual(len(purges), 1)
+        self.assertTrue(purges[0].kwargs.get('execute'))
+
+    @override_settings(SWIFT_AI_MODERATION_ENABLED=True)
+    def test_a_failing_purge_does_not_stop_moderation(self):
+        with patch('django.core.management.call_command', side_effect=RuntimeError('db down')), \
+                patch('swifts.ai_moderation.sweep', return_value=0) as sweep:
+            _, ticks = self.run_loop(3, stub_purge=False)
+        self.assertEqual(sweep.call_count, ticks)
