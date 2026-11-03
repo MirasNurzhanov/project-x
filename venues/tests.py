@@ -15,7 +15,9 @@ from .models import Venue
 
 DUBAI_MARINA_VENUES = import_module('venues.migrations.0005_seed_dubai_marina').DUBAI_MARINA_VENUES
 GYM_CHAIN_VENUES = import_module('venues.migrations.0006_seed_gym_chains').GYM_CHAIN_VENUES
-SEEDED = 3 + len(DUBAI_MARINA_VENUES) + len(GYM_CHAIN_VENUES)
+INVICTUS_OUTSIDE_ALMATY = import_module(
+    'venues.migrations.0007_remove_invictus_outside_almaty').INVICTUS_OUTSIDE_ALMATY
+SEEDED = 3 + len(DUBAI_MARINA_VENUES) + len(GYM_CHAIN_VENUES) - len(INVICTUS_OUTSIDE_ALMATY)
 
 
 class VenueTests(TestCase):
@@ -251,18 +253,19 @@ class DubaiMarinaVenueTests(TestCase):
 
 
 class GymChainVenueTests(TestCase):
-    """Invictus (Kazakhstan, no GO) and every UK Virgin Active club."""
+    """Invictus in Almaty (no GO) and every UK Virgin Active club."""
 
     def setUp(self):
         self.user = User.objects.create_user(username='gym-member', email='gym@example.test')
         self.client = APIClient()
         self.client.force_authenticate(self.user)
-        self.slugs = [row[0] for row in GYM_CHAIN_VENUES]
+        self.slugs = [row[0] for row in GYM_CHAIN_VENUES if row[0] not in INVICTUS_OUTSIDE_ALMATY]
 
     def test_seeded_live_with_valid_rows_in_the_right_country(self):
         self.assertEqual(len(set(self.slugs)), len(self.slugs))
         venues = Venue.objects.filter(slug__in=self.slugs)
-        self.assertEqual(venues.count(), 48)
+        self.assertEqual(venues.count(), 34)
+        self.assertFalse(Venue.objects.filter(slug__in=INVICTUS_OUTSIDE_ALMATY).exists())
         for venue in venues:
             with self.subTest(slug=venue.slug):
                 venue.full_clean()
@@ -271,8 +274,10 @@ class GymChainVenueTests(TestCase):
                 self.assertNotIn(' GO', venue.name)
                 # A swapped lat/lng lands in another country.
                 if venue.slug.startswith('invictus-'):
-                    self.assertTrue(Decimal('40.5') <= venue.latitude <= Decimal('55.5'))
-                    self.assertTrue(Decimal('46.5') <= venue.longitude <= Decimal('87.5'))
+                    self.assertTrue(venue.address.endswith('Almaty'))
+                    # Almaty; a swapped lat/lng lands elsewhere.
+                    self.assertTrue(Decimal('43.1') <= venue.latitude <= Decimal('43.4'))
+                    self.assertTrue(Decimal('76.7') <= venue.longitude <= Decimal('77.1'))
                 else:
                     self.assertTrue(venue.slug.startswith('virgin-active-'))
                     self.assertTrue(Decimal('49.9') <= venue.latitude <= Decimal('58.7'))
