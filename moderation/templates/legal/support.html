@@ -1,0 +1,51 @@
+{% extends "legal/base.html" %}
+{% block title %}Approx — Support{% endblock %}
+{% block heading %}Support{% endblock %}
+{% block meta %}{% endblock %}
+{% block content %}
+
+<p>
+  Need help with Approx? Email
+  <a href="mailto:{{ contact_email }}">{{ contact_email }}</a> with your
+  username and what happened. We usually reply within two working days.
+</p>
+<p>
+  To report a person or something they posted, use <strong>Report</strong> on it
+  in the app, or <strong>Settings &rsaquo; Report a safety concern</strong>. If
+  you are in immediate danger, contact emergency services first.
+</p>
+
+<h2>Common questions</h2>
+
+<h3>Who can see where I am?</h3>
+<p>
+  Friends you have accepted see you on the map. Anybody else sees you only while
+  you are checked in. <strong>Ghost Mode</strong>, in
+  <strong>Settings &rsaquo; Privacy &amp; safety</strong>, hides you from everyone,
+  friends included. More in the <a href="{% url 'legal-privacy' %}">Privacy</a> page.
+</p>
+
+<h3>How do I stop a friend's zone music?</h3>
+<p>Turn off <strong>Settings &rsaquo; Play friends' zone music</strong>.</p>
+
+<h3>How do I block someone?</h3>
+<p>
+  Open their profile or anything they posted and choose <strong>Block</strong>.
+  You can unblock in <strong>Settings &rsaquo; Blocked users</strong>.
+</p>
+
+<h3>How do I delete my account?</h3>
+<p>
+  <strong>Settings &rsaquo; Delete account</strong>. Your account is disabled at
+  once and permanently deleted {{ grace_days }} days later. Messages you sent to
+  others and safety records are kept, as the
+  <a href="{% url 'legal-privacy' %}">Privacy</a> page explains.
+</p>
+
+<h3>I can't sign in</h3>
+<p>
+  Email us from the address on your account and say how you signed up (email,
+  Google or Apple).
+</p>
+
+{% endblock %}

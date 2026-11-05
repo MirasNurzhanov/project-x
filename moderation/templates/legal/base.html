@@ -97,7 +97,7 @@ to load is a legal document that looks broken.
   <header>
     <p class="mark">APPROX</p>
     <h1>{% block heading %}{% endblock %}</h1>
-    <p class="meta">Version {{ version }} &middot; Last updated {{ version }}</p>
+    {% block meta %}<p class="meta">Version {{ version }} &middot; Last updated {{ version }}</p>{% endblock %}
   </header>
 
   {% block content %}{% endblock %}
@@ -106,6 +106,7 @@ to load is a legal document that looks broken.
     <a href="{% url 'legal-terms' %}"{% if doc == 'terms' %} aria-current="page"{% endif %}>Terms of Use</a>
     <a href="{% url 'legal-guidelines' %}"{% if doc == 'guidelines' %} aria-current="page"{% endif %}>Community Guidelines</a>
     <a href="{% url 'legal-privacy' %}"{% if doc == 'privacy' %} aria-current="page"{% endif %}>Privacy</a>
+    <a href="{% url 'legal-support' %}"{% if doc == 'support' %} aria-current="page"{% endif %}>Support</a>
   </nav>
 
   <footer>

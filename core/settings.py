@@ -656,7 +656,7 @@ TERMS_ENFORCEMENT_ALLOW_LEGACY = config(
 #: that this be reachable; it is printed on every legal page and linked from
 #: Settings.
 SAFETY_CONTACT_EMAIL = config(
-    'SAFETY_CONTACT_EMAIL', default='nurdauletaskar551@gmail.com')
+    'SAFETY_CONTACT_EMAIL', default='nur.mir2008@gmail.com')
 
 STATIC_URL = "static/"
 

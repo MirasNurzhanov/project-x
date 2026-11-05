@@ -1,4 +1,4 @@
-"""The three legal documents, served by Approx's own backend.
+"""The three legal documents and the support page, served by Approx's own backend.
 
 Not a marketing site. The app links these from the sign-up gate, from the
 mandatory agreement screen and from Settings, so they have to resolve on a host
@@ -21,7 +21,7 @@ def _context(doc):
         'doc': doc,
         'version': terms.CURRENT_VERSION,
         'contact_email': getattr(
-            settings, 'SAFETY_CONTACT_EMAIL', 'nurdauletaskar551@gmail.com'),
+            settings, 'SAFETY_CONTACT_EMAIL', 'nur.mir2008@gmail.com'),
     }
 
 
@@ -43,3 +43,10 @@ def guidelines_page(request):
 @_cache
 def privacy_page(request):
     return render(request, 'legal/privacy.html', _context('privacy'))
+
+
+@_cache
+def support_page(request):
+    """The App Store's Support URL: how to reach us, and the common answers."""
+    from users.deletion import GRACE_DAYS
+    return render(request, 'legal/support.html', {**_context('support'), 'grace_days': GRACE_DAYS})
